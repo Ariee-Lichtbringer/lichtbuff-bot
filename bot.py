@@ -24,7 +24,7 @@ CSV_URL = "https://docs.google.com/spreadsheets/d/1eItzaMGhpJ28vv4sDA8wwmu0YhUxc
 CSV_CACHE_CONTENT = ""
 CSV_CACHE_TIME = None
 CSV_CACHE_SECONDS = 300
-APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycby7Rim3WtL0N2JV9bJng7AhT4j11PBPsofcYAT2sbMl_i3yHaeYeIc4UOjr0BA-x-kI/exec"
+APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycby55lblAjwzd5FIy5kx8z1AnmclAqsRE12hC0S-51UQoWMK74qhdoKBeiCKhFjH1Yfr/exec"
 
 DATA_FILE = "worldbuffs.json"
 POST_FILE = "last_post.json"
