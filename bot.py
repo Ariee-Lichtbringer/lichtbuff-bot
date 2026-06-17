@@ -1,0 +1,3032 @@
+import discord
+import re
+import json
+import csv
+import urllib.request
+import urllib.parse
+import os
+import asyncio
+import time
+from io import StringIO
+from datetime import datetime, timedelta
+import pytz
+
+TOKEN = os.getenv("DISCORD_TOKEN", "MTUxMDY3NzM0Njc4NzY1OTc3Nw.G_-vuz._ocUI4y-Nv7o9Kn0erGGra7cQfrHvFjKfBaeRc")
+
+TICKER_CHANNEL_ID = 1283706980103356448
+POST_CHANNEL_ID = 1281152286772695071
+HORDENBUFF_CHANNEL_ID = 1510764309062615220
+
+# LichtLoot / Prio-Check AQ40
+AQ40_CHANNEL_ID = 1439219220528500806
+# Message-IDs werden automatisch gesucht, weil jede neue RaidHelper-Anmeldung eine neue ID bekommt.
+AQ40_RAID_HELPER_MESSAGE_ID = None
+PRIO_REPORT_HOUR = 19
+PRIO_REPORT_MINUTE = 0
+PRIO_REPORT_FILE = "prio_report_state.json"
+
+# WICHTIG: Das ist die LichtLoot Apps-Script-Web-App, nicht das Worldbuff-Sheet.
+LICHTLOOT_API_URL = "https://script.google.com/macros/s/AKfycbzwRZ1908IawmEh3WdROu_TBwfu8Yr1YXJ1VicqEIf15eZ2zzRE3Yw9OaaeJ0ZADbye2g/exec"
+
+# Direkter CSV-Export der internen Worldbuff-Uebersicht.
+# Charakter/Gilde kommen aus diesem Sheet.
+CSV_URL = "https://docs.google.com/spreadsheets/d/1eItzaMGhpJ28vv4sDA8wwmu0YhUxcbiz-2VLiCVyjv4/export?format=csv&gid=1498762908"
+CSV_CACHE_CONTENT = ""
+CSV_CACHE_TIME = None
+CSV_CACHE_SECONDS = 300
+
+# Das Worldbuffchannel-Sheet ist die Quelle fuer den tatsaechlichen Buff-Typ.
+# Dadurch kann ein Lichtbringer-Termin nicht in der Uebersicht als Ony stehen,
+# wenn im Worldbuffchannel fuer denselben Zeitpunkt Nef geplant ist.
+WORLDBUFF_PLAN_CSV_URL = "https://docs.google.com/spreadsheets/d/1o7fzOAn9wC0iWcauC3bDo2RYR8kZ1xQMjkvSi1lJG8Q/gviz/tq?tqx=out:csv&gid=0"
+WORLDBUFF_PLAN_CACHE_CONTENT = ""
+WORLDBUFF_PLAN_CACHE_TIME = None
+APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycby7Rim3WtL0N2JV9bJng7AhT4j11PBPsofcYAT2sbMl_i3yHaeYeIc4UOjr0BA-x-kI/exec"
+
+DATA_FILE = "worldbuffs.json"
+POST_FILE = "last_post.json"
+HORDENBUFF_FILE = "hordenbuff.json"
+HORDENBUFF_CLEANUP_FILE = "hordenbuff_cleanup.json"
+RAID_ANNOUNCEMENT_FILE = "raid_announcements.json"
+HORDENBUFF_CLEANUP_DELAY_MINUTES = 5
+HORDENBUFF_CLEANUP_WINDOW_MINUTES = 45
+HORDENBUFF_UPDATE_MIN_SECONDS = 30
+DISCORD_RATE_LIMIT_FALLBACK_SECONDS = 300
+RAID_ANNOUNCEMENT_CHECK_SECONDS = 60
+LICHTLOOT_URL = "https://lichtloot.de"
+
+BERLIN_TZ = pytz.timezone("Europe/Berlin")
+
+LICHTBRINGER_GILDEN = ["Classic Lichtbringer", "Lichtbringer"]
+
+BUFF_EMOJIS = {
+    "Hakkar": "🟢",
+    "ZG": "🟢",
+    "Ony": "🔴",
+    "Onyxia": "🔴",
+    "Nef": "🔴",
+    "Nefarian": "🔴",
+    "Rend": "🟠"
+}
+
+TAG_LANG = {
+    "Mo": "Montag",
+    "Di": "Dienstag",
+    "Mi": "Mittwoch",
+    "Do": "Donnerstag",
+    "Fr": "Freitag",
+    "Sa": "Samstag",
+    "So": "Sonntag"
+}
+
+intents = discord.Intents.default()
+intents.message_content = True
+
+client = discord.Client(intents=intents)
+
+hordenbuff_update_lock = asyncio.Lock()
+hordenbuff_last_update_at = 0
+hordenbuff_rate_limited_until = 0
+
+
+async def delete_command_message(message):
+    try:
+        await message.delete()
+    except:
+        pass
+
+
+async def send_temp(channel, text, seconds=10):
+    try:
+        await channel.send(text, delete_after=seconds)
+    except:
+        pass
+
+
+def get_discord_retry_after(error, fallback=DISCORD_RATE_LIMIT_FALLBACK_SECONDS):
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", {}) or {}
+
+    for header in ("Retry-After", "X-RateLimit-Reset-After"):
+        value = headers.get(header)
+        if value:
+            try:
+                return max(float(value), 1)
+            except (TypeError, ValueError):
+                pass
+
+    return fallback
+
+
+def is_discord_rate_limit(error):
+    return isinstance(error, discord.HTTPException) and getattr(error, "status", None) == 429
+
+
+def block_discord_writes_after_rate_limit(error, context):
+    global hordenbuff_rate_limited_until
+
+    retry_after = get_discord_retry_after(error)
+    hordenbuff_rate_limited_until = time.monotonic() + retry_after
+    print(
+        f"{context}: Discord Rate Limit. "
+        f"Keine Hordenbuff-Updates fuer {int(retry_after)} Sekunden."
+    )
+
+
+def normalize_buff(buff):
+    b = str(buff).strip().lower()
+    b = b.replace("**", "")
+    b = b.replace("🟢", "")
+    b = b.replace("🔴", "")
+    b = b.replace("🟠", "")
+    b = b.replace("⚪", "")
+    b = b.strip()
+
+    if b in ["hakkar", "zg"] or "hakkar" in b or b == "zg":
+        return "Hakkar"
+    if b in ["ony", "onyxia"] or "ony" in b:
+        return "Ony"
+    if b in ["nef", "neff", "neffm", "nefarian"] or "nef" in b:
+        return "Nef"
+    if b == "rend" or "rend" in b:
+        return "Rend"
+
+    return str(buff).strip()
+
+
+def is_lichtbringer(gilde):
+    return any(name.lower() in gilde.lower() for name in LICHTBRINGER_GILDEN)
+
+
+def make_buff_key(buff_data):
+    datum = buff_data["datum"]
+    zeit = buff_data["uhrzeit"]
+    buff = normalize_buff(buff_data["buff"])
+    gilde = buff_data["gilde"]
+
+    if is_lichtbringer(gilde):
+        return f"{datum}|{zeit}|{buff}|LICHTBRINGER"
+
+    return f"{datum}|{zeit}|{buff}|{gilde}"
+
+
+def make_hordenbuff_key(buff_data):
+    return f"{buff_data['datum']}|{buff_data['uhrzeit']}|Rend|{buff_data['gilde']}"
+
+
+def make_buff_slot_key(buff_data):
+    datum = buff_data["datum"]
+    zeit = buff_data["uhrzeit"]
+    gilde = buff_data["gilde"]
+
+    if is_lichtbringer(gilde):
+        return f"{datum}|{zeit}|LICHTBRINGER"
+
+    return f"{datum}|{zeit}|{gilde}"
+
+
+def save_json(filename, data):
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_json(filename, fallback):
+    try:
+        with open(filename, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return fallback
+
+
+def clean_sheet_value(value):
+    text = str(value or "").strip()
+    if text.lower() in ["nan", "none", "null"]:
+        return ""
+    if text.endswith(";"):
+        text = text[:-1].strip()
+    return text
+
+
+def make_tag_from_date(datum):
+    try:
+        dt = datetime.strptime(datum, "%d.%m.%Y")
+        return ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"][dt.weekday()]
+    except:
+        return ""
+
+
+
+def normalize_sheet_header(value):
+    text = clean_sheet_value(value).lower()
+    text = text.replace(";", "")
+    text = text.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+    text = re.sub(r"[^a-z0-9]+", "", text)
+    return text
+
+
+def find_column_index(header_map, *names):
+    for name in names:
+        key = normalize_sheet_header(name)
+        if key in header_map:
+            return header_map[key]
+    return None
+
+
+def get_cell(row, index):
+    if index is None or index >= len(row):
+        return ""
+    return clean_sheet_value(row[index])
+
+
+def normalize_sheet_date(value):
+    text = clean_sheet_value(value)
+    if not text:
+        return ""
+
+    for fmt in ["%d.%m.%Y", "%d.%m.%y", "%Y-%m-%d", "%m/%d/%Y"]:
+        try:
+            return datetime.strptime(text, fmt).strftime("%d.%m.%Y")
+        except:
+            pass
+
+    return text
+
+
+def normalize_sheet_time(value):
+    text = clean_sheet_value(value)
+    if not text:
+        return ""
+
+    text = text.replace(" Uhr", "").replace("Uhr", "").strip()
+
+    # Google/CSV kann Uhrzeiten gelegentlich als 19:35:00 liefern.
+    match = re.search(r"(\d{1,2}):(\d{2})", text)
+    if match:
+        return f"{int(match.group(1)):02d}:{match.group(2)}"
+
+    return text
+
+
+def get_worldbuff_plan_csv_content():
+    global WORLDBUFF_PLAN_CACHE_CONTENT, WORLDBUFF_PLAN_CACHE_TIME
+
+    now = datetime.now()
+
+    if WORLDBUFF_PLAN_CACHE_CONTENT and WORLDBUFF_PLAN_CACHE_TIME:
+        if (now - WORLDBUFF_PLAN_CACHE_TIME).total_seconds() < CSV_CACHE_SECONDS:
+            return WORLDBUFF_PLAN_CACHE_CONTENT
+
+    try:
+        with urllib.request.urlopen(WORLDBUFF_PLAN_CSV_URL, timeout=5) as response:
+            WORLDBUFF_PLAN_CACHE_CONTENT = response.read().decode("utf-8")
+            WORLDBUFF_PLAN_CACHE_TIME = now
+            return WORLDBUFF_PLAN_CACHE_CONTENT
+    except Exception as e:
+        print("Worldbuffchannel-CSV Fehler:", e)
+
+        if WORLDBUFF_PLAN_CACHE_CONTENT:
+            print("Nutze alten Worldbuffchannel CSV Cache")
+            return WORLDBUFF_PLAN_CACHE_CONTENT
+
+        return ""
+
+
+def get_worldbuff_plan_overrides():
+    content = get_worldbuff_plan_csv_content()
+    overrides = {}
+
+    if not content:
+        return overrides
+
+    try:
+        reader = csv.reader(StringIO(content))
+
+        for row in reader:
+            if len(row) < 3:
+                continue
+
+            datum = normalize_sheet_date(row[0])
+            buff = normalize_buff(row[1])
+            uhrzeit = normalize_sheet_time(row[2])
+
+            if not datum or not uhrzeit:
+                continue
+
+            if buff not in ["Hakkar", "Ony", "Nef", "Rend"]:
+                continue
+
+            overrides[f"{datum}|{uhrzeit}"] = buff
+    except Exception as e:
+        print("Fehler beim Lesen des Worldbuffchannel-Sheets:", e)
+
+    return overrides
+
+
+def iter_worldbuff_sheet_rows():
+    """
+    Liest das Worldbuff-Sheet robust ein.
+    Die Spalten werden ueber die Kopfzeile gesucht, nicht mehr ueber feste Positionen.
+    Dadurch funktionieren auch Hinweiszeilen oberhalb der Tabelle und kleinere Layout-Aenderungen.
+    """
+    content = get_csv_content()
+    if not content:
+        return []
+
+    result = []
+    plan_overrides = get_worldbuff_plan_overrides()
+
+    try:
+        reader = csv.reader(StringIO(content))
+        rows = list(reader)
+        header_map = None
+        last_date = ""
+        last_tag = ""
+
+        for row in rows:
+            if not row:
+                continue
+
+            normalized = [normalize_sheet_header(cell) for cell in row]
+
+            # Kopfzeile finden: Tag | Datum | Uhrzeit | Icon | Buff | Gilde | Charakter | Status | Notiz
+            if "tag" in normalized and "datum" in normalized and "uhrzeit" in normalized and "buff" in normalized:
+                header_map = {key: idx for idx, key in enumerate(normalized) if key}
+                continue
+
+            if not header_map:
+                continue
+
+            tag_i = find_column_index(header_map, "Tag")
+            datum_i = find_column_index(header_map, "Datum")
+            uhrzeit_i = find_column_index(header_map, "Uhrzeit", "Zeit")
+            buff_i = find_column_index(header_map, "Buff")
+            gilde_i = find_column_index(header_map, "Gilde")
+            charakter_i = find_column_index(header_map, "Charakter", "Char", "Werfer")
+            status_i = find_column_index(header_map, "Status")
+
+            tag = get_cell(row, tag_i)
+            datum = normalize_sheet_date(get_cell(row, datum_i))
+            uhrzeit = normalize_sheet_time(get_cell(row, uhrzeit_i))
+            buff = normalize_buff(get_cell(row, buff_i))
+            gilde = get_cell(row, gilde_i)
+            charakter = get_cell(row, charakter_i)
+            status = get_cell(row, status_i)
+
+            if tag:
+                last_tag = tag
+            else:
+                tag = last_tag
+
+            if datum:
+                last_date = datum
+            else:
+                datum = last_date
+
+            if not tag and datum:
+                tag = make_tag_from_date(datum)
+
+            if is_lichtbringer(gilde):
+                buff = plan_overrides.get(f"{datum}|{uhrzeit}", buff)
+
+            if buff not in ["Hakkar", "Ony", "Nef", "Rend"]:
+                continue
+
+            if not datum or not uhrzeit or not gilde:
+                continue
+
+            result.append({
+                "buff": buff,
+                "datum": datum,
+                "tag": tag,
+                "uhrzeit": uhrzeit,
+                "gilde": gilde,
+                "charakter": charakter,
+                "status": status
+            })
+
+    except Exception as e:
+        print("Fehler beim robusten Lesen des Worldbuff-Sheets:", e)
+
+    return result
+
+
+def get_active_horden_rend_from_state():
+    data = load_json(HORDENBUFF_FILE, {})
+    event_key = str(data.get("event_key", ""))
+
+    if not event_key:
+        return None
+
+    parts = event_key.split("|")
+    if len(parts) < 4:
+        return None
+
+    datum, uhrzeit, buff, gilde = parts[0], parts[1], parts[2], "|".join(parts[3:])
+
+    if normalize_buff(buff) != "Rend":
+        return None
+
+    try:
+        dt = datetime.strptime(f"{datum} {uhrzeit}", "%d.%m.%Y %H:%M")
+        # Bestehenden Termin noch als Fallback akzeptieren, solange er nicht sehr alt ist.
+        if dt < datetime.now(BERLIN_TZ).replace(tzinfo=None) - timedelta(hours=2):
+            return None
+    except:
+        return None
+
+    return {
+        "buff": "Rend",
+        "datum": datum,
+        "tag": make_tag_from_date(datum),
+        "uhrzeit": uhrzeit,
+        "gilde": gilde
+    }
+
+
+def get_next_horden_rend_safe():
+    rend = get_next_horden_rend()
+    if rend:
+        return rend
+
+    fallback = get_active_horden_rend_from_state()
+    if fallback:
+        return fallback
+
+    return None
+
+
+def get_csv_content():
+    global CSV_CACHE_CONTENT, CSV_CACHE_TIME
+
+    now = datetime.now()
+
+    if CSV_CACHE_CONTENT and CSV_CACHE_TIME:
+        if (now - CSV_CACHE_TIME).total_seconds() < CSV_CACHE_SECONDS:
+            return CSV_CACHE_CONTENT
+
+    try:
+        print("CSV Abruf gestartet")
+
+        with urllib.request.urlopen(CSV_URL, timeout=5) as response:
+            CSV_CACHE_CONTENT = response.read().decode("utf-8")
+            CSV_CACHE_TIME = now
+            print("CSV erfolgreich geladen")
+            return CSV_CACHE_CONTENT
+
+    except Exception as e:
+        print("CSV Fehler:", e)
+
+        if CSV_CACHE_CONTENT:
+            print("Nutze alten CSV Cache")
+            return CSV_CACHE_CONTENT
+
+        return ""
+
+
+def parse_ticker_message(text):
+    buffs = []
+
+    pattern = re.compile(
+        r"^(?:[🟢🔴🟠⚪]\s*)?"
+        r"\**(Hakkar|hakkar|ZG|zg|Ony|ony|Onyxia|Nef|nef|Nefarian|Rend|rend)\**\s+"
+        r"(\d{2}\.\d{2}\.\d{4})\s+"
+        r"([A-Za-zÄÖÜäöü]{2})\s+"
+        r"(\d{2}:\d{2})\s+"
+        r"(.+)$"
+    )
+
+    for line in text.splitlines():
+        line = line.strip()
+        line = line.replace("**", "")
+
+        match = pattern.match(line)
+
+        if match:
+            buff, datum, tag, uhrzeit, gilde = match.groups()
+            buffs.append({
+                "buff": normalize_buff(buff),
+                "datum": datum,
+                "tag": tag,
+                "uhrzeit": uhrzeit,
+                "gilde": gilde.strip()
+            })
+
+    return buffs
+
+
+def import_buffs_aus_sheet():
+    rows = iter_worldbuff_sheet_rows()
+    sheet_buffs = []
+
+    for row in rows:
+        sheet_buffs.append({
+            "buff": row.get("buff", ""),
+            "datum": row.get("datum", ""),
+            "tag": row.get("tag", ""),
+            "uhrzeit": row.get("uhrzeit", ""),
+            "gilde": row.get("gilde", "")
+        })
+
+    if not sheet_buffs:
+        print("Worldbuff-Sheet geladen, aber keine gueltigen Buff-Zeilen gefunden. Pruefe CSV_URL und Kopfzeile.")
+    else:
+        print(f"Worldbuff-Sheet: {len(sheet_buffs)} Buff-Zeilen gelesen.")
+
+    return sheet_buffs
+
+
+def import_werfer_aus_sheet():
+    werfer = {}
+    rows = iter_worldbuff_sheet_rows()
+
+    for row in rows:
+        datum = row.get("datum", "")
+        uhrzeit = row.get("uhrzeit", "")
+        buff = normalize_buff(row.get("buff", ""))
+        charakter = row.get("charakter", "")
+        status = row.get("status", "")
+
+        if not datum or not uhrzeit or not buff or not charakter:
+            continue
+
+        key = f"{datum}|{uhrzeit}|{buff}"
+        werfer[key] = {
+            "charakter": charakter,
+            "status": status
+        }
+
+    return werfer
+
+
+def sende_wurf_ans_sheet(buff, charakter, discord_name):
+    payload = {
+        "buff": buff,
+        "charakter": charakter,
+        "discord": discord_name
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+
+    request = urllib.request.Request(
+        APPS_SCRIPT_URL,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+
+    with urllib.request.urlopen(request, timeout=30) as response:
+        result = response.read().decode("utf-8")
+        return json.loads(result)
+
+
+def build_overview():
+    data = load_json(DATA_FILE, [])
+    sheet_buffs = import_buffs_aus_sheet()
+
+    sheet_slots = {
+        make_buff_slot_key(b)
+        for b in sheet_buffs
+    }
+
+    if sheet_slots:
+        data = [
+            b for b in data
+            if make_buff_slot_key(b) not in sheet_slots
+        ]
+
+    existing_keys = {
+        make_buff_key(b)
+        for b in data
+    }
+
+    for buff in sheet_buffs:
+        key = make_buff_key(buff)
+
+        if key not in existing_keys:
+            data.append(buff)
+            existing_keys.add(key)
+
+    werfer = import_werfer_aus_sheet()
+
+    if not data:
+        return "📢 **Worldbuff Übersicht**\n\nKeine Worldbuffs gefunden."
+
+    heute = datetime.now(BERLIN_TZ).date()
+    ende = heute + timedelta(days=7)
+
+    gefiltert = []
+
+    for b in data:
+        try:
+            buff_datum = datetime.strptime(b["datum"], "%d.%m.%Y").date()
+
+            if heute <= buff_datum <= ende:
+                gefiltert.append(b)
+
+        except:
+            continue
+
+    data = gefiltert
+
+    if not data:
+        return "📢 **Worldbuff Übersicht**\n\nKeine kommenden Worldbuffs in den nächsten 7 Tagen gefunden."
+
+    data.sort(
+        key=lambda x: (
+            datetime.strptime(x["datum"], "%d.%m.%Y"),
+            x["uhrzeit"]
+        )
+    )
+
+    now = datetime.now(BERLIN_TZ).strftime("%d.%m.%Y %H:%M")
+
+    text = "📢 **Worldbuff Übersicht**\n"
+    text += f"🕒 Letzte Aktualisierung: {now}\n"
+    text = "📢 **Worldbuff Übersicht**\n"
+    text += f"🕒 Letzte Aktualisierung: {now}\n"
+    text += "_Automatisch aus dem Worldbuff-Ticker und dem Sheet erstellt._\n"
+    text += "_Angezeigt werden nur Termine der nächsten 7 Tage._\n\n"
+
+    text += "━━━━━━━━━━━━━━━\n"
+    text += "📋 **Worldbuff-Anleitung**\n\n"
+
+    text += "🔵 **Lichtbringer-Werfer eintragen**\n"
+    text += "`!wurf Buff Charaktername`\n\n"
+
+    text += "**Beispiele:**\n"
+    text += "`!wurf hakkar Ariee`\n"
+    text += "`!wurf ony Protekta`\n"
+    text += "`!wurf nef Paladrium`\n"
+    text += "`!wurf rend Miimi`\n\n"
+
+    text += "Der Bot trägt euch automatisch beim nächsten passenden Termin im Sheet ein "
+    text += "und aktualisiert anschließend die Übersicht.\n\n"
+
+    text += "🪓 **Horde-Rend Koordination**\n"
+    text += "Die Anmeldung für Rend erfolgt im Hordenbuff-Channel über:\n"
+    text += "`!rend Spielername`\n\n"
+
+    text += "━━━━━━━━━━━━━━━\n\n"
+
+    current_date = ""
+
+    for b in data:
+        datum = b["datum"]
+        tag_kurz = b["tag"]
+        tag_lang = TAG_LANG.get(tag_kurz, tag_kurz)
+        zeit = b["uhrzeit"]
+        buff = normalize_buff(b["buff"])
+        gilde = b["gilde"]
+
+        emoji = BUFF_EMOJIS.get(buff, "⚪")
+
+        if datum != current_date:
+            text += f"\n**{tag_lang}, {datum}**\n"
+            current_date = datum
+
+        werfer_text = ""
+
+        key = f"{datum}|{zeit}|{buff}"
+        info = werfer.get(key)
+
+        if info and info.get("charakter"):
+            if is_lichtbringer(gilde):
+                werfer_text = f" - 🔵 {info['charakter']}"
+            else:
+                werfer_text = f" - ⚔️ {info['charakter']}"
+
+        text += f"{emoji} **{buff}** {zeit} - {gilde}{werfer_text}\n"
+
+    return text
+
+
+async def delete_last_post(channel):
+    post_data = load_json(POST_FILE, {})
+    message_id = post_data.get("message_id")
+
+    if not message_id:
+        return
+
+    try:
+        old_message = await channel.fetch_message(message_id)
+        await old_message.delete()
+    except:
+        pass
+
+
+async def update_worldbuff_post():
+    channel = client.get_channel(POST_CHANNEL_ID)
+
+    if channel is None:
+        print("Ziel-Channel nicht gefunden.")
+        return
+
+    await delete_last_post(channel)
+
+    text = await asyncio.to_thread(build_overview)
+
+    if len(text) <= 1900:
+        msg = await channel.send(text)
+        save_json(POST_FILE, {"message_id": msg.id})
+    else:
+        chunks = [text[i:i + 1900] for i in range(0, len(text), 1900)]
+        last_msg = None
+
+        for chunk in chunks:
+            last_msg = await channel.send(chunk)
+
+        if last_msg:
+            save_json(POST_FILE, {"message_id": last_msg.id})
+
+
+def get_next_horden_rend():
+    buffs = import_buffs_aus_sheet()
+    now = datetime.now(BERLIN_TZ).replace(tzinfo=None)
+
+    rend_termine = []
+
+    for b in buffs:
+        if normalize_buff(b["buff"]) != "Rend":
+            continue
+
+        try:
+            dt = datetime.strptime(
+                f"{b['datum']} {b['uhrzeit']}",
+                "%d.%m.%Y %H:%M"
+            )
+
+            if dt >= now:
+                rend_termine.append((dt, b))
+
+        except:
+            continue
+
+    rend_termine.sort(key=lambda x: x[0])
+
+    if not rend_termine:
+        return None
+
+    return rend_termine[0][1]
+
+
+def get_upcoming_horden_rends(limit=5):
+    buffs = import_buffs_aus_sheet()
+    now = datetime.now(BERLIN_TZ).replace(tzinfo=None)
+
+    rend_termine = []
+
+    for b in buffs:
+        if normalize_buff(b["buff"]) != "Rend":
+            continue
+
+        try:
+            dt = datetime.strptime(
+                f"{b['datum']} {b['uhrzeit']}",
+                "%d.%m.%Y %H:%M"
+            )
+
+            if dt >= now:
+                rend_termine.append((dt, b))
+
+        except:
+            continue
+
+    rend_termine.sort(key=lambda x: x[0])
+
+    return [
+        buff
+        for _, buff in rend_termine[:limit]
+    ]
+
+
+
+def get_recent_expired_horden_rend():
+    """
+    Findet den gerade abgelaufenen Rend-Termin.
+    Beispiel: Rend 19:35 -> ab 19:40 wird einmalig aufgeraeumt.
+    Das Zeitfenster verhindert, dass der Bot beim Neustart alte Termine von gestern bereinigt.
+    """
+    buffs = import_buffs_aus_sheet()
+    now = datetime.now(BERLIN_TZ).replace(tzinfo=None)
+    expired = []
+
+    for b in buffs:
+        if normalize_buff(b.get("buff")) != "Rend":
+            continue
+
+        try:
+            dt = datetime.strptime(
+                f"{b['datum']} {b['uhrzeit']}",
+                "%d.%m.%Y %H:%M"
+            )
+        except:
+            continue
+
+        cleanup_at = dt + timedelta(minutes=HORDENBUFF_CLEANUP_DELAY_MINUTES)
+        cleanup_until = dt + timedelta(minutes=HORDENBUFF_CLEANUP_WINDOW_MINUTES)
+
+        if cleanup_at <= now <= cleanup_until:
+            expired.append((dt, b))
+
+    expired.sort(key=lambda x: x[0], reverse=True)
+    return expired[0][1] if expired else None
+
+
+async def clear_hordenbuff_channel_and_post_next(expired_rend):
+    channel = client.get_channel(HORDENBUFF_CHANNEL_ID) or await client.fetch_channel(HORDENBUFF_CHANNEL_ID)
+    cleanup_state = load_json(HORDENBUFF_CLEANUP_FILE, {})
+    event_key = make_hordenbuff_key(expired_rend)
+
+    if cleanup_state.get("last_cleaned_event_key") == event_key:
+        return
+
+    try:
+        # Loescht die aktuellen Nachrichten im Hordenbuff-Channel.
+        # Fuer sehr alte Nachrichten kann Discord bulk delete begrenzen; der Channel enthaelt aber normalerweise nur aktuelle Orga-Posts.
+        await channel.purge(limit=500, check=lambda m: not m.pinned, bulk=True)
+    except Exception as e:
+        print("Fehler beim Bereinigen des Hordenbuff-Channels:", e)
+        # Fallback: zumindest die letzten Nachrichten einzeln versuchen.
+        try:
+            async for msg in channel.history(limit=100):
+                if msg.pinned:
+                    continue
+                try:
+                    await msg.delete()
+                    await asyncio.sleep(0.2)
+                except:
+                    pass
+        except Exception as inner:
+            print("Fallback-Bereinigung fehlgeschlagen:", inner)
+
+    cleanup_state["last_cleaned_event_key"] = event_key
+    cleanup_state["last_cleaned_at"] = datetime.now(BERLIN_TZ).isoformat()
+    save_json(HORDENBUFF_CLEANUP_FILE, cleanup_state)
+
+    # Alte Hordenbuff-Nachricht vergessen, damit fuer den naechsten Rend-Termin sicher ein frischer Post entsteht.
+    save_json(HORDENBUFF_FILE, {
+        "event_key": "",
+        "spieler": [],
+        "uebernahmen": {},
+        "helfer": [],
+        "message_id": None,
+        "reminders_sent": []
+    })
+
+    await update_hordenbuff_post()
+
+
+def load_hordenbuff_state(rend):
+    fallback = {
+        "event_key": "",
+        "spieler": [],
+        "uebernahmen": {},
+        "helfer": [],
+        "message_id": None,
+        "reminders_sent": []
+    }
+
+    data = load_json(HORDENBUFF_FILE, fallback)
+
+    if not rend:
+        return fallback
+
+    event_key = make_hordenbuff_key(rend)
+
+    if data.get("event_key") != event_key:
+        data = {
+            "event_key": event_key,
+            "spieler": [],
+            "uebernahmen": {},
+            "helfer": [],
+            "message_id": None,
+            "reminders_sent": []
+        }
+
+        save_json(HORDENBUFF_FILE, data)
+
+    data.setdefault("spieler", [])
+    data.setdefault("uebernahmen", {})
+    data.setdefault("helfer", [])
+    data.setdefault("reminders_sent", [])
+
+    return data
+
+
+def get_assigned_targets(data):
+    return {
+        target.lower()
+        for target in data.get("uebernahmen", {}).values()
+    }
+
+
+def get_next_unassigned_char(data):
+    assigned = get_assigned_targets(data)
+
+    for charakter in data.get("spieler", []):
+        if charakter.lower() not in assigned:
+            return charakter
+
+    return None
+
+
+def build_hordenbuff_text(rend, data):
+    tag_kurz = rend.get("tag", "")
+    tag_lang = TAG_LANG.get(tag_kurz, tag_kurz)
+
+    text = "🪓 **Horde-Rend Koordination**\n\n"
+    text += f"📌 **Aktiv verwalteter Termin:** {tag_lang}, {rend['datum']} um {rend['uhrzeit']}\n\n"
+
+    upcoming = get_upcoming_horden_rends(limit=5)
+
+    text += "📅 **Kommende Rend-Termine laut Lichtbuff:**\n"
+
+    if upcoming:
+        for item in upcoming:
+            item_tag = TAG_LANG.get(item.get("tag", ""), item.get("tag", ""))
+            text += f"🟠 {item_tag}, {item['datum']} um {item['uhrzeit']}\n"
+    else:
+        text += "-\n"
+
+    text += "\n✅ **Benötigen den Buff für den aktiven Termin:**\n"
+
+    if data.get("spieler"):
+        assigned = get_assigned_targets(data)
+
+        for name in data["spieler"]:
+            if name.lower() in assigned:
+                text += f"✅ {name} _(zugeteilt)_\n"
+            else:
+                text += f"✅ {name}\n"
+    else:
+        text += "-\n"
+
+    text += "\n🛡️ **Übernahmen / Helfer:**\n"
+
+    uebernahmen = data.get("uebernahmen", {})
+    helfer_liste = data.get("helfer", [])
+    zugeteilte_helfer = {name.lower() for name in uebernahmen.keys()}
+    freie_helfer = [name for name in helfer_liste if name.lower() not in zugeteilte_helfer]
+
+    if uebernahmen:
+        for helfer, ziel in uebernahmen.items():
+            text += f"🛡️ {helfer} → übernimmt **{ziel}**\n"
+
+    if freie_helfer:
+        for helfer in freie_helfer:
+            text += f"🛡️ {helfer} _(bereit, noch nicht zugeteilt)_\n"
+
+    if not uebernahmen and not freie_helfer:
+        text += "-\n"
+
+    text += "\n━━━━━━━━━━━━━━━\n"
+    text += "📋 **Befehle**\n\n"
+
+    text += "✅ **Ally-Char anmelden:**\n"
+    text += "`!rend Spielername`\n"
+    text += "Beispiel: `!rend Ariee`\n\n"
+
+    text += "🛡️ **Ich kann übernehmen / automatisch zuteilen:**\n"
+    text += "`!rendhelfer Name`\n"
+    text += "Beispiel: `!rendhelfer Miimi`\n"
+    text += "_Der Bot teilt diesen Helfer automatisch dem nächsten freien Ally-Char zu._\n\n"
+
+    text += "🎯 **Gezielt festlegen, wer wen übernimmt:**\n"
+    text += "`!rendbei Allyname Helfername`\n"
+    text += "Beispiel: `!rendbei Ariee Miimi`\n\n"
+
+    text += "🗑️ **Eintrag löschen:**\n"
+    text += "`!renddel Spielername`\n"
+    text += "Beispiel: `!renddel Ariee`\n\n"
+
+    text += "🔄 **Liste aktualisieren:**\n"
+    text += "`!hordenbuff`\n"
+
+    return text
+
+
+async def update_hordenbuff_post():
+    global hordenbuff_last_update_at
+
+    now = time.monotonic()
+    if now < hordenbuff_rate_limited_until:
+        rest = int(hordenbuff_rate_limited_until - now)
+        print(f"Hordenbuff-Update uebersprungen: Discord Rate Limit noch {rest} Sekunden aktiv.")
+        return
+
+    async with hordenbuff_update_lock:
+        now = time.monotonic()
+        if now < hordenbuff_rate_limited_until:
+            rest = int(hordenbuff_rate_limited_until - now)
+            print(f"Hordenbuff-Update uebersprungen: Discord Rate Limit noch {rest} Sekunden aktiv.")
+            return
+
+        if now - hordenbuff_last_update_at < HORDENBUFF_UPDATE_MIN_SECONDS:
+            print("Hordenbuff-Update uebersprungen: Aktualisierung wurde gerade erst ausgefuehrt.")
+            return
+
+        hordenbuff_last_update_at = now
+
+        channel = client.get_channel(HORDENBUFF_CHANNEL_ID)
+
+        if channel is None:
+            print("Hordenbuff-Channel nicht gefunden.")
+            return
+
+        rend = await asyncio.to_thread(get_next_horden_rend_safe)
+
+        if not rend:
+            try:
+                await channel.send(
+                    "⚠️ Es wurde kein kommender Rend-Termin im Sheet gefunden.",
+                    delete_after=15
+                )
+            except discord.HTTPException as e:
+                if is_discord_rate_limit(e):
+                    block_discord_writes_after_rate_limit(e, "Hordenbuff ohne Rend")
+                else:
+                    print(f"Hordenbuff ohne Rend konnte nicht gesendet werden: {e}")
+            return
+
+        data = load_hordenbuff_state(rend)
+        text = build_hordenbuff_text(rend, data)
+
+        try:
+            if data.get("message_id"):
+                try:
+                    msg = await channel.fetch_message(data["message_id"])
+                except discord.NotFound:
+                    msg = await channel.send(text)
+                    data["message_id"] = msg.id
+                    save_json(HORDENBUFF_FILE, data)
+                    return
+
+                await msg.edit(content=text)
+            else:
+                msg = await channel.send(text)
+                data["message_id"] = msg.id
+                save_json(HORDENBUFF_FILE, data)
+
+        except discord.HTTPException as e:
+            if is_discord_rate_limit(e):
+                block_discord_writes_after_rate_limit(e, "Hordenbuff-Update")
+                return
+
+            print(f"Hordenbuff-Update Discord-Fehler: {e}")
+
+        except Exception as e:
+            print(f"Hordenbuff-Update Fehler: {e}")
+
+
+async def add_rend_spieler(message, charakter):
+    rend = await asyncio.to_thread(get_next_horden_rend_safe)
+
+    if not rend:
+        await send_temp(
+            message.channel,
+            "⚠️ Es wurde kein kommender Rend-Termin im Sheet gefunden."
+        )
+        await delete_command_message(message)
+        return
+
+    data = load_hordenbuff_state(rend)
+
+    if charakter not in data["spieler"]:
+        data["spieler"].append(charakter)
+
+    save_json(HORDENBUFF_FILE, data)
+
+    await update_hordenbuff_post()
+    await delete_command_message(message)
+
+
+async def auto_assign_hordenbuff_helper(message, helfer_name):
+    rend = await asyncio.to_thread(get_next_horden_rend_safe)
+
+    if not rend:
+        await send_temp(
+            message.channel,
+            "⚠️ Es wurde kein kommender Rend-Termin im Sheet gefunden."
+        )
+        await delete_command_message(message)
+        return
+
+    data = load_hordenbuff_state(rend)
+    data.setdefault("helfer", [])
+    data.setdefault("uebernahmen", {})
+
+    if helfer_name not in data["helfer"]:
+        data["helfer"].append(helfer_name)
+
+    if helfer_name in data.get("uebernahmen", {}):
+        ziel = data["uebernahmen"][helfer_name]
+
+        save_json(HORDENBUFF_FILE, data)
+        await send_temp(
+            message.channel,
+            f"ℹ️ {helfer_name} ist bereits für **{ziel}** eingeteilt."
+        )
+
+        await update_hordenbuff_post()
+        await delete_command_message(message)
+        return
+
+    ziel = get_next_unassigned_char(data)
+
+    if not ziel:
+        save_json(HORDENBUFF_FILE, data)
+        await send_temp(
+            message.channel,
+            f"✅ {helfer_name} wurde als Helfer eingetragen. Aktuell ist noch kein freier Ally-Char offen."
+        )
+
+        await update_hordenbuff_post()
+        await delete_command_message(message)
+        return
+
+    data["uebernahmen"][helfer_name] = ziel
+
+    save_json(HORDENBUFF_FILE, data)
+
+    await update_hordenbuff_post()
+    await delete_command_message(message)
+
+    
+async def set_specific_hordenbuff_helper(
+    message,
+    ziel,
+    helfer_name
+):
+    rend = await asyncio.to_thread(get_next_horden_rend_safe)
+
+    if not rend:
+        await send_temp(
+            message.channel,
+            "⚠️ Es wurde kein kommender Rend-Termin im Sheet gefunden."
+        )
+        await delete_command_message(message)
+        return
+
+    data = load_hordenbuff_state(rend)
+
+    if ziel not in data.get("spieler", []):
+        data.setdefault("spieler", [])
+        data["spieler"].append(ziel)
+
+    data.setdefault("uebernahmen", {})
+    data.setdefault("helfer", [])
+
+    if helfer_name not in data["helfer"]:
+        data["helfer"].append(helfer_name)
+
+    alte_helfer = [
+        helper
+        for helper, target
+        in data["uebernahmen"].items()
+        if target.lower() == ziel.lower()
+    ]
+
+    for helper in alte_helfer:
+        del data["uebernahmen"][helper]
+
+    data["uebernahmen"][helfer_name] = ziel
+
+    save_json(HORDENBUFF_FILE, data)
+
+    await update_hordenbuff_post()
+    await delete_command_message(message)
+
+
+async def set_hordenbuff_char(message, charakter):
+    rend = await asyncio.to_thread(get_next_horden_rend_safe)
+
+    if not rend:
+        await send_temp(
+            message.channel,
+            "⚠️ Es wurde kein kommender Rend-Termin im Sheet gefunden."
+        )
+        await delete_command_message(message)
+        return
+
+    data = load_hordenbuff_state(rend)
+    helfer_name = message.author.display_name
+
+    data.setdefault("uebernahmen", {})
+    data.setdefault("helfer", [])
+
+    if helfer_name not in data["helfer"]:
+        data["helfer"].append(helfer_name)
+
+    data["uebernahmen"][helfer_name] = charakter
+
+    save_json(HORDENBUFF_FILE, data)
+
+    await update_hordenbuff_post()
+    await delete_command_message(message)
+
+
+async def delete_rend_entry(message, charakter):
+    rend = await asyncio.to_thread(get_next_horden_rend_safe)
+
+    if not rend:
+        await send_temp(
+            message.channel,
+            "⚠️ Es wurde kein kommender Rend-Termin im Sheet gefunden."
+        )
+        await delete_command_message(message)
+        return
+
+    data = load_hordenbuff_state(rend)
+
+    data["spieler"] = [
+        name for name in data.get("spieler", [])
+        if name.lower() != charakter.lower()
+    ]
+
+    remove_helpers = []
+
+    for helper, ziel in data.get("uebernahmen", {}).items():
+        if ziel.lower() == charakter.lower() or helper.lower() == charakter.lower():
+            remove_helpers.append(helper)
+
+    for helper in remove_helpers:
+        del data["uebernahmen"][helper]
+
+    data["helfer"] = [
+        name for name in data.get("helfer", [])
+        if name.lower() != charakter.lower()
+    ]
+
+    save_json(HORDENBUFF_FILE, data)
+
+    await update_hordenbuff_post()
+    await delete_command_message(message)
+
+
+async def hordenbuff_reminder_loop():
+    await client.wait_until_ready()
+
+    while not client.is_closed():
+        try:
+            # Nach Ablauf eines Rendbuffs wird der Hordenbuff-Channel automatisch bereinigt.
+            # Beispiel: Rend 19:35 -> um 19:40 wird geloescht und der naechste Post erstellt.
+            expired_rend = await asyncio.to_thread(get_recent_expired_horden_rend)
+            if expired_rend:
+                await clear_hordenbuff_channel_and_post_next(expired_rend)
+
+            rend = await asyncio.to_thread(get_next_horden_rend_safe)
+
+            if rend:
+                channel = client.get_channel(HORDENBUFF_CHANNEL_ID)
+
+                if channel:
+                    data = load_hordenbuff_state(rend)
+
+                    rend_dt = datetime.strptime(
+                        f"{rend['datum']} {rend['uhrzeit']}",
+                        "%d.%m.%Y %H:%M"
+                    )
+
+                    now = datetime.now(BERLIN_TZ).replace(tzinfo=None)
+                    minutes_left = int((rend_dt - now).total_seconds() / 60)
+
+                    reminders = {
+                        30: "⏰ **Rend in 30 Minuten!** Bitte rechtzeitig vorbereiten.",
+                        15: "⏰ **Rend in 15 Minuten!** Ally-Char/duellfähigen Char bereithalten.",
+                        5: "🚨 **Rend in 5 Minuten!** Jetzt einloggen und bereitmachen."
+                    }
+
+                    for minute, reminder_text in reminders.items():
+                        already_sent = str(minute) in data.get("reminders_sent", [])
+
+                        if minute - 1 <= minutes_left <= minute and not already_sent:
+                            await channel.send(reminder_text)
+
+                            data.setdefault("reminders_sent", [])
+                            data["reminders_sent"].append(str(minute))
+
+                            save_json(HORDENBUFF_FILE, data)
+
+                            await update_hordenbuff_post()
+
+        except Exception as e:
+            print("Fehler im Hordenbuff-Reminder:", e)
+
+        await asyncio.sleep(60)
+
+
+
+# =========================================================
+# LICHTLOOT PRIO-CHECK / DISCORD-ABGLEICH ALLE RAIDS
+# =========================================================
+
+# Alle RaidHelper-Quellen für den Discord-Abgleich.
+# ZG und AQ20 haben jeweils zwei RaidHelper-Posts.
+DISCORD_RAIDHELPER_SOURCES = {
+    # Keine festen Message-IDs: Der Bot sucht immer den neuesten passenden RaidHelper-Anmelder im jeweiligen Channel.
+    "AQ40": [
+        {"channel_id": AQ40_CHANNEL_ID}
+    ],
+    "MC": [
+        {"channel_id": 1469393982688722979}
+    ],
+    "BWL": [
+        {"channel_id": 1372324345459773595}
+    ],
+    "NAXX": [
+        {"channel_id": 1349654882952417302}
+    ],
+    "ZG": [
+        {"channel_id": 1510311947973951528},
+        {"channel_id": 1512935197060890744}
+    ],
+    "AQ20": [
+        {"channel_id": 1512935248931983450},
+        {"channel_id": 1509919374360838154}
+    ],
+    "ONY": [
+        {"channel_id": 1429084566634627215}
+    ]
+}
+
+PRIO_CHECK_UPDATE_TASKS = {}
+PRIO_SYNC_INTERVAL_SECONDS = 300
+
+
+def get_primary_raid_channel_id(raid):
+    raid = normalize_raid_name(raid)
+    sources = DISCORD_RAIDHELPER_SOURCES.get(raid, [])
+    if not sources:
+        return None
+    return sources[0].get("channel_id")
+
+
+def normalize_raid_name(value):
+    raid = str(value or "").strip().upper()
+    aliases = {
+        "ONYXIA": "ONY",
+        "ONIXIA": "ONY",
+        "NAXXRAMAS": "NAXX",
+        "AQ": "AQ40"
+    }
+    return aliases.get(raid, raid)
+
+
+def format_raid_announcement_date(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return "noch offen"
+
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%d.%m.%Y")
+        except ValueError:
+            pass
+
+    return raw
+
+
+def format_raid_announcement_time(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return "noch offen"
+    match = re.search(r"(\d{1,2}):(\d{2})", raw)
+    if match:
+        return f"{int(match.group(1)):02d}:{match.group(2)} Uhr"
+    return raw
+
+
+def build_raid_announcement_text(raid):
+    raid_short = normalize_raid_name(raid.get("raid") or raid.get("raidName") or "")
+    raid_name = str(raid.get("raidName") or raid_short or "Raid").strip()
+    raid_date = format_raid_announcement_date(raid.get("raidDate"))
+    raid_time = format_raid_announcement_time(raid.get("raidTime"))
+    player_pin = str(raid.get("playerPin") or "").strip()
+
+    text = (
+        f"📣 **Neuer Raid erstellt: {raid_name}**\n"
+        f"🗓️ **Datum:** {raid_date}\n"
+        f"⏰ **Start:** {raid_time}\n\n"
+        f"🔑 **Prio-PIN:** `{player_pin}`\n"
+        f"➡️ **Prios eintragen:** {LICHTLOOT_URL}\n\n"
+        "Bitte tragt eure Prios rechtzeitig ein."
+    )
+
+    return text[:1900]
+
+
+def get_raid_names_for_channel(channel_id):
+    result = []
+    for raid, sources in DISCORD_RAIDHELPER_SOURCES.items():
+        for source in sources:
+            if int(source["channel_id"]) == int(channel_id):
+                result.append(raid)
+                break
+    return result
+
+
+def normalize_prio_name(value):
+    text = str(value or "").strip()
+    text = re.sub(r"<@!?\d+>", "", text)
+    text = re.sub(r"<@&\d+>", "", text)
+    text = re.sub(r"[`*_~>•\-]+", " ", text)
+    text = re.sub(r"[✅❌⚠️📝👥🍀🔍📋🟢🔴🟠⚪⭐🌟🔥💚⚔️🛡️]+", " ", text)
+    text = text.strip()
+
+    if not text:
+        return ""
+
+    # Discordnamen wie "Karuzy/Nick" oder "Reike/Rydøn | Jonas" -> erster Char zählt.
+    text = re.split(r"[/|,;()]", text, maxsplit=1)[0].strip()
+    text = re.sub(r"\s+", " ", text)
+
+    # Nur realistische Char-Namen übernehmen.
+    match = re.search(r"[A-Za-zÄÖÜäöüßÀ-ÿ][A-Za-zÄÖÜäöüßÀ-ÿ'´`\-]{1,20}", text)
+    if not match:
+        return ""
+
+    return match.group(0).strip()
+
+
+def prio_key(value):
+    value = str(value or "").strip().lower()
+    value = value.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+    value = re.sub(r"[^a-z0-9]", "", value)
+    return value
+
+
+def split_prio_aliases(value):
+    """
+    Zerlegt PO-Discordnamen in Aliasnamen.
+    Wird NICHT für Raid-Helper-Anmeldungen genutzt, damit die Anmeldezahl stabil bleibt.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+
+    raw = re.sub(r"<@!?\d+>", " ", raw)
+    raw = re.sub(r"<@&\d+>", " ", raw)
+    raw = re.sub(r"<:[^:]+:\d+>", " ", raw)
+    raw = re.sub(r"\[[^\]]+\]", " ", raw)
+    raw = re.sub(r"[`*_~>•]+", " ", raw)
+    raw = re.sub(r"\bRole icon\b", " ", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"\bGildenmeister\b", " ", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"\s+", " ", raw).strip()
+
+    parts = re.split(r"[/|,;()]+", raw)
+    result = []
+    seen = set()
+
+    for part in parts:
+        candidate = normalize_prio_name(part)
+        key = prio_key(candidate)
+
+        if not candidate or not key:
+            continue
+        if len(candidate) < 2 or len(candidate) > 20:
+            continue
+        if key in seen:
+            continue
+
+        seen.add(key)
+        result.append(candidate)
+
+    return result
+
+
+def add_alias_names(target, value):
+    aliases = split_prio_aliases(value)
+
+    for alias in aliases:
+        key = prio_key(alias)
+        if alias and key:
+            target[key] = alias
+
+
+def add_name(target, value):
+    name = normalize_prio_name(value)
+    key = prio_key(name)
+    if name and key:
+        target[key] = name
+
+
+def collect_message_text(message):
+    parts = []
+
+    if getattr(message, "content", None):
+        parts.append(message.content)
+
+    for embed in getattr(message, "embeds", []) or []:
+        if embed.title:
+            parts.append(embed.title)
+        if embed.description:
+            parts.append(embed.description)
+        for field in embed.fields:
+            if field.value:
+                parts.append(str(field.value))
+                parts.append("<<FIELD_BREAK>>")
+        if embed.footer and embed.footer.text:
+            parts.append(embed.footer.text)
+
+    return "\n".join(parts)
+
+
+def extract_signup_names_from_text(text):
+    """
+    Liest Spieler aus RaidHelper-Anmeldern.
+
+    Unterstützte Formate:
+    - altes Embedformat: `5` **Karuzy/Nick**
+    - neues Textformat: :Fury: 39 Karuzy/Nick
+    - Custom-Emoji: <:Fury:123456789> 39 Karuzy/Nick
+
+    Bench und Absence werden ignoriert.
+    Es zählt immer der erste Charakter vor / oder |.
+    """
+    names = {}
+
+    valid_signup_roles = {
+        "tank", "protection",
+        "warrior", "fury", "arms",
+        "druid", "feral", "balance", "restoration",
+        "paladin", "holy1", "holy", "retribution",
+        "rogue", "combat", "assassination", "subtlety",
+        "hunter", "marksmanship", "beastmastery", "survival",
+        "priest", "discipline", "shadow",
+        "mage", "fire", "frost", "arcane",
+        "warlock", "destruction", "affliction", "demonology",
+        "shaman", "elemental", "enhancement"
+    }
+
+    ignored_words = [
+        "bench", "absence", "absent",
+        "leaderx", "datex", "signupsx", "timex", "countdownx",
+        "loot prio", "raidsheet", "invite", "consumables", "raidregeln",
+        "worte des tauens", "buffeinteilung", "standard consumables",
+        "tanks:", "ranged:", "healers:"
+    ]
+
+    def clean_line(value):
+        return str(value or "").replace("\u200e", "").replace("\u2800", "").strip()
+
+    def add_signup_candidate(raw_name):
+        raw_name = clean_line(raw_name)
+        if not raw_name:
+            return
+
+        raw_name = re.split(r"\s+:[A-Za-z0-9_]+:\s*`?\d+`?\s+", raw_name, maxsplit=1)[0].strip()
+        raw_name = re.split(r"\s+<:[^:>]+:\d+>\s*`?\d+`?\s+", raw_name, maxsplit=1)[0].strip()
+
+        raw_name = raw_name.replace("**", "").replace("`", "").strip()
+        candidate = normalize_prio_name(raw_name)
+        key = prio_key(candidate)
+
+        if candidate and key:
+            names[key] = candidate
+
+    for raw_field in str(text or "").split("\n<<FIELD_BREAK>>\n"):
+        field = clean_line(raw_field)
+        if not field:
+            continue
+
+        for raw_line in field.splitlines():
+            line = clean_line(raw_line)
+            if not line:
+                continue
+
+            lower_line = line.lower()
+
+            if any(word in lower_line for word in ignored_words):
+                continue
+
+            if re.match(r"^:([A-Za-z0-9_]+):\s*[A-Za-zÄÖÜäöüß ]+\s*\(\d+(?:/\d+)?\)", line):
+                continue
+            if re.match(r"^<:([A-Za-z0-9_]+):\d+>\s*[A-Za-zÄÖÜäöüß ]+\s*\(\d+(?:/\d+)?\)", line):
+                continue
+
+            old_match = re.search(r"`\d+`\s*\*\*([^*]+)\*\*", line)
+            if old_match:
+                add_signup_candidate(old_match.group(1))
+                continue
+
+            new_match = re.search(r"^:([A-Za-z0-9_]+):\s*(?:\*\*)?`?\d+`?(?:\*\*)?\s+(.+)$", line)
+            if new_match:
+                role = prio_key(new_match.group(1))
+                if role in valid_signup_roles:
+                    add_signup_candidate(new_match.group(2))
+                continue
+
+            custom_match = re.search(r"^<:([A-Za-z0-9_]+):\d+>\s*(?:\*\*)?`?\d+`?(?:\*\*)?\s+(.+)$", line)
+            if custom_match:
+                role = prio_key(custom_match.group(1))
+                if role in valid_signup_roles:
+                    add_signup_candidate(custom_match.group(2))
+                continue
+
+    return names
+
+
+def raid_search_terms(raid):
+    raid = normalize_raid_name(raid)
+    terms = {raid.lower()}
+
+    aliases = {
+        "ONY": ["ony", "onyxia", "onixia"],
+        "NAXX": ["naxx", "naxxramas"],
+        "MC": ["mc", "molten core"],
+        "BWL": ["bwl", "blackwing lair"],
+        "AQ40": ["aq40", "ahn'qiraj", "ahn qiraj", "tempel von ahn", "temple of ahn"],
+        "AQ20": ["aq20", "ruins of ahn", "ruinen von ahn"],
+        "ZG": ["zg", "zul'gurub", "zulgurub"],
+    }
+
+    for term in aliases.get(raid, []):
+        terms.add(term.lower())
+
+    return terms
+
+
+def text_mentions_raid(raid, text):
+    lower = str(text or "").lower()
+    return any(term and term in lower for term in raid_search_terms(raid))
+
+
+def extract_raid_datetime_object_from_text(text):
+    date_text, time_text = extract_raid_datetime_from_text(text)
+
+    if not date_text or not time_text:
+        return None
+
+    try:
+        return BERLIN_TZ.localize(
+            datetime.strptime(f"{date_text} {time_text}", "%d.%m.%Y %H:%M")
+        )
+    except Exception:
+        return None
+
+
+async def find_latest_raidhelper_message(raid, channel, limit=500):
+    """
+    Sucht im Raid-Channel den neuesten passenden RaidHelper-Anmelder.
+
+    Wichtig:
+    - Keine feste Message-ID.
+    - Content UND Embeds werden geprüft.
+    - Der neueste Post mit echten Anmeldungen wird verwendet.
+    """
+    signup_candidates = []
+    dated_candidates = []
+    fallback_candidates = []
+
+    async for msg in channel.history(limit=limit):
+        text = collect_message_text(msg)
+        if not text.strip():
+            continue
+
+        signups = extract_signup_names_from_text(text)
+        event_dt = extract_raid_datetime_object_from_text(text)
+        mentions_raid = text_mentions_raid(raid, text)
+
+        item = {
+            "message": msg,
+            "signup_count": len(signups),
+            "event_dt": event_dt,
+            "mentions_raid": mentions_raid,
+        }
+
+        if len(signups) > 0 and mentions_raid:
+            signup_candidates.append(item)
+        elif len(signups) > 0:
+            signup_candidates.append(item)
+        elif event_dt and mentions_raid:
+            dated_candidates.append(item)
+        elif event_dt:
+            dated_candidates.append(item)
+        else:
+            fallback_candidates.append(item)
+
+    def newest_message_key(item):
+        return item["message"].created_at.timestamp()
+
+    if signup_candidates:
+        signup_candidates.sort(key=newest_message_key, reverse=True)
+        return signup_candidates[0]["message"]
+
+    if dated_candidates:
+        dated_candidates.sort(key=newest_message_key, reverse=True)
+        return dated_candidates[0]["message"]
+
+    if fallback_candidates:
+        fallback_candidates.sort(key=newest_message_key, reverse=True)
+        return fallback_candidates[0]["message"]
+
+    return None
+
+async def get_raid_helper_message(raid, source):
+    channel = client.get_channel(int(source["channel_id"])) or await client.fetch_channel(int(source["channel_id"]))
+
+    # Alte Kompatibilität: Falls irgendwo doch noch eine message_id hinterlegt ist, darf sie genutzt werden.
+    # Standard ist aber automatische Suche.
+    message_id = source.get("message_id")
+    if message_id:
+        try:
+            return await channel.fetch_message(int(message_id))
+        except Exception as e:
+            print(f"Feste RaidHelper-Message-ID nicht gefunden, suche automatisch weiter: {e}")
+
+    msg = await find_latest_raidhelper_message(raid, channel)
+    if not msg:
+        raise RuntimeError(f"Keine passende RaidHelper-Nachricht im Channel {source['channel_id']} für {raid} gefunden.")
+
+    source["resolved_message_id"] = str(msg.id)
+    return msg
+
+
+async def get_raid_signup_names_from_source(raid, source):
+    raid_message = await get_raid_helper_message(raid, source)
+    text = collect_message_text(raid_message)
+    return extract_signup_names_from_text(text)
+
+
+def extract_raid_datetime_from_text(text):
+    """
+    Liest Datum/Uhrzeit aus RaidHelper.
+    Unterstützt:
+    - Discord-Unix-Timestamp <t:...>
+    - 16.06.2026 18:45
+    - 10. Juni 2026 + :TimeX: 19:45
+    """
+    raw = str(text or "")
+
+    timestamp_match = re.search(r"<t:(\d+):[dDfFtTR]>", raw)
+    if timestamp_match:
+        unix_ts = int(timestamp_match.group(1))
+        dt = datetime.fromtimestamp(unix_ts, BERLIN_TZ)
+        return dt.strftime("%d.%m.%Y"), dt.strftime("%H:%M")
+
+    date_text = ""
+    time_text = ""
+
+    numeric_date_match = re.search(r"(\d{1,2})\.(\d{1,2})\.(\d{4})", raw)
+    if numeric_date_match:
+        day, month, year = numeric_date_match.groups()
+        date_text = f"{int(day):02d}.{int(month):02d}.{year}"
+    else:
+        month_names = {
+            "januar": 1, "jan": 1,
+            "februar": 2, "feb": 2,
+            "maerz": 3, "märz": 3, "mrz": 3,
+            "april": 4, "apr": 4,
+            "mai": 5,
+            "juni": 6, "jun": 6,
+            "juli": 7, "jul": 7,
+            "august": 8, "aug": 8,
+            "september": 9, "sep": 9,
+            "oktober": 10, "okt": 10,
+            "november": 11, "nov": 11,
+            "dezember": 12, "dez": 12,
+        }
+
+        german_date_match = re.search(
+            r"(\d{1,2})\.??\s+([A-Za-zÄÖÜäöüß]+)\s+(\d{4})",
+            raw,
+            re.IGNORECASE
+        )
+        if german_date_match:
+            day, month_name, year = german_date_match.groups()
+            month = month_names.get(month_name.lower())
+            if month:
+                date_text = f"{int(day):02d}.{month:02d}.{year}"
+
+    time_line_match = re.search(
+        r"(?:TimeX|Uhrzeit|Zeit)\s*:?\s*(\d{1,2}:\d{2})",
+        raw,
+        re.IGNORECASE
+    )
+    if time_line_match:
+        time_text = time_line_match.group(1)
+    else:
+        time_match = re.search(r"(\d{1,2}:\d{2})", raw)
+        if time_match:
+            time_text = time_match.group(1)
+
+    if date_text and time_text:
+        hour, minute = time_text.split(":")
+        return date_text, f"{int(hour):02d}:{minute}"
+
+    return "", ""
+
+
+async def get_raid_event_info_from_source(raid, source):
+    raid_message = await get_raid_helper_message(raid, source)
+    text = collect_message_text(raid_message)
+    raid_date, raid_time = extract_raid_datetime_from_text(text)
+
+    return {
+        "raid": raid,
+        "raidDate": raid_date,
+        "raidTime": raid_time,
+        "discordChannelId": str(source["channel_id"]),
+        "raidHelperMessageId": str(source.get("resolved_message_id") or source.get("message_id") or "")
+    }
+
+
+# Kompatibilität für alte Debug-Befehle/Funktionsnamen
+async def get_aq40_raid_helper_message():
+    return await get_raid_helper_message("AQ40", DISCORD_RAIDHELPER_SOURCES["AQ40"][0])
+
+
+async def get_aq40_signup_names():
+    return await get_raid_signup_names_from_source("AQ40", DISCORD_RAIDHELPER_SOURCES["AQ40"][0])
+
+
+async def get_aq40_event_info():
+    return await get_raid_event_info_from_source("AQ40", DISCORD_RAIDHELPER_SOURCES["AQ40"][0])
+
+
+async def get_naxx_raid_helper_message():
+    return await get_raid_helper_message("NAXX", DISCORD_RAIDHELPER_SOURCES["NAXX"][0])
+
+
+async def get_naxx_signup_names():
+    return await get_raid_signup_names_from_source("NAXX", DISCORD_RAIDHELPER_SOURCES["NAXX"][0])
+
+
+async def get_naxx_event_info():
+    return await get_raid_event_info_from_source("NAXX", DISCORD_RAIDHELPER_SOURCES["NAXX"][0])
+
+
+def lichtloot_get(params):
+    query = urllib.parse.urlencode(params)
+    url = LICHTLOOT_API_URL + "?" + query
+
+    with urllib.request.urlopen(url, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def lichtloot_post(payload):
+    data = json.dumps(payload).encode("utf-8")
+
+    request = urllib.request.Request(
+        LICHTLOOT_API_URL,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+async def get_prio_names_for_event(raid, event_info):
+    """
+    Ermittelt die richtige LichtLoot-RaidID über Raid + Datum + Uhrzeit des neuesten RaidHelper-Anmelders.
+
+    Wenn das Apps Script mehrere passende Raids findet, verwendet es die dort ausgewählte neueste RaidID
+    (selectedBy / matchedCount werden in den Metadaten mitgeführt).
+    """
+    raid = normalize_raid_name(raid)
+
+    if not event_info.get("raidDate") or not event_info.get("raidTime"):
+        raise RuntimeError(f"Raid-Helper Datum/Uhrzeit konnten nicht gelesen werden für {raid}.")
+
+    raid_result = await asyncio.to_thread(lichtloot_get, {
+        "action": "getRaidByDateTime",
+        "raid": raid,
+        "date": event_info["raidDate"],
+        "time": event_info["raidTime"]
+    })
+
+    if not raid_result.get("success") or not raid_result.get("raidId"):
+        raise RuntimeError(
+            "Kein passender LichtLoot-Raid gefunden für "
+            + raid + " "
+            + event_info.get("raidDate", "") + " " + event_info.get("raidTime", "")
+            + ": " + str(raid_result)
+        )
+
+    selected_raid_id = raid_result["raidId"]
+
+    prio_result = await asyncio.to_thread(lichtloot_get, {
+        "action": "getPriosByRaidId",
+        "raidId": selected_raid_id
+    })
+
+    names = {}
+    for entry in prio_result.get("prios", []):
+        add_name(names, entry.get("Spieler") or entry.get("player"))
+
+    meta = {
+        "event": event_info,
+        "raid": raid_result,
+        "prioResult": prio_result,
+        "raidId": selected_raid_id,
+        "raidDate": raid_result.get("raidDate") or event_info.get("raidDate"),
+        "raidTime": raid_result.get("raidTime") or event_info.get("raidTime"),
+        "matchedCount": raid_result.get("matchedCount", 1),
+        "selectedBy": raid_result.get("selectedBy", ""),
+        "playerPin": raid_result.get("playerPin", ""),
+        "leadPin": raid_result.get("leadPin", ""),
+        "status": raid_result.get("status", "")
+    }
+
+    return names, meta
+
+
+async def get_aq40_prio_names():
+    event_info = await get_aq40_event_info()
+    return await get_prio_names_for_event("AQ40", event_info)
+
+
+async def get_naxx_prio_names():
+    event_info = await get_naxx_event_info()
+    return await get_prio_names_for_event("NAXX", event_info)
+
+
+
+def build_discord_signup_rows(raid, event_info, signups, source_name="Discord"):
+    rows = []
+    now = datetime.now(BERLIN_TZ).isoformat()
+
+    for char_name in sorted(signups.values(), key=lambda x: x.lower()):
+        rows.append({
+            "char": char_name,
+            "spieler": char_name,
+            "klasse": "",
+            "status": "angemeldet",
+            "discordName": char_name,
+            "quelle": source_name,
+            "zeitstempel": now
+        })
+
+    return rows
+
+
+async def sync_discord_signup_rows_for_source(raid, source):
+    raid = normalize_raid_name(raid)
+
+    raid_message = await get_raid_helper_message(raid, source)
+    text_msg = collect_message_text(raid_message)
+    raid_date, raid_time = extract_raid_datetime_from_text(text_msg)
+    signups = extract_signup_names_from_text(text_msg)
+
+    if not raid_date or not raid_time:
+        raise RuntimeError(f"Datum/Uhrzeit konnten für {raid} nicht aus Discord gelesen werden.")
+
+    rows = build_discord_signup_rows(
+        raid,
+        {
+            "raidDate": raid_date,
+            "raidTime": raid_time,
+            "raidHelperMessageId": str(raid_message.id),
+            "discordChannelId": str(source["channel_id"])
+        },
+        signups,
+        source_name=f"Discord:{source['channel_id']}:{raid_message.id}"
+    )
+
+    payload = {
+        "action": "saveDiscordSignupRows",
+        "raid": raid,
+        "raidDate": raid_date,
+        "raidTime": raid_time,
+        "discordChannelId": str(source["channel_id"]),
+        "raidHelperMessageId": str(raid_message.id),
+        "rows": rows
+    }
+
+    result = await asyncio.to_thread(lichtloot_post, payload)
+
+    return {
+        "raid": raid,
+        "raidDate": raid_date,
+        "raidTime": raid_time,
+        "messageId": str(raid_message.id),
+        "channelId": str(source["channel_id"]),
+        "signups": signups,
+        "rows": rows,
+        "apiResult": result
+    }
+
+
+async def sync_discord_signup_rows(raid):
+    raid = normalize_raid_name(raid)
+    sources = DISCORD_RAIDHELPER_SOURCES.get(raid, [])
+
+    if not sources:
+        raise RuntimeError(f"Keine Discord-RaidHelper-Quelle für {raid} hinterlegt.")
+
+    results = []
+    for source in sources:
+        results.append(await sync_discord_signup_rows_for_source(raid, source))
+
+    return results
+
+
+
+def extract_po_from_line(line):
+    raw = str(line or "").strip()
+    if not raw:
+        return None
+
+    # Erkennt: "PO Item", "P0 Item", "Prio: PO Item".
+    match = re.search(r"\b(P0|PO)\b\s*[:\-–—]?\s*(.+)$", raw, re.IGNORECASE)
+    if not match:
+        return None
+
+    item = match.group(2).strip()
+    item = re.sub(r"<[^>]+>", "", item).strip()
+    item = item[:120]
+
+    if not item or len(item) < 3:
+        return None
+
+    return item
+
+
+async def get_po_entries_from_channel(channel_id, limit=800):
+    channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+    entries = []
+    names = {}
+
+    async for msg in channel.history(limit=limit):
+        if msg.author == client.user:
+            continue
+
+        message_text = collect_message_text(msg)
+        item = None
+
+        for line in message_text.splitlines():
+            item = extract_po_from_line(line)
+            if item:
+                break
+
+        if not item:
+            continue
+
+        display_name = getattr(msg.author, "display_name", "") or str(msg.author)
+        aliases = split_prio_aliases(display_name)
+
+        if not aliases:
+            fallback_line = message_text.splitlines()[0] if message_text.splitlines() else ""
+            aliases = split_prio_aliases(fallback_line)
+
+        if not aliases:
+            continue
+
+        main_player = aliases[0]
+
+        for alias in aliases:
+            key = prio_key(alias)
+            if key:
+                names[key] = alias
+
+        entries.append({
+            "player": main_player,
+            "aliases": aliases,
+            "item": item,
+            "messageId": str(msg.id),
+            "createdAt": msg.created_at.isoformat()
+        })
+
+    return names, entries
+
+
+async def get_po_entries_for_source(source, limit=800):
+    return await get_po_entries_from_channel(source["channel_id"], limit=limit)
+
+
+async def get_aq40_po_entries(limit=800):
+    return await get_po_entries_for_source(DISCORD_RAIDHELPER_SOURCES["AQ40"][0], limit=limit)
+
+
+def sorted_names(name_map, keys):
+    return sorted([name_map[k] for k in keys if k in name_map], key=lambda x: x.lower())
+
+
+def build_prio_check_result(raid, signups, prios, po_names, po_entries, prio_meta=None):
+    signup_keys = set(signups.keys())
+    prio_keys = set(prios.keys())
+    po_keys = set(po_names.keys())
+
+    angemeldet_ohne_prio = signup_keys - prio_keys
+    prio_ohne_anmeldung = prio_keys - signup_keys
+    po_ohne_prio = po_keys - prio_keys
+    po_ohne_anmeldung = po_keys - signup_keys
+    vollstaendig = signup_keys & prio_keys
+
+    return {
+        "raid": raid,
+        "raidId": (prio_meta or {}).get("raidId", ""),
+        "raidDate": (prio_meta or {}).get("raidDate", ""),
+        "raidTime": (prio_meta or {}).get("raidTime", ""),
+        "createdAt": datetime.now(BERLIN_TZ).isoformat(),
+        "counts": {
+            "signups": len(signup_keys),
+            "prios": len(prio_keys),
+            "po": len(po_keys),
+            "complete": len(vollstaendig)
+        },
+        "raidInfo": prio_meta or {},
+        "signups": sorted_names(signups, signup_keys),
+        "prios": sorted_names(prios, prio_keys),
+        "poPlayers": sorted_names(po_names, po_keys),
+        "poEntries": po_entries,
+        "missingPrio": sorted_names(signups, angemeldet_ohne_prio),
+        "prioWithoutSignup": sorted_names(prios, prio_ohne_anmeldung),
+        "poWithoutPrio": sorted_names(po_names, po_ohne_prio),
+        "poWithoutSignup": sorted_names(po_names, po_ohne_anmeldung),
+        "complete": sorted_names(signups, vollstaendig)
+    }
+
+
+def build_prio_check_text(result, report_title=None):
+    raid = result.get("raid", "")
+    if not report_title:
+        report_title = f"{raid} Prio-Check"
+
+    today = datetime.now(BERLIN_TZ).strftime("%d.%m.%Y %H:%M")
+    counts = result.get("counts", {})
+
+    text = f"📋 **{report_title}**\n"
+    text += f"🕒 Stand: {today}\n\n"
+    text += f"👥 Angemeldet: **{counts.get('signups', 0)}**\n"
+    text += f"📝 Prios gesetzt: **{counts.get('prios', 0)}**\n"
+    text += f"🍀 PO-Meldungen: **{counts.get('po', 0)}**\n"
+    text += f"✅ Vollständig: **{counts.get('complete', 0)}**\n\n"
+
+    sections = [
+        ("⚠️ Angemeldet ohne Prio", result.get("missingPrio", [])),
+        ("⚠️ PO gesetzt, aber keine Prio", result.get("poWithoutPrio", [])),
+    ]
+
+    for title, values in sections:
+        text += f"**{title} ({len(values)})**\n"
+        if values:
+            for name in values[:40]:
+                text += f"- {name}\n"
+            if len(values) > 40:
+                text += f"- … und {len(values) - 40} weitere\n"
+        else:
+            text += "- keine\n"
+        text += "\n"
+
+    if result.get("missingPrio"):
+        text += "Bitte tragt eure LichtLoot-Prios noch ein.\n"
+
+    return text[:1900]
+
+
+async def refresh_prio_check_for_source(raid, source, post_to_discord=False, report_title=None):
+    raid = normalize_raid_name(raid)
+
+    signups = await get_raid_signup_names_from_source(raid, source)
+    event_info = await get_raid_event_info_from_source(raid, source)
+    prios, prio_meta = await get_prio_names_for_event(raid, event_info)
+    po_names, po_entries = await get_po_entries_for_source(source)
+
+    result = build_prio_check_result(raid, signups, prios, po_names, po_entries, prio_meta)
+
+    await asyncio.to_thread(lichtloot_post, {
+        "action": "savePrioCheck",
+        "raid": raid,
+        "raidId": result.get("raidId", ""),
+        "payload": result
+    })
+
+    if post_to_discord:
+        channel = client.get_channel(int(source["channel_id"])) or await client.fetch_channel(int(source["channel_id"]))
+        await channel.send(build_prio_check_text(result, report_title))
+
+    return result
+
+
+async def refresh_prio_check(raid, post_to_discord=False, report_title=None):
+    raid = normalize_raid_name(raid)
+    sources = DISCORD_RAIDHELPER_SOURCES.get(raid, [])
+
+    if not sources:
+        raise RuntimeError(f"Keine Discord-RaidHelper-Quelle für {raid} hinterlegt.")
+
+    results = []
+    for source in sources:
+        try:
+            result = await refresh_prio_check_for_source(
+                raid,
+                source,
+                post_to_discord=post_to_discord,
+                report_title=report_title or f"{raid} Prio-Check"
+            )
+            if result:
+                results.append(result)
+        except Exception as e:
+            print(f"Fehler beim {raid} Prio-Check für Quelle {source}:", e)
+            if post_to_discord:
+                try:
+                    channel = client.get_channel(int(source["channel_id"])) or await client.fetch_channel(int(source["channel_id"]))
+                    await channel.send(f"⚠️ Der {raid} Prio-Check konnte nicht erstellt werden. Bitte Bot-Konsole prüfen.")
+                except:
+                    pass
+
+    return results
+
+
+async def refresh_aq40_prio_check(post_to_discord=False, report_title="AQ40 Prio-Check"):
+    results = await refresh_prio_check("AQ40", post_to_discord=post_to_discord, report_title=report_title)
+    return results[0] if results else None
+
+
+async def refresh_all_prio_checks():
+    all_results = {}
+    for raid in DISCORD_RAIDHELPER_SOURCES.keys():
+        results = await refresh_prio_check(raid, post_to_discord=False)
+        all_results[raid] = results
+    return all_results
+
+
+def schedule_prio_check_update(raid="AQ40", reason=""):
+    raid = normalize_raid_name(raid)
+    old_task = PRIO_CHECK_UPDATE_TASKS.get(raid)
+
+    if old_task and not old_task.done():
+        old_task.cancel()
+
+    async def delayed_update():
+        try:
+            await asyncio.sleep(20)
+            await refresh_prio_check(raid, post_to_discord=False)
+            print(f"{raid} Prio-Check aktualisiert: {reason}")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"Fehler beim verzögerten {raid} Prio-Check:", e)
+
+    PRIO_CHECK_UPDATE_TASKS[raid] = client.loop.create_task(delayed_update())
+
+
+async def prio_report_loop():
+    await client.wait_until_ready()
+
+    while not client.is_closed():
+        try:
+            now = datetime.now(BERLIN_TZ)
+            state = load_json(PRIO_REPORT_FILE, {})
+            today_key = now.strftime("%Y-%m-%d")
+
+            if (
+                now.hour == PRIO_REPORT_HOUR
+                and now.minute >= PRIO_REPORT_MINUTE
+                and state.get("last_aq40_report") != today_key
+            ):
+                await refresh_aq40_prio_check(
+                    post_to_discord=True,
+                    report_title="AQ40 Prio-Report"
+                )
+                state["last_aq40_report"] = today_key
+                save_json(PRIO_REPORT_FILE, state)
+
+        except Exception as e:
+            print("Fehler im Prio-Report-Loop:", e)
+
+        await asyncio.sleep(60)
+
+
+async def raid_announcement_loop():
+    await client.wait_until_ready()
+
+    while not client.is_closed():
+        try:
+            state = load_json(RAID_ANNOUNCEMENT_FILE, {})
+            posted_ids = set(str(x) for x in state.get("posted_raid_ids", []))
+            initialized = bool(state.get("initialized"))
+
+            result = await asyncio.to_thread(lichtloot_get, {
+                "action": "getActiveRaids",
+                "t": int(time.time())
+            })
+
+            raids = result.get("allRaids") or result.get("raids") or []
+            active_ids = set()
+            new_posts = []
+
+            for raid in raids:
+                raid_id = str(raid.get("raidId") or "").strip()
+                raid_name = normalize_raid_name(raid.get("raid") or raid.get("raidName") or "")
+                player_pin = str(raid.get("playerPin") or "").strip()
+
+                if not raid_id or not raid_name or not player_pin:
+                    continue
+
+                active_ids.add(raid_id)
+
+                if raid_id not in posted_ids:
+                    if initialized:
+                        new_posts.append(raid)
+                    posted_ids.add(raid_id)
+
+            for raid in new_posts:
+                raid_name = normalize_raid_name(raid.get("raid") or raid.get("raidName") or "")
+                channel_id = get_primary_raid_channel_id(raid_name)
+
+                if not channel_id:
+                    print(f"Kein Raid-Channel fuer {raid_name} hinterlegt.")
+                    continue
+
+                channel = client.get_channel(int(channel_id))
+                if channel is None:
+                    channel = await client.fetch_channel(int(channel_id))
+
+                try:
+                    await channel.send(build_raid_announcement_text(raid))
+                    print(f"Raid-Ankuendigung gepostet: {raid.get('raidId')} in {channel_id}")
+                    await asyncio.sleep(2)
+                except discord.HTTPException as e:
+                    if is_discord_rate_limit(e):
+                        block_discord_writes_after_rate_limit(e, "Raid-Ankuendigung")
+                        break
+                    print(f"Raid-Ankuendigung fehlgeschlagen fuer {raid.get('raidId')}: {e}")
+
+            state["posted_raid_ids"] = sorted(posted_ids)
+            state["known_active_raid_ids"] = sorted(active_ids)
+            state["initialized"] = True
+            state["updated_at"] = datetime.now(BERLIN_TZ).isoformat()
+            save_json(RAID_ANNOUNCEMENT_FILE, state)
+
+        except Exception as e:
+            print("Fehler im Raid-Ankuendigungs-Loop:", e)
+
+        await asyncio.sleep(RAID_ANNOUNCEMENT_CHECK_SECONDS)
+
+
+async def prio_sync_loop():
+    await client.wait_until_ready()
+
+    while not client.is_closed():
+        try:
+            await refresh_all_prio_checks()
+            print("Discord-Abgleich für alle Raids aktualisiert.")
+        except Exception as e:
+            print("Fehler im raidübergreifenden Discord-Abgleich:", e)
+
+        await asyncio.sleep(PRIO_SYNC_INTERVAL_SECONDS)
+
+async def handle_ticker_update(message):
+    if message.channel.id != TICKER_CHANNEL_ID:
+        return
+
+    new_buffs = parse_ticker_message(message.content)
+
+    if not new_buffs:
+        return
+
+    old_data = load_json(DATA_FILE, [])
+
+    existing_keys = {
+        make_buff_key(b)
+        for b in old_data
+    }
+
+    for buff in new_buffs:
+        key = make_buff_key(buff)
+
+        if key not in existing_keys:
+            old_data.append(buff)
+            existing_keys.add(key)
+
+    save_json(DATA_FILE, old_data)
+
+    print(f"{len(new_buffs)} Worldbuffs aus Ticker übernommen oder geprüft.")
+
+    await update_worldbuff_post()
+
+    if any(normalize_buff(b["buff"]) == "Rend" for b in new_buffs):
+        await update_hordenbuff_post()
+
+
+@client.event
+async def on_ready():
+    print(f"Bot online als {client.user}")
+    print(f"Überwache Ticker-Channel: {TICKER_CHANNEL_ID}")
+    print(f"Postet Übersicht in Channel: {POST_CHANNEL_ID}")
+    print(f"Hordenbuff-Channel: {HORDENBUFF_CHANNEL_ID}")
+    print("Version 4.9 gestartet: Raid-Ankuendigungen und DC-Abgleich aktiv.")
+
+    if not hasattr(client, "hordenbuff_task_started"):
+        client.hordenbuff_task_started = True
+        client.loop.create_task(hordenbuff_reminder_loop())
+
+    if not hasattr(client, "raid_announcement_task_started"):
+        client.raid_announcement_task_started = True
+        client.loop.create_task(raid_announcement_loop())
+
+    # Automatischer AQ40-Prio-Report deaktiviert.
+    # if not hasattr(client, "prio_report_task_started"):
+    #     client.prio_report_task_started = True
+    #     client.loop.create_task(prio_report_loop())
+
+    # Raidübergreifender DC-Hintergrundsync deaktiviert.
+    # if not hasattr(client, "prio_sync_task_started"):
+    #     client.prio_sync_task_started = True
+    #     client.loop.create_task(prio_sync_loop())
+
+
+@client.event
+async def on_message_edit(before, after):
+    if after.author == client.user:
+        return
+
+    #for raid in get_raid_names_for_channel(after.channel.id):
+    #  schedule_prio_check_update(raid, f"Nachricht im {raid}-Channel bearbeitet")
+
+    await handle_ticker_update(after)
+
+
+@client.event
+async def on_message(message):
+    if message.author == client.user:
+        return
+
+    content = message.content.strip()
+    lower = content.lower()
+
+    if lower.startswith("!lldebug"):
+        parts = lower.replace(".", "").split()
+        raid = normalize_raid_name(parts[1] if len(parts) > 1 else "AQ40")
+        sources = DISCORD_RAIDHELPER_SOURCES.get(raid, [])
+
+        if not sources:
+            await message.channel.send(f"⚠️ Kein RaidHelper-Eintrag für **{raid}** gefunden.")
+            return
+
+        lines = [f"🧪 **LLDEBUG {raid} – nur Anmeldungen**"]
+
+        for idx, source in enumerate(sources, start=1):
+            try:
+                raid_message = await get_raid_helper_message(raid, source)
+                text_msg = collect_message_text(raid_message)
+                raid_date, raid_time = extract_raid_datetime_from_text(text_msg)
+                signups = extract_signup_names_from_text(text_msg)
+
+                lines.append(
+                    f"Quelle {idx}: Message `{raid_message.id}`\n"
+                    f"Discord: **{raid_date or '-'}** um **{raid_time or '-'}**\n"
+                    f"Anmeldungen erkannt: **{len(signups)}**"
+                )
+
+                payload_rows = build_discord_signup_rows(
+                    raid,
+                    {
+                        "raidDate": raid_date,
+                        "raidTime": raid_time,
+                        "raidHelperMessageId": str(raid_message.id),
+                        "discordChannelId": str(source["channel_id"])
+                    },
+                    signups,
+                    source_name=f"Discord:{source['channel_id']}:{raid_message.id}"
+                )
+
+                lines.append(f"Sheet-Zeilen vorbereitet: **{len(payload_rows)}**")
+                lines.append("Noch nicht gespeichert. Zum Speichern: `!" + raid.lower() + "check`")
+
+            except Exception as e:
+                lines.append(f"Quelle {idx}: ⚠️ Fehler: {e}")
+
+        await message.channel.send("\n".join(lines)[:1900])
+        try:
+            await delete_command_message(message)
+        except:
+            pass
+        return
+
+    if lower.startswith("!priocheck") or lower.endswith("check"):
+        parts = lower.split()
+        command = parts[0] if parts else lower
+
+        command_map = {
+            "!aq40check": "AQ40",
+            "!naxxcheck": "NAXX",
+            "!mccheck": "MC",
+            "!bwlcheck": "BWL",
+            "!zgcheck": "ZG",
+            "!aq20check": "AQ20",
+            "!onycheck": "ONY",
+            "!onyxiacheck": "ONY",
+            "!onixiacheck": "ONY"
+        }
+
+        if lower.startswith("!priocheck") and len(parts) > 1:
+            raid = normalize_raid_name(parts[1])
+        elif command in command_map:
+            raid = command_map[command]
+        else:
+            channel_raids = get_raid_names_for_channel(message.channel.id)
+            raid = channel_raids[0] if channel_raids else "AQ40"
+
+        await message.channel.send(f"🔄 **{raid} DC-Anmeldungen werden ins Sheet geschrieben...**")
+
+        try:
+            results = await asyncio.wait_for(sync_discord_signup_rows(raid), timeout=90)
+
+            total = sum(len(r.get("rows", [])) for r in results)
+            details = []
+            for r in results:
+                api = r.get("apiResult", {})
+                details.append(
+                    f"Quelle `{r.get('messageId')}`: **{len(r.get('rows', []))}** Zeilen | "
+                    f"RaidID `{api.get('raidId', '-')}` | gespeichert `{api.get('written', '-')}`"
+                )
+
+            await message.channel.send(
+                f"✅ **{raid} DC-Anmeldungen gespeichert.**\n"
+                f"Gesamt: **{total}**\n" +
+                "\n".join(details)
+            )
+
+            await delete_command_message(message)
+
+        except asyncio.TimeoutError:
+            await message.channel.send(f"⏱️ **{raid} Timeout** – Speichern der Anmeldungen dauerte länger als 90 Sekunden.")
+        except Exception as e:
+            err = str(e)
+            if len(err) > 1500:
+                err = err[:1500] + " …"
+            await message.channel.send(f"⚠️ **{raid} Fehler beim Speichern der DC-Anmeldungen:**\n```{err}```")
+        return
+
+    if lower.startswith("!lldebug"):
+        parts = lower.replace(".", "").split()
+        raid = normalize_raid_name(parts[1] if len(parts) > 1 else "AQ40")
+        sources = DISCORD_RAIDHELPER_SOURCES.get(raid, [])
+
+        if not sources:
+            await message.channel.send(f"⚠️ Kein RaidHelper-Eintrag für **{raid}** gefunden.")
+            return
+
+        await message.channel.send(f"🧪 **LLDEBUG {raid} gestartet**")
+
+        lines = [f"🧪 **LLDEBUG {raid}**"]
+
+        for idx, source in enumerate(sources, start=1):
+            try:
+                raid_message = await get_raid_helper_message(raid, source)
+                text_msg = collect_message_text(raid_message)
+                raid_date, raid_time = extract_raid_datetime_from_text(text_msg)
+                signups = extract_signup_names_from_text(text_msg)
+
+                lines.append(
+                    f"Quelle {idx}: Message `{raid_message.id}`\n"
+                    f"Discord: **{raid_date or '-'}** um **{raid_time or '-'}**\n"
+                    f"Anmeldungen: **{len(signups)}**"
+                )
+
+                if not raid_date or not raid_time:
+                    lines.append("⚠️ Datum/Uhrzeit fehlen, API wird nicht aufgerufen.")
+                    continue
+
+                raid_result = await asyncio.wait_for(
+                    asyncio.to_thread(lichtloot_get, {
+                        "action": "getRaidByDateTime",
+                        "raid": raid,
+                        "date": raid_date,
+                        "time": raid_time
+                    }),
+                    timeout=25
+                )
+
+                lines.append(
+                    f"RaidID: `{raid_result.get('raidId', '-')}`\n"
+                    f"success: `{raid_result.get('success')}` | "
+                    f"matchedCount: `{raid_result.get('matchedCount', 0)}` | "
+                    f"selectedBy: `{raid_result.get('selectedBy', '-')}`"
+                )
+
+                if raid_result.get("raidId"):
+                    prio_result = await asyncio.wait_for(
+                        asyncio.to_thread(lichtloot_get, {
+                            "action": "getPriosByRaidId",
+                            "raidId": raid_result["raidId"]
+                        }),
+                        timeout=25
+                    )
+                    lines.append(f"Prios geladen: **{len(prio_result.get('prios', []))}**")
+
+            except asyncio.TimeoutError:
+                lines.append(f"Quelle {idx}: ⏱️ Timeout bei LichtLoot-API.")
+            except Exception as e:
+                lines.append(f"Quelle {idx}: ⚠️ Fehler: {e}")
+
+        await message.channel.send("\n".join(lines)[:1900])
+        try:
+            await delete_command_message(message)
+        except:
+            pass
+        return
+
+    if lower.startswith("!debuglichtloot"):
+        parts = lower.replace(".", "").split()
+        raid = normalize_raid_name(parts[1] if len(parts) > 1 else "AQ40")
+        sources = DISCORD_RAIDHELPER_SOURCES.get(raid, [])
+
+        if not sources:
+            await message.channel.send(f"⚠️ Kein RaidHelper-Eintrag für **{raid}** gefunden.")
+            return
+
+        await message.channel.send(f"🔎 **LichtLoot API Debug {raid} startet...**")
+
+        lines = [f"🔎 **LichtLoot API Debug {raid}**"]
+
+        for idx, source in enumerate(sources, start=1):
+            try:
+                raid_message = await get_raid_helper_message(raid, source)
+                text_msg = collect_message_text(raid_message)
+                raid_date, raid_time = extract_raid_datetime_from_text(text_msg)
+                signups = extract_signup_names_from_text(text_msg)
+
+                lines.append(
+                    f"Quelle {idx}: Message `{raid_message.id}`\n"
+                    f"Discord: **{raid_date or '-'}** um **{raid_time or '-'}**\n"
+                    f"Anmeldungen: **{len(signups)}**"
+                )
+
+                if not raid_date or not raid_time:
+                    lines.append("⚠️ Datum/Uhrzeit konnten nicht gelesen werden.")
+                    continue
+
+                raid_result = await asyncio.wait_for(
+                    asyncio.to_thread(lichtloot_get, {
+                        "action": "getRaidByDateTime",
+                        "raid": raid,
+                        "date": raid_date,
+                        "time": raid_time
+                    }),
+                    timeout=30
+                )
+
+                lines.append(
+                    f"LichtLoot Antwort: success=`{raid_result.get('success')}` | "
+                    f"RaidID=`{raid_result.get('raidId', '-')}` | "
+                    f"matchedCount=`{raid_result.get('matchedCount', 0)}` | "
+                    f"selectedBy=`{raid_result.get('selectedBy', '-')}`"
+                )
+
+                if raid_result.get("raidId"):
+                    prio_result = await asyncio.wait_for(
+                        asyncio.to_thread(lichtloot_get, {
+                            "action": "getPriosByRaidId",
+                            "raidId": raid_result["raidId"]
+                        }),
+                        timeout=30
+                    )
+                    lines.append(f"Prios geladen: **{len(prio_result.get('prios', []))}**")
+
+            except asyncio.TimeoutError:
+                lines.append(f"Quelle {idx}: ⏱️ Timeout bei LichtLoot-API.")
+            except Exception as e:
+                lines.append(f"Quelle {idx}: ⚠️ Fehler: {e}")
+
+        await message.channel.send("\n".join(lines)[:1900])
+        try:
+            await delete_command_message(message)
+        except:
+            pass
+        return
+
+    #for raid in get_raid_names_for_channel(message.channel.id):
+    #    schedule_prio_check_update(raid, f"Nachricht im {raid}-Channel")
+
+
+    if lower.startswith("!debugraid"):
+        parts = lower.split()
+        raid = normalize_raid_name(parts[1] if len(parts) > 1 else "AQ40")
+        sources = DISCORD_RAIDHELPER_SOURCES.get(raid, [])
+
+        if not sources:
+            await message.channel.send(f"⚠️ Kein RaidHelper-Eintrag für **{raid}** gefunden.")
+            return
+
+        for source in sources:
+            raid_message = await get_raid_helper_message(raid, source)
+
+            print(f"\n========== RAID HELPER DEBUG {raid} ==========")
+            print(f"CHANNEL: {source['channel_id']} MESSAGE: {source.get('resolved_message_id') or source.get('message_id') or 'AUTO'}")
+            print("MESSAGE:")
+            print(raid_message.content)
+
+            for embed in raid_message.embeds:
+                print("\n========== EMBED ==========\n")
+                print(embed.to_dict())
+
+        await message.channel.send(
+            f"✅ Raid-Helper Daten für **{raid}** wurden in die Konsole geschrieben."
+        )
+        return
+
+    if lower.startswith("!debugsource"):
+        parts = lower.split()
+        raid = normalize_raid_name(parts[1] if len(parts) > 1 else "AQ40")
+        sources = DISCORD_RAIDHELPER_SOURCES.get(raid, [])
+
+        if not sources:
+            await message.channel.send(f"⚠️ Kein RaidHelper-Channel für **{raid}** gefunden.")
+            await delete_command_message(message)
+            return
+
+        lines = [f"🔎 **{raid} verwendete RaidHelper-Quelle**"]
+        for idx, source in enumerate(sources, start=1):
+            try:
+                raid_message = await get_raid_helper_message(raid, source)
+                text = collect_message_text(raid_message)
+                raid_date, raid_time = extract_raid_datetime_from_text(text)
+                signups = extract_signup_names_from_text(text)
+                lines.append(
+                    f"Quelle {idx}: Channel `{source['channel_id']}` | Message `{raid_message.id}` | "
+                    f"Datum **{raid_date or '-'}** um **{raid_time or '-'}** | Anmeldungen **{len(signups)}**"
+                )
+            except Exception as e:
+                lines.append(f"Quelle {idx}: ⚠️ Fehler: {e}")
+
+        await message.channel.send("\n".join(lines)[:1900])
+        await delete_command_message(message)
+        return
+
+    if lower.startswith("!debugevent"):
+        parts = lower.split()
+        raid = normalize_raid_name(parts[1] if len(parts) > 1 else "AQ40")
+        sources = DISCORD_RAIDHELPER_SOURCES.get(raid, [])
+
+        if not sources:
+            await message.channel.send(f"⚠️ Kein RaidHelper-Eintrag für **{raid}** gefunden.")
+            await delete_command_message(message)
+            return
+
+        lines = [f"🕒 **{raid} Event Debug**"]
+        for idx, source in enumerate(sources, start=1):
+            info = await get_raid_event_info_from_source(raid, source)
+            lines.append(
+                f"Quelle {idx}: **{info.get('raidDate') or '-'}** um **{info.get('raidTime') or '-'}**"
+            )
+
+        await message.channel.send("\n".join(lines))
+        await delete_command_message(message)
+        return
+
+    if lower.startswith("!debugsignup"):
+        parts = lower.split()
+        raid = normalize_raid_name(parts[1] if len(parts) > 1 else "AQ40")
+        sources = DISCORD_RAIDHELPER_SOURCES.get(raid, [])
+
+        if not sources:
+            await message.channel.send(f"⚠️ Kein RaidHelper-Eintrag für **{raid}** gefunden.")
+            await delete_command_message(message)
+            return
+
+        text_parts = [f"🔎 **{raid} Signup Debug**"]
+        for idx, source in enumerate(sources, start=1):
+            signups = await get_raid_signup_names_from_source(raid, source)
+            values = sorted(signups.values(), key=lambda x: x.lower())
+            preview = "\n".join("- " + name for name in values[:80]) or "- keine"
+            text_parts.append(f"\n**Quelle {idx}: {len(values)} gefunden**\n{preview}")
+
+        await message.channel.send("\n".join(text_parts)[:1900])
+        await delete_command_message(message)
+        return
+
+    if not lower.startswith("!debug") and not lower.startswith("!lldebug") and (lower.startswith("!priocheck") or lower.endswith("check")):
+        parts = lower.split()
+        command = parts[0] if parts else lower
+
+        command_map = {
+            "!aq40check": "AQ40",
+            "!naxxcheck": "NAXX",
+            "!mccheck": "MC",
+            "!bwlcheck": "BWL",
+            "!zgcheck": "ZG",
+            "!aq20check": "AQ20",
+            "!onycheck": "ONY",
+            "!onyxiacheck": "ONY",
+            "!onixiacheck": "ONY"
+        }
+
+        if lower.startswith("!priocheck") and len(parts) > 1:
+            raid = normalize_raid_name(parts[1])
+        elif command in command_map:
+            raid = command_map[command]
+        else:
+            channel_raids = get_raid_names_for_channel(message.channel.id)
+            raid = channel_raids[0] if channel_raids else "AQ40"
+
+        await message.channel.send(f"🔄 **{raid} DC-Abgleich wird geprüft...**")
+
+        try:
+            results = await asyncio.wait_for(
+                refresh_prio_check(raid, post_to_discord=True),
+                timeout=90
+            )
+
+            if results:
+                first = results[0]
+                counts = first.get("counts", {})
+                info = first.get("raidInfo", {})
+                raid_meta = info.get("raid", {}) if isinstance(info, dict) else {}
+
+                await message.channel.send(
+                    f"✅ **{raid} DC-Abgleich gespeichert.**\n"
+                    f"RaidID: `{first.get('raidId', '-')}`\n"
+                    f"Discord-Datum: **{first.get('raidDate', '-') or '-'}** | "
+                    f"Anmeldungen: **{counts.get('signups', 0)}** | "
+                    f"Prios: **{counts.get('prios', 0)}** | "
+                    f"PO: **{counts.get('po', 0)}**\n"
+                    f"Treffer im Sheet: **{raid_meta.get('matchedCount', 1)}** | "
+                    f"Auswahl: **{raid_meta.get('selectedBy', 'direkt')}**"
+                )
+                await delete_command_message(message)
+            else:
+                await message.channel.send(f"⚠️ Für **{raid}** wurde kein Ergebnis erstellt. Bitte Bot-Konsole prüfen.")
+
+        except asyncio.TimeoutError:
+            await message.channel.send(f"⏱️ **{raid} Check Timeout** – der Abgleich hängt länger als 90 Sekunden. Bitte danach `!lldebug {raid.lower()}` testen.")
+        except Exception as e:
+            err = str(e)
+            if len(err) > 1500:
+                err = err[:1500] + " …"
+            await message.channel.send(f"⚠️ **{raid} Check Fehler:**\n```{err}```")
+        return
+
+    if lower == "!wb":
+        await update_worldbuff_post()
+        await update_hordenbuff_post()
+        await delete_command_message(message)
+        return
+
+    if lower in ["!hordenbuff", "!hordebuff", "!horde"]:
+        await update_hordenbuff_post()
+        await delete_command_message(message)
+        return
+
+    if lower.startswith("!rendhelfer "):
+        helfer_name = content.split(maxsplit=1)[1].strip()
+
+        if not helfer_name:
+            await send_temp(
+                message.channel,
+                "Bitte nutze den Befehl so: `!rendhelfer Name`, z. B. `!rendhelfer Miimi`."
+            )
+            await delete_command_message(message)
+            return
+
+        await auto_assign_hordenbuff_helper(message, helfer_name)
+        return
+
+    if lower == "!rendhelfer":
+        await send_temp(
+            message.channel,
+            "Bitte nutze den Befehl so: `!rendhelfer Name`, z. B. `!rendhelfer Miimi`."
+        )
+        await delete_command_message(message)
+        return
+
+    if lower.startswith("!rendbei "):
+        parts = content.split(maxsplit=2)
+
+        if len(parts) < 3:
+            await send_temp(
+                message.channel,
+                "Bitte nutze den Befehl so: `!rendbei Allyname Helfername`, z. B. `!rendbei Ariee Miimi`."
+            )
+            await delete_command_message(message)
+            return
+
+        ziel = parts[1].strip()
+        helfer_name = parts[2].strip()
+
+        await set_specific_hordenbuff_helper(message, ziel, helfer_name)
+        return
+
+    if lower == "!rendbei":
+        await send_temp(
+            message.channel,
+            "Bitte nutze den Befehl so: `!rendbei Allyname Helfername`, z. B. `!rendbei Ariee Miimi`."
+        )
+        await delete_command_message(message)
+        return
+
+    if lower.startswith("!rendchar "):
+        charakter = content.split(maxsplit=1)[1].strip()
+
+        if not charakter:
+            await send_temp(
+                message.channel,
+                "Bitte nutze den Befehl so: `!rendchar Spielername`."
+            )
+            await delete_command_message(message)
+            return
+
+        await set_hordenbuff_char(message, charakter)
+        return
+
+    if lower.startswith("!renddel "):
+        charakter = content.split(maxsplit=1)[1].strip()
+
+        if not charakter:
+            await send_temp(
+                message.channel,
+                "Bitte nutze den Befehl so: `!renddel Spielername`."
+            )
+            await delete_command_message(message)
+            return
+
+        await delete_rend_entry(message, charakter)
+        return
+
+    if lower.startswith("!rend "):
+        charakter = content.split(maxsplit=1)[1].strip()
+
+        if not charakter:
+            await send_temp(
+                message.channel,
+                "Bitte nutze den Befehl so: `!rend Spielername`."
+            )
+            await delete_command_message(message)
+            return
+
+        await add_rend_spieler(message, charakter)
+        return
+
+    if lower == "!rend":
+        await send_temp(
+            message.channel,
+            "Bitte nutze den Befehl so: `!rend Spielername`, z. B. `!rend Ariee`."
+        )
+        await delete_command_message(message)
+        return
+
+    if lower == "!rendchar":
+        await send_temp(
+            message.channel,
+            "Bitte nutze den Befehl so: `!rendchar Spielername`, z. B. `!rendchar Ariee`."
+        )
+        await delete_command_message(message)
+        return
+
+    if lower == "!renddel":
+        await send_temp(
+            message.channel,
+            "Bitte nutze den Befehl so: `!renddel Spielername`, z. B. `!renddel Ariee`."
+        )
+        await delete_command_message(message)
+        return
+
+    if lower.startswith("!wurf "):
+        parts = content.split(maxsplit=2)
+
+        if len(parts) < 3:
+            await message.channel.send(
+                "Bitte nutze den Befehl so: `!wurf hakkar Charaktername`."
+            )
+            return
+
+        buff = normalize_buff(parts[1])
+        charakter = parts[2].strip()
+
+        if buff not in ["Hakkar", "Ony", "Nef", "Rend"]:
+            await message.channel.send(
+                "Diesen Buff kenne ich nicht. Nutze: `hakkar`, `ony`, `nef` oder `rend`."
+            )
+            return
+
+        try:
+            result = await asyncio.to_thread(
+                sende_wurf_ans_sheet,
+                buff,
+                charakter,
+                str(message.author)
+            )
+
+            if result.get("success"):
+                await message.channel.send(
+                    f"✅ **{charakter}** wurde für **{result.get('buff')}** eingetragen: "
+                    f"{result.get('datum')} um {result.get('uhrzeit')}."
+                )
+
+                await update_worldbuff_post()
+
+                if buff == "Rend":
+                    await update_hordenbuff_post()
+
+            else:
+                await message.channel.send(
+                    f"⚠️ Apps-Script-Antwort:\n```{result}```"
+                )
+
+        except Exception as e:
+            print(f"Fehler bei !wurf: {e}")
+            await message.channel.send(
+                "⚠️ Beim Eintragen ist ein Fehler passiert. Bitte prüfe Apps Script und Sheet."
+            )
+
+        return
+
+    await handle_ticker_update(message)
+
+
+client.run(TOKEN)
