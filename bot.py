@@ -175,7 +175,7 @@ async def hordenbuff_signup_core(ally_char="", horde_char="", author_name=""):
 
     save_json(HORDENBUFF_FILE, data)
 
-    await asyncio.to_thread(
+    save_result = await asyncio.to_thread(
         hordenbuff_sheet_set,
         rend,
         sheet_char,
@@ -183,6 +183,12 @@ async def hordenbuff_signup_core(ally_char="", horde_char="", author_name=""):
         status,
         note
     )
+
+    if not save_result or not save_result.get("success"):
+        return (
+            "⚠️ Anmeldung konnte nicht in Railway gespeichert werden. "
+            f"Grund: {save_result.get('error', 'unbekannt') if isinstance(save_result, dict) else 'unbekannt'}"
+        )
 
     await update_hordenbuff_post()
     return result_text
@@ -1390,18 +1396,12 @@ def build_hordenbuff_text(rend, data):
     text += "\n━━━━━━━━━━━━━━━\n"
     text += "📋 **Befehle**\n\n"
 
-    text += "✅ **Ally-Char anmelden:**\n"
-    text += "`!rend Spielername`\n"
-    text += "Beispiel: `!rend Ariee`\n\n"
-
-    text += "🛡️ **Ich kann übernehmen / automatisch zuteilen:**\n"
-    text += "`!rendhelfer Name`\n"
-    text += "Beispiel: `!rendhelfer Miimi`\n"
-    text += "_Der Bot teilt diesen Helfer automatisch dem nächsten freien Ally-Char zu._\n\n"
-
-    text += "🎯 **Gezielt festlegen, wer wen übernimmt:**\n"
-    text += "`!rendbei Allyname Helfername`\n"
-    text += "Beispiel: `!rendbei Ariee Miimi`\n\n"
+    text += "✅ **Einfach anmelden:**\n"
+    text += "`!rend`\n"
+    text += "Dann Button klicken und im Formular eintragen:\n"
+    text += "- Ally-Char = braucht Rend\n"
+    text += "- Horden-Char = kann helfen\n"
+    text += "- Beide Felder = Horden-Char übernimmt Ally-Char\n\n"
 
     text += "🗑️ **Eintrag löschen:**\n"
     text += "`!renddel Spielername`\n"
