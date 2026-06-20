@@ -29,8 +29,12 @@ PRIO_REPORT_HOUR = 19
 PRIO_REPORT_MINUTE = 0
 PRIO_REPORT_FILE = "prio_report_state.json"
 
-# WICHTIG: Das ist die LichtLoot Apps-Script-Web-App, nicht das Worldbuff-Sheet.
-LICHTLOOT_API_URL = "https://script.google.com/macros/s/AKfycbzwRZ1908IawmEh3WdROu_TBwfu8Yr1YXJ1VicqEIf15eZ2zzRE3Yw9OaaeJ0ZADbye2g/exec"
+LICHTLOOT_RAILWAY_API_URL = os.getenv(
+    "LICHTLOOT_RAILWAY_API_URL",
+    "https://lichtloot-production.up.railway.app/api/apps-script"
+)
+LICHTLOOT_API_URL = os.getenv("LICHTLOOT_API_URL", LICHTLOOT_RAILWAY_API_URL)
+LICHTLOOT_GUILD_SLUG = os.getenv("LICHTLOOT_GUILD_SLUG", "lichtloot")
 
 # Direkter CSV-Export der internen Worldbuff-Uebersicht.
 # Charakter/Gilde kommen aus diesem Sheet.
@@ -48,8 +52,6 @@ HORDENBUFF_CSV_CACHE_TIME = None
 WORLDBUFF_PLAN_CSV_URL = "https://docs.google.com/spreadsheets/d/1o7fzOAn9wC0iWcauC3bDo2RYR8kZ1xQMjkvSi1lJG8Q/gviz/tq?tqx=out:csv&gid=0"
 WORLDBUFF_PLAN_CACHE_CONTENT = ""
 WORLDBUFF_PLAN_CACHE_TIME = None
-APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycby7Rim3WtL0N2JV9bJng7AhT4j11PBPsofcYAT2sbMl_i3yHaeYeIc4UOjr0BA-x-kI/exec"
-
 DATA_FILE = "worldbuffs.json"
 POST_FILE = "last_post.json"
 HORDENBUFF_FILE = "hordenbuff.json"
@@ -111,6 +113,112 @@ async def send_temp(channel, text, seconds=10):
         await channel.send(text, delete_after=seconds)
     except:
         pass
+
+
+async def hordenbuff_signup_core(ally_char="", horde_char="", author_name=""):
+    rend = await asyncio.to_thread(get_next_horden_rend_safe)
+
+    if not rend:
+        return "⚠️ Es wurde kein kommender Rend-Termin gefunden."
+
+    ally_char = str(ally_char or "").strip()
+    horde_char = str(horde_char or "").strip()
+
+    if not ally_char and not horde_char:
+        return "Bitte trage mindestens einen Namen ein: Ally-Char oder Horden-Char."
+
+    data = await asyncio.to_thread(merge_hordenbuff_sheet_data, rend, load_hordenbuff_state(rend))
+    data.setdefault("spieler", [])
+    data.setdefault("uebernahmen", {})
+    data.setdefault("helfer", [])
+
+    if ally_char and ally_char not in data["spieler"]:
+        data["spieler"].append(ally_char)
+
+    if horde_char and horde_char not in data["helfer"]:
+        data["helfer"].append(horde_char)
+
+    if ally_char and horde_char:
+        alte_helfer = [
+            helper
+            for helper, target
+            in data["uebernahmen"].items()
+            if target.lower() == ally_char.lower()
+        ]
+
+        for helper in alte_helfer:
+            del data["uebernahmen"][helper]
+
+        data["uebernahmen"][horde_char] = ally_char
+        status = "zugeteilt"
+        note = "Benötigt Buff für aktiven Termin; Helfer zugeteilt"
+        sheet_char = ally_char
+        result_text = f"✅ **{ally_char}** ist eingetragen. **{horde_char}** übernimmt."
+    elif ally_char:
+        status = "offen"
+        note = "Benötigt Buff für aktiven Termin; Helfer offen"
+        sheet_char = ally_char
+        result_text = f"✅ **{ally_char}** ist für Rend angemeldet."
+    else:
+        ziel = get_next_unassigned_char(data)
+        if ziel:
+            data["uebernahmen"][horde_char] = ziel
+            status = "zugeteilt"
+            note = "Benötigt Buff für aktiven Termin; Helfer zugeteilt"
+            sheet_char = ziel
+            result_text = f"✅ **{horde_char}** hilft und übernimmt **{ziel}**."
+        else:
+            status = "offen"
+            note = "Helfer bereit; noch kein Ally-Char offen"
+            sheet_char = ""
+            result_text = f"✅ **{horde_char}** ist als Horden-Helfer eingetragen."
+
+    save_json(HORDENBUFF_FILE, data)
+
+    await asyncio.to_thread(
+        hordenbuff_sheet_set,
+        rend,
+        sheet_char,
+        horde_char,
+        status,
+        note
+    )
+
+    await update_hordenbuff_post()
+    return result_text
+
+
+class RendSignupModal(discord.ui.Modal, title="Rend anmelden"):
+    ally_char = discord.ui.TextInput(
+        label="Ally-Char",
+        placeholder="z. B. Ariee",
+        required=False,
+        max_length=50
+    )
+    horde_char = discord.ui.TextInput(
+        label="Horden-Char / Helfer",
+        placeholder="z. B. Miimi",
+        required=False,
+        max_length=50
+    )
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        result_text = await hordenbuff_signup_core(
+            ally_char=str(self.ally_char.value or ""),
+            horde_char=str(self.horde_char.value or ""),
+            author_name=interaction.user.display_name
+        )
+        await interaction.followup.send(result_text, ephemeral=True)
+
+
+class RendSignupView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=180)
+
+    @discord.ui.button(label="Rend-Anmeldung öffnen", style=discord.ButtonStyle.success)
+    async def open_signup(self, interaction, button):
+        await interaction.response.send_modal(RendSignupModal())
 
 
 def get_discord_retry_after(error, fallback=DISCORD_RATE_LIMIT_FALLBACK_SECONDS):
@@ -1053,6 +1161,10 @@ def get_hordenbuff_csv_content():
 
 
 def iter_hordenbuff_sheet_rows():
+    railway_rows = iter_hordenbuff_railway_rows()
+    if railway_rows:
+        return railway_rows
+
     content = get_hordenbuff_csv_content()
     if not content:
         return []
@@ -1139,6 +1251,35 @@ def iter_hordenbuff_sheet_rows():
     return result
 
 
+def iter_hordenbuff_railway_rows():
+    try:
+        result = railway_get({
+            "action": "getPublicHordenbuffs",
+            "days": 60,
+            "t": int(time.time())
+        })
+        if not result.get("success"):
+            return []
+
+        rows = []
+        for entry in result.get("buffs", []):
+            rows.append({
+                "buff": normalize_buff(entry.get("buff", "Rend")),
+                "datum": normalize_sheet_date(entry.get("datum", "")),
+                "tag": entry.get("tag", "") or make_tag_from_date(entry.get("datum", "")),
+                "uhrzeit": normalize_sheet_time(entry.get("uhrzeit", "")),
+                "gilde": entry.get("gilde", "Horde") or "Horde",
+                "charakter": entry.get("charakter", ""),
+                "uebernehmer": entry.get("uebernehmer", ""),
+                "status": entry.get("status", ""),
+                "notiz": entry.get("note", "") or entry.get("notiz", "")
+            })
+        return rows
+    except Exception as e:
+        print("Railway-Hordenbuff Fehler:", e)
+        return []
+
+
 def merge_hordenbuff_sheet_data(rend, data):
     if not rend:
         return data
@@ -1147,9 +1288,14 @@ def merge_hordenbuff_sheet_data(rend, data):
     target_date = rend.get("datum", "")
     target_time = rend.get("uhrzeit", "")
 
-    data.setdefault("spieler", [])
-    data.setdefault("uebernahmen", {})
-    data.setdefault("helfer", [])
+    synced = {
+        "event_key": data.get("event_key", make_hordenbuff_key(rend)),
+        "spieler": [],
+        "uebernahmen": {},
+        "helfer": [],
+        "message_id": data.get("message_id"),
+        "reminders_sent": data.get("reminders_sent", [])
+    }
 
     for row in rows:
         if row.get("datum") != target_date or row.get("uhrzeit") != target_time:
@@ -1157,18 +1303,22 @@ def merge_hordenbuff_sheet_data(rend, data):
 
         charakter = str(row.get("charakter") or "").strip()
         uebernehmer = str(row.get("uebernehmer") or "").strip()
+        status = normalize_sheet_header(str(row.get("status") or ""))
+
+        if status in {"erledigt", "done", "abgeschlossen", "fertig"}:
+            continue
 
         if charakter and charakter != "-":
-            if charakter not in data["spieler"]:
-                data["spieler"].append(charakter)
+            if charakter not in synced["spieler"]:
+                synced["spieler"].append(charakter)
 
         if uebernehmer and uebernehmer != "-":
-            if uebernehmer not in data["helfer"]:
-                data["helfer"].append(uebernehmer)
+            if uebernehmer not in synced["helfer"]:
+                synced["helfer"].append(uebernehmer)
             if charakter and charakter != "-":
-                data["uebernahmen"][uebernehmer] = charakter
+                synced["uebernahmen"][uebernehmer] = charakter
 
-    return data
+    return synced
 
 
 def get_assigned_targets(data):
@@ -2183,6 +2333,28 @@ def lichtloot_post(payload):
         return json.loads(response.read().decode("utf-8"))
 
 
+def railway_get(params):
+    query = urllib.parse.urlencode(dict({"guild": LICHTLOOT_GUILD_SLUG}, **params))
+    url = LICHTLOOT_RAILWAY_API_URL + "?" + query
+
+    with urllib.request.urlopen(url, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def railway_post(payload):
+    data = json.dumps(dict({"guild": LICHTLOOT_GUILD_SLUG}, **payload)).encode("utf-8")
+
+    request = urllib.request.Request(
+        LICHTLOOT_RAILWAY_API_URL,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 PUBLIC_API_CACHE = {}
 PUBLIC_API_CACHE_LOCK = threading.Lock()
 
@@ -2320,7 +2492,7 @@ def start_public_api_server():
 
 def hordenbuff_sheet_set(rend, charakter="", uebernehmer="", status="", note=""):
     if not LICHTBOT_QUEUE_TOKEN:
-        print("Hordenbuff-Sheet-Sync uebersprungen: LICHTBOT_QUEUE_TOKEN fehlt.")
+        print("Hordenbuff-Railway-Sync uebersprungen: LICHTBOT_QUEUE_TOKEN fehlt.")
         return {"success": False, "error": "LICHTBOT_QUEUE_TOKEN fehlt."}
 
     payload = {
@@ -2335,21 +2507,21 @@ def hordenbuff_sheet_set(rend, charakter="", uebernehmer="", status="", note="")
     }
 
     try:
-        result = lichtloot_post(payload)
+        result = railway_post(payload)
         clear_hordenbuff_csv_cache()
         return result
     except Exception as e:
-        print(f"Hordenbuff-Sheet-Sync Fehler: {e}")
+        print(f"Hordenbuff-Railway-Sync Fehler: {e}")
         return {"success": False, "error": str(e)}
 
 
 def hordenbuff_sheet_delete(rend, name):
     if not LICHTBOT_QUEUE_TOKEN:
-        print("Hordenbuff-Sheet-Sync uebersprungen: LICHTBOT_QUEUE_TOKEN fehlt.")
+        print("Hordenbuff-Railway-Sync uebersprungen: LICHTBOT_QUEUE_TOKEN fehlt.")
         return {"success": False, "error": "LICHTBOT_QUEUE_TOKEN fehlt."}
 
     try:
-        result = lichtloot_post({
+        result = railway_post({
             "action": "lichtbotDeleteHordenbuffEntry",
             "queueToken": LICHTBOT_QUEUE_TOKEN,
             "datum": rend.get("datum", ""),
@@ -2360,11 +2532,11 @@ def hordenbuff_sheet_delete(rend, name):
         clear_hordenbuff_csv_cache()
         return result
     except Exception as e:
-        print(f"Hordenbuff-Sheet-Loeschung Fehler: {e}")
+        print(f"Hordenbuff-Railway-Loeschung Fehler: {e}")
         return {"success": False, "error": str(e)}
 
 
-async def handle_lichtloot_queue_item(item):
+async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
     update_type = str(item.get("type") or "").strip()
     row_number = item.get("rowNumber")
 
@@ -2376,7 +2548,7 @@ async def handle_lichtloot_queue_item(item):
         await update_worldbuff_post()
         await update_hordenbuff_post()
 
-    if row_number:
+    if resolve_old_queue and row_number:
         await asyncio.to_thread(lichtloot_post, {
             "action": "lichtbotResolveQueue",
             "queueToken": LICHTBOT_QUEUE_TOKEN,
@@ -2414,6 +2586,33 @@ async def lichtloot_queue_loop():
                         print("Fehler beim Verarbeiten eines LichtLoot-Queue-Eintrags:", item_error)
             else:
                 print("LichtLoot-Queue Antwort:", result)
+
+            railway_result = await asyncio.to_thread(railway_get, {
+                "action": "lichtbotGetQueue",
+                "queueToken": LICHTBOT_QUEUE_TOKEN,
+                "t": int(time.time())
+            })
+
+            if railway_result.get("success"):
+                railway_items = railway_result.get("items", [])
+                if railway_items:
+                    update_types = ", ".join(str(item.get("type") or "?") for item in railway_items)
+                    print(f"Railway-Queue: {len(railway_items)} Update(s) gefunden: {update_types}")
+
+                for item in railway_items:
+                    try:
+                        await handle_lichtloot_queue_item(item, resolve_old_queue=False)
+                        row_number = item.get("rowNumber")
+                        if row_number:
+                            await asyncio.to_thread(railway_post, {
+                                "action": "lichtbotResolveQueue",
+                                "queueToken": LICHTBOT_QUEUE_TOKEN,
+                                "rowNumber": row_number
+                            })
+                    except Exception as item_error:
+                        print("Fehler beim Verarbeiten eines Railway-Queue-Eintrags:", item_error)
+            else:
+                print("Railway-Queue Antwort:", railway_result)
 
         except Exception as e:
             print("Fehler im LichtLoot-Queue-Loop:", e)
@@ -3482,9 +3681,12 @@ async def on_message(message):
         charakter = content.split(maxsplit=1)[1].strip()
 
         if not charakter:
-            await send_temp(
-                message.channel,
-                "Bitte nutze den Befehl so: `!rend Spielername`."
+            await message.channel.send(
+                "✅ **Rend-Anmeldung**\n"
+                "Klick auf den Button und trage ein, was passt:\n"
+                "Ally-Char = braucht Rend, Horden-Char = kann helfen.",
+                view=RendSignupView(),
+                delete_after=180
             )
             await delete_command_message(message)
             return
@@ -3493,9 +3695,12 @@ async def on_message(message):
         return
 
     if lower == "!rend":
-        await send_temp(
-            message.channel,
-            "Bitte nutze den Befehl so: `!rend Spielername`, z. B. `!rend Ariee`."
+        await message.channel.send(
+            "✅ **Rend-Anmeldung**\n"
+            "Klick auf den Button und trage ein, was passt:\n"
+            "Ally-Char = braucht Rend, Horden-Char = kann helfen.",
+            view=RendSignupView(),
+            delete_after=180
         )
         await delete_command_message(message)
         return
