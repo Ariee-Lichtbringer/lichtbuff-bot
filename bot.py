@@ -938,7 +938,7 @@ def parse_ticker_message(text):
             buffs.append({
                 "buff": normalize_buff(buff),
                 "datum": datum,
-                "tag": "",
+                "tag": make_tag_from_date(datum),
                 "uhrzeit": uhrzeit,
                 "gilde": gilde.strip()
             })
@@ -1151,7 +1151,7 @@ def build_overview():
 
     for b in data:
         datum = b["datum"]
-        tag_kurz = b["tag"]
+        tag_kurz = b.get("tag") or make_tag_from_date(datum)
         tag_lang = TAG_LANG.get(tag_kurz, tag_kurz)
         zeit = b["uhrzeit"]
         buff = normalize_buff(b["buff"])
