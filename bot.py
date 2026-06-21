@@ -219,6 +219,7 @@ def get_open_worldbuff_signup_slots(limit=25):
     max_date = today + timedelta(days=92)
     slots = []
     seen = set()
+    row_order = 0
 
     for row in iter_worldbuff_sheet_rows():
         buff = normalize_buff(row.get("buff", ""))
@@ -239,21 +240,33 @@ def get_open_worldbuff_signup_slots(limit=25):
         if slot_date < today or slot_date > max_date:
             continue
 
-        key = "|".join([buff, row.get("datum", ""), row.get("uhrzeit", ""), row.get("gilde", "")])
-        if key in seen:
-            continue
-        seen.add(key)
+        choice_buffs = [buff]
+        if buff == "Ony":
+            choice_buffs.append("Nef")
+        elif buff == "Nef":
+            choice_buffs.append("Ony")
 
-        slots.append({
-            "buff": buff,
-            "datum": row.get("datum", ""),
-            "tag": row.get("tag", ""),
-            "uhrzeit": row.get("uhrzeit", ""),
-            "gilde": row.get("gilde", ""),
-            "sort_date": slot_date
-        })
+        for choice_index, choice_buff in enumerate(choice_buffs):
+            key = "|".join([choice_buff, row.get("datum", ""), row.get("uhrzeit", ""), row.get("gilde", "")])
+            if key in seen:
+                continue
+            seen.add(key)
 
-    slots.sort(key=lambda row: (row["sort_date"], row.get("uhrzeit", ""), row.get("buff", "")))
+            slots.append({
+                "buff": choice_buff,
+                "original_buff": buff,
+                "datum": row.get("datum", ""),
+                "tag": row.get("tag", ""),
+                "uhrzeit": row.get("uhrzeit", ""),
+                "gilde": row.get("gilde", ""),
+                "sort_date": slot_date,
+                "row_order": row_order,
+                "choice_order": choice_index
+            })
+
+        row_order += 1
+
+    slots.sort(key=lambda row: (row["sort_date"], row.get("uhrzeit", ""), row.get("row_order", 0), row.get("choice_order", 0)))
     return slots[:limit]
 
 
@@ -769,7 +782,7 @@ def iter_worldbuff_sheet_rows():
             if not tag and datum:
                 tag = make_tag_from_date(datum)
 
-            if is_lichtbringer(gilde):
+            if is_lichtbringer(gilde) and not charakter:
                 buff = plan_overrides.get(f"{datum}|{uhrzeit}", buff)
 
             if buff not in ["Hakkar", "Ony", "Nef", "Rend"]:
