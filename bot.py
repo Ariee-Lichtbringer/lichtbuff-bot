@@ -8,6 +8,7 @@ import os
 import asyncio
 import time
 import threading
+import contextvars
 from io import StringIO
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,8 +19,20 @@ TOKEN = os.getenv("DISCORD_TOKEN", "MTUxMDY3NzM0Njc4NzY1OTc3Nw.G_-vuz._ocUI4y-Nv
 LICHTBOT_QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
 
 TICKER_CHANNEL_ID = 1283706980103356448
+PANEM_TICKER_CHANNEL_ID = 1482656882857349277
 POST_CHANNEL_ID = 1281152286772695071
 HORDENBUFF_CHANNEL_ID = 1510764309062615220
+PANEM_HORDENBUFF_CHANNEL_ID = 1518153802983669810
+
+TICKER_CHANNEL_IDS = {
+    TICKER_CHANNEL_ID,
+    PANEM_TICKER_CHANNEL_ID
+}
+
+HORDENBUFF_CHANNEL_IDS = {
+    HORDENBUFF_CHANNEL_ID,
+    PANEM_HORDENBUFF_CHANNEL_ID
+}
 
 # LichtLoot / Prio-Check AQ40
 AQ40_CHANNEL_ID = 1439219220528500806
@@ -35,6 +48,12 @@ LICHTLOOT_RAILWAY_API_URL = os.getenv(
 )
 LICHTLOOT_API_URL = os.getenv("LICHTLOOT_API_URL", LICHTLOOT_RAILWAY_API_URL)
 LICHTLOOT_GUILD_SLUG = os.getenv("LICHTLOOT_GUILD_SLUG", "lichtloot")
+PANEM_GUILD_SLUG = os.getenv("PANEM_GUILD_SLUG", "panemloot")
+
+CHANNEL_GUILD_SLUGS = {
+    PANEM_TICKER_CHANNEL_ID: PANEM_GUILD_SLUG,
+    PANEM_HORDENBUFF_CHANNEL_ID: PANEM_GUILD_SLUG
+}
 
 # Direkter CSV-Export der internen Worldbuff-Uebersicht.
 # Charakter/Gilde kommen aus diesem Sheet.
@@ -99,6 +118,80 @@ client = discord.Client(intents=intents)
 hordenbuff_update_lock = asyncio.Lock()
 hordenbuff_last_update_at = 0
 hordenbuff_rate_limited_until = 0
+CURRENT_GUILD_SLUG = contextvars.ContextVar("CURRENT_GUILD_SLUG", default=LICHTLOOT_GUILD_SLUG)
+
+
+def guild_slug_for_channel(channel_id):
+    return CHANNEL_GUILD_SLUGS.get(int(channel_id), LICHTLOOT_GUILD_SLUG)
+
+
+def current_guild_slug():
+    return CURRENT_GUILD_SLUG.get()
+
+
+def guild_scoped_file(filename):
+    guild_slug = current_guild_slug()
+    if guild_slug == LICHTLOOT_GUILD_SLUG:
+        return filename
+    return f"{guild_slug}_{filename}"
+
+
+def hordenbuff_file():
+    return guild_scoped_file(HORDENBUFF_FILE)
+
+
+def hordenbuff_cleanup_file():
+    return guild_scoped_file(HORDENBUFF_CLEANUP_FILE)
+
+
+def worldbuff_file():
+    return guild_scoped_file(DATA_FILE)
+
+
+def worldbuff_post_file():
+    return guild_scoped_file(POST_FILE)
+
+
+def hordenbuff_channel_ids_for_current_guild():
+    if current_guild_slug() == PANEM_GUILD_SLUG:
+        return {PANEM_HORDENBUFF_CHANNEL_ID}
+    return {HORDENBUFF_CHANNEL_ID}
+
+
+def ticker_channel_ids_for_current_guild():
+    if current_guild_slug() == PANEM_GUILD_SLUG:
+        return {PANEM_TICKER_CHANNEL_ID}
+    return {TICKER_CHANNEL_ID}
+
+
+def can_post_worldbuff_overview():
+    return current_guild_slug() == LICHTLOOT_GUILD_SLUG
+
+
+def is_ticker_channel(channel_id):
+    return int(channel_id) in TICKER_CHANNEL_IDS
+
+
+def get_hordenbuff_message_id(data, channel_id):
+    channel_key = str(channel_id)
+    message_ids = data.get("message_ids_by_channel")
+
+    if isinstance(message_ids, dict) and message_ids.get(channel_key):
+        return message_ids.get(channel_key)
+
+    if int(channel_id) == HORDENBUFF_CHANNEL_ID:
+        return data.get("message_id")
+
+    return None
+
+
+def set_hordenbuff_message_id(data, channel_id, message_id):
+    channel_key = str(channel_id)
+    message_ids = data.setdefault("message_ids_by_channel", {})
+    message_ids[channel_key] = message_id
+
+    if int(channel_id) == HORDENBUFF_CHANNEL_ID:
+        data["message_id"] = message_id
 
 
 async def delete_command_message(message):
@@ -113,6 +206,149 @@ async def send_temp(channel, text, seconds=10):
         await channel.send(text, delete_after=seconds)
     except:
         pass
+
+
+def is_open_worldbuff_status(status):
+    clean = str(status or "").lower()
+    clean = clean.replace("🟡", "").replace("🟢", "").replace("✅", "").strip()
+    return clean in ["", "offen", "frei", "open"]
+
+
+def get_open_worldbuff_signup_slots(limit=25):
+    today = datetime.now(BERLIN_TZ).date()
+    max_date = today + timedelta(days=92)
+    slots = []
+    seen = set()
+
+    for row in iter_worldbuff_sheet_rows():
+        buff = normalize_buff(row.get("buff", ""))
+        if buff not in ["Nef", "Ony", "Hakkar"]:
+            continue
+        if row.get("charakter"):
+            continue
+        if not is_open_worldbuff_status(row.get("status")):
+            continue
+        if not is_lichtbringer(row.get("gilde", "")):
+            continue
+
+        try:
+            slot_date = datetime.strptime(row.get("datum", ""), "%d.%m.%Y").date()
+        except:
+            continue
+
+        if slot_date < today or slot_date > max_date:
+            continue
+
+        key = "|".join([buff, row.get("datum", ""), row.get("uhrzeit", ""), row.get("gilde", "")])
+        if key in seen:
+            continue
+        seen.add(key)
+
+        slots.append({
+            "buff": buff,
+            "datum": row.get("datum", ""),
+            "tag": row.get("tag", ""),
+            "uhrzeit": row.get("uhrzeit", ""),
+            "gilde": row.get("gilde", ""),
+            "sort_date": slot_date
+        })
+
+    slots.sort(key=lambda row: (row["sort_date"], row.get("uhrzeit", ""), row.get("buff", "")))
+    return slots[:limit]
+
+
+def claim_worldbuff_slot_in_sheet(slot, charakter, discord_name):
+    payload = {
+        "action": "lichtbotClaimWorldbuffSlot",
+        "queueToken": LICHTBOT_QUEUE_TOKEN,
+        "buff": slot.get("buff", ""),
+        "datum": slot.get("datum", ""),
+        "uhrzeit": slot.get("uhrzeit", ""),
+        "gilde": slot.get("gilde", ""),
+        "charakter": charakter,
+        "discord": discord_name,
+        "status": "bestätigt"
+    }
+
+    result = lichtloot_post(payload)
+    clear_worldbuff_csv_cache()
+    return result
+
+
+async def worldbuff_signup_core(slot, charakter, discord_name):
+    charakter = str(charakter or "").strip()
+    if not slot:
+        return "⚠️ Dieser Worldbuff-Termin wurde nicht gefunden."
+    if not charakter:
+        return "Bitte trage einen Charakternamen ein."
+
+    result = await asyncio.to_thread(claim_worldbuff_slot_in_sheet, slot, charakter, discord_name)
+
+    if not result or not result.get("success"):
+        reason = result.get("error") or result.get("message") if isinstance(result, dict) else "unbekannt"
+        return f"⚠️ Worldbuff-Termin konnte nicht eingetragen werden. Grund: {reason}"
+
+    await update_worldbuff_post()
+    return (
+        f"✅ **{charakter}** wurde für **{result.get('buff', slot.get('buff'))}** eingetragen: "
+        f"{result.get('datum', slot.get('datum'))} um {result.get('uhrzeit', slot.get('uhrzeit'))}."
+    )
+
+
+class WorldbuffSignupModal(discord.ui.Modal):
+    def __init__(self, slot):
+        self.slot = slot
+        title = f"{slot.get('buff', 'Worldbuff')} eintragen"
+        super().__init__(title=title[:45])
+        self.charakter = discord.ui.TextInput(
+            label="Charaktername",
+            placeholder="z. B. Ariee",
+            required=True,
+            max_length=50
+        )
+        self.add_item(self.charakter)
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        result_text = await worldbuff_signup_core(
+            self.slot,
+            str(self.charakter.value or ""),
+            interaction.user.display_name
+        )
+        await interaction.followup.send(result_text, ephemeral=True)
+
+
+class WorldbuffSignupSelect(discord.ui.Select):
+    def __init__(self, slots):
+        self.slots = slots
+        options = []
+        for index, slot in enumerate(slots):
+            label = f"{slot.get('buff')} · {slot.get('datum')} {slot.get('uhrzeit')}"
+            description = str(slot.get("gilde") or "Lichtbringer")[:100]
+            options.append(discord.SelectOption(
+                label=label[:100],
+                description=description,
+                value=str(index),
+                emoji=BUFF_EMOJIS.get(slot.get("buff"), "⚪")
+            ))
+        super().__init__(
+            placeholder="Nef, Ony oder Hakkar-Termin auswählen",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+
+    async def callback(self, interaction):
+        index = int(self.values[0])
+        slot = self.slots[index]
+        await interaction.response.send_modal(WorldbuffSignupModal(slot))
+
+
+class WorldbuffSignupView(discord.ui.View):
+    def __init__(self, slots):
+        super().__init__(timeout=180)
+        if slots:
+            self.add_item(WorldbuffSignupSelect(slots))
 
 
 async def hordenbuff_signup_core(ally_char="", horde_char="", author_name=""):
@@ -173,7 +409,7 @@ async def hordenbuff_signup_core(ally_char="", horde_char="", author_name=""):
             sheet_char = ""
             result_text = f"✅ **{horde_char}** ist als Horden-Helfer eingetragen."
 
-    save_json(HORDENBUFF_FILE, data)
+    save_json(hordenbuff_file(), data)
 
     save_result = await asyncio.to_thread(
         hordenbuff_sheet_set,
@@ -559,7 +795,7 @@ def iter_worldbuff_sheet_rows():
 
 
 def get_active_horden_rend_from_state():
-    data = load_json(HORDENBUFF_FILE, {})
+    data = load_json(hordenbuff_file(), {})
     event_key = str(data.get("event_key", ""))
 
     if not event_key:
@@ -728,11 +964,15 @@ def sende_wurf_ans_sheet(buff, charakter, discord_name):
 
 
 def sync_worldbuff_ticker_cache_to_sheet(data=None):
+    if current_guild_slug() != LICHTLOOT_GUILD_SLUG:
+        print(f"Worldbuffticker-Sync fuer {current_guild_slug()} uebersprungen.")
+        return {"success": True, "skipped": True}
+
     if not LICHTBOT_QUEUE_TOKEN:
         print("Worldbuffticker-Sync uebersprungen: LICHTBOT_QUEUE_TOKEN fehlt.")
         return {"success": False, "error": "LICHTBOT_QUEUE_TOKEN fehlt."}
 
-    buffs = data if data is not None else load_json(DATA_FILE, [])
+    buffs = data if data is not None else load_json(worldbuff_file(), [])
     payload = {
         "action": "lichtbotSyncWorldbuffTicker",
         "queueToken": LICHTBOT_QUEUE_TOKEN,
@@ -784,7 +1024,7 @@ def merge_buffs_into_data(data, new_buffs):
 
 
 def build_overview():
-    data = load_json(DATA_FILE, [])
+    data = load_json(worldbuff_file(), [])
     sheet_buffs = import_buffs_aus_sheet()
 
     sheet_slots = {
@@ -857,7 +1097,7 @@ def build_overview():
 
     text = "📢 **Worldbuffs**"
     text += f" · Stand {now}\n"
-    text += "_Nächste 7 Tage · Werfer per `!wurf buff Name`_\n"
+    text += "_Nächste 7 Tage · Eintragen per `!worldbuff` oder schnell per `!wurf buff Name`_\n"
 
     current_date = ""
 
@@ -892,7 +1132,7 @@ def build_overview():
 
 
 async def delete_last_post(channel):
-    post_data = load_json(POST_FILE, {})
+    post_data = load_json(worldbuff_post_file(), {})
     message_ids = post_data.get("message_ids")
     message_id = post_data.get("message_id")
 
@@ -912,21 +1152,22 @@ async def delete_last_post(channel):
 
 
 async def sync_recent_ticker_messages(limit=500):
-    try:
-        channel = client.get_channel(TICKER_CHANNEL_ID) or await client.fetch_channel(TICKER_CHANNEL_ID)
-    except Exception as e:
-        print("Ticker-Channel konnte nicht geladen werden:", e)
-        return 0
-
-    data = await asyncio.to_thread(load_json, DATA_FILE, [])
+    data = await asyncio.to_thread(load_json, worldbuff_file(), [])
     found_buffs = []
 
-    try:
-        async for msg in channel.history(limit=limit):
-            found_buffs.extend(parse_ticker_message(msg.content or ""))
-    except Exception as e:
-        print("Ticker-Historie konnte nicht gelesen werden:", e)
-        return 0
+    for channel_id in ticker_channel_ids_for_current_guild():
+        try:
+            channel = client.get_channel(channel_id) or await client.fetch_channel(channel_id)
+        except Exception as e:
+            print(f"Ticker-Channel {channel_id} konnte nicht geladen werden:", e)
+            continue
+
+        try:
+            async for msg in channel.history(limit=limit):
+                found_buffs.extend(parse_ticker_message(msg.content or ""))
+        except Exception as e:
+            print(f"Ticker-Historie {channel_id} konnte nicht gelesen werden:", e)
+            continue
 
     if not found_buffs:
         return 0
@@ -934,13 +1175,17 @@ async def sync_recent_ticker_messages(limit=500):
     added = merge_buffs_into_data(data, found_buffs)
 
     if added:
-        await asyncio.to_thread(save_json, DATA_FILE, data)
+        await asyncio.to_thread(save_json, worldbuff_file(), data)
 
     print(f"Ticker-Historie geprüft: {len(found_buffs)} Buff-Zeilen gefunden, {added} neu gespeichert.")
     return added
 
 
 async def update_worldbuff_post():
+    if not can_post_worldbuff_overview():
+        print(f"Worldbuff-Uebersicht fuer {current_guild_slug()} uebersprungen: kein Zielchannel konfiguriert.")
+        return
+
     channel = client.get_channel(POST_CHANNEL_ID)
 
     if channel is None:
@@ -954,7 +1199,7 @@ async def update_worldbuff_post():
 
     if len(text) <= 1900:
         msg = await channel.send(text)
-        save_json(POST_FILE, {"message_id": msg.id, "message_ids": [msg.id]})
+        save_json(worldbuff_post_file(), {"message_id": msg.id, "message_ids": [msg.id]})
     else:
         chunks = [text[i:i + 1900] for i in range(0, len(text), 1900)]
         last_msg = None
@@ -965,7 +1210,7 @@ async def update_worldbuff_post():
             message_ids.append(last_msg.id)
 
         if last_msg:
-            save_json(POST_FILE, {"message_id": last_msg.id, "message_ids": message_ids})
+            save_json(worldbuff_post_file(), {"message_id": last_msg.id, "message_ids": message_ids})
 
 
 def get_next_horden_rend():
@@ -1062,43 +1307,50 @@ def get_recent_expired_horden_rend():
 
 
 async def clear_hordenbuff_channel_and_post_next(expired_rend):
-    channel = client.get_channel(HORDENBUFF_CHANNEL_ID) or await client.fetch_channel(HORDENBUFF_CHANNEL_ID)
-    cleanup_state = load_json(HORDENBUFF_CLEANUP_FILE, {})
+    cleanup_state = load_json(hordenbuff_cleanup_file(), {})
     event_key = make_hordenbuff_key(expired_rend)
 
     if cleanup_state.get("last_cleaned_event_key") == event_key:
         return
 
-    try:
-        # Loescht die aktuellen Nachrichten im Hordenbuff-Channel.
-        # Fuer sehr alte Nachrichten kann Discord bulk delete begrenzen; der Channel enthaelt aber normalerweise nur aktuelle Orga-Posts.
-        await channel.purge(limit=500, check=lambda m: not m.pinned, bulk=True)
-    except Exception as e:
-        print("Fehler beim Bereinigen des Hordenbuff-Channels:", e)
-        # Fallback: zumindest die letzten Nachrichten einzeln versuchen.
+    for channel_id in hordenbuff_channel_ids_for_current_guild():
         try:
-            async for msg in channel.history(limit=100):
-                if msg.pinned:
-                    continue
-                try:
-                    await msg.delete()
-                    await asyncio.sleep(0.2)
-                except:
-                    pass
-        except Exception as inner:
-            print("Fallback-Bereinigung fehlgeschlagen:", inner)
+            channel = client.get_channel(channel_id) or await client.fetch_channel(channel_id)
+        except Exception as e:
+            print(f"Hordenbuff-Channel {channel_id} konnte nicht bereinigt werden:", e)
+            continue
+
+        try:
+            # Loescht die aktuellen Nachrichten im Hordenbuff-Channel.
+            # Fuer sehr alte Nachrichten kann Discord bulk delete begrenzen; der Channel enthaelt aber normalerweise nur aktuelle Orga-Posts.
+            await channel.purge(limit=500, check=lambda m: not m.pinned, bulk=True)
+        except Exception as e:
+            print(f"Fehler beim Bereinigen des Hordenbuff-Channels {channel_id}:", e)
+            # Fallback: zumindest die letzten Nachrichten einzeln versuchen.
+            try:
+                async for msg in channel.history(limit=100):
+                    if msg.pinned:
+                        continue
+                    try:
+                        await msg.delete()
+                        await asyncio.sleep(0.2)
+                    except:
+                        pass
+            except Exception as inner:
+                print(f"Fallback-Bereinigung {channel_id} fehlgeschlagen:", inner)
 
     cleanup_state["last_cleaned_event_key"] = event_key
     cleanup_state["last_cleaned_at"] = datetime.now(BERLIN_TZ).isoformat()
-    save_json(HORDENBUFF_CLEANUP_FILE, cleanup_state)
+    save_json(hordenbuff_cleanup_file(), cleanup_state)
 
     # Alte Hordenbuff-Nachricht vergessen, damit fuer den naechsten Rend-Termin sicher ein frischer Post entsteht.
-    save_json(HORDENBUFF_FILE, {
+    save_json(hordenbuff_file(), {
         "event_key": "",
         "spieler": [],
         "uebernahmen": {},
         "helfer": [],
         "message_id": None,
+        "message_ids_by_channel": {},
         "reminders_sent": []
     })
 
@@ -1115,7 +1367,7 @@ def load_hordenbuff_state(rend):
         "reminders_sent": []
     }
 
-    data = load_json(HORDENBUFF_FILE, fallback)
+    data = load_json(hordenbuff_file(), fallback)
 
     if not rend:
         return fallback
@@ -1132,7 +1384,7 @@ def load_hordenbuff_state(rend):
             "reminders_sent": []
         }
 
-        save_json(HORDENBUFF_FILE, data)
+        save_json(hordenbuff_file(), data)
 
     data.setdefault("spieler", [])
     data.setdefault("uebernahmen", {})
@@ -1300,6 +1552,7 @@ def merge_hordenbuff_sheet_data(rend, data):
         "uebernahmen": {},
         "helfer": [],
         "message_id": data.get("message_id"),
+        "message_ids_by_channel": data.get("message_ids_by_channel", {}),
         "reminders_sent": data.get("reminders_sent", [])
     }
 
@@ -1435,56 +1688,61 @@ async def update_hordenbuff_post():
 
         hordenbuff_last_update_at = now
 
-        channel = client.get_channel(HORDENBUFF_CHANNEL_ID)
-
-        if channel is None:
-            print("Hordenbuff-Channel nicht gefunden.")
-            return
-
         rend = await asyncio.to_thread(get_next_horden_rend_safe)
 
-        if not rend:
+        for channel_id in hordenbuff_channel_ids_for_current_guild():
+            channel = client.get_channel(channel_id)
+
+            if channel is None:
+                try:
+                    channel = await client.fetch_channel(channel_id)
+                except Exception as e:
+                    print(f"Hordenbuff-Channel {channel_id} nicht gefunden:", e)
+                    continue
+
+            if not rend:
+                try:
+                    await channel.send(
+                        "⚠️ Es wurde kein kommender Rend-Termin im Sheet gefunden.",
+                        delete_after=15
+                    )
+                except discord.HTTPException as e:
+                    if is_discord_rate_limit(e):
+                        block_discord_writes_after_rate_limit(e, "Hordenbuff ohne Rend")
+                    else:
+                        print(f"Hordenbuff ohne Rend konnte nicht gesendet werden: {e}")
+                continue
+
+            data = await asyncio.to_thread(merge_hordenbuff_sheet_data, rend, load_hordenbuff_state(rend))
+            text = build_hordenbuff_text(rend, data)
+            message_id = get_hordenbuff_message_id(data, channel_id)
+
             try:
-                await channel.send(
-                    "⚠️ Es wurde kein kommender Rend-Termin im Sheet gefunden.",
-                    delete_after=15
-                )
+                if message_id:
+                    try:
+                        msg = await channel.fetch_message(message_id)
+                    except discord.NotFound:
+                        msg = await channel.send(text)
+                        set_hordenbuff_message_id(data, channel_id, msg.id)
+                        save_json(hordenbuff_file(), data)
+                        continue
+
+                    await msg.edit(content=text)
+                    save_json(hordenbuff_file(), data)
+                else:
+                    msg = await channel.send(text)
+                    set_hordenbuff_message_id(data, channel_id, msg.id)
+                    save_json(hordenbuff_file(), data)
+
             except discord.HTTPException as e:
                 if is_discord_rate_limit(e):
-                    block_discord_writes_after_rate_limit(e, "Hordenbuff ohne Rend")
-                else:
-                    print(f"Hordenbuff ohne Rend konnte nicht gesendet werden: {e}")
-            return
-
-        data = await asyncio.to_thread(merge_hordenbuff_sheet_data, rend, load_hordenbuff_state(rend))
-        text = build_hordenbuff_text(rend, data)
-
-        try:
-            if data.get("message_id"):
-                try:
-                    msg = await channel.fetch_message(data["message_id"])
-                except discord.NotFound:
-                    msg = await channel.send(text)
-                    data["message_id"] = msg.id
-                    save_json(HORDENBUFF_FILE, data)
+                    block_discord_writes_after_rate_limit(e, "Hordenbuff-Update")
                     return
 
-                await msg.edit(content=text)
-                save_json(HORDENBUFF_FILE, data)
-            else:
-                msg = await channel.send(text)
-                data["message_id"] = msg.id
-                save_json(HORDENBUFF_FILE, data)
+                print(f"Hordenbuff-Update Discord-Fehler in {channel_id}: {e}")
 
-        except discord.HTTPException as e:
-            if is_discord_rate_limit(e):
-                block_discord_writes_after_rate_limit(e, "Hordenbuff-Update")
-                return
-
-            print(f"Hordenbuff-Update Discord-Fehler: {e}")
-
-        except Exception as e:
-            print(f"Hordenbuff-Update Fehler: {e}")
+            except Exception as e:
+                print(f"Hordenbuff-Update Fehler in {channel_id}: {e}")
 
 
 async def add_rend_spieler(message, charakter):
@@ -1503,7 +1761,7 @@ async def add_rend_spieler(message, charakter):
     if charakter not in data["spieler"]:
         data["spieler"].append(charakter)
 
-    save_json(HORDENBUFF_FILE, data)
+    save_json(hordenbuff_file(), data)
 
     await asyncio.to_thread(
         hordenbuff_sheet_set,
@@ -1539,7 +1797,7 @@ async def auto_assign_hordenbuff_helper(message, helfer_name):
     if helfer_name in data.get("uebernahmen", {}):
         ziel = data["uebernahmen"][helfer_name]
 
-        save_json(HORDENBUFF_FILE, data)
+        save_json(hordenbuff_file(), data)
         await send_temp(
             message.channel,
             f"ℹ️ {helfer_name} ist bereits für **{ziel}** eingeteilt."
@@ -1552,7 +1810,7 @@ async def auto_assign_hordenbuff_helper(message, helfer_name):
     ziel = get_next_unassigned_char(data)
 
     if not ziel:
-        save_json(HORDENBUFF_FILE, data)
+        save_json(hordenbuff_file(), data)
         await asyncio.to_thread(
             hordenbuff_sheet_set,
             rend,
@@ -1572,7 +1830,7 @@ async def auto_assign_hordenbuff_helper(message, helfer_name):
 
     data["uebernahmen"][helfer_name] = ziel
 
-    save_json(HORDENBUFF_FILE, data)
+    save_json(hordenbuff_file(), data)
 
     await asyncio.to_thread(
         hordenbuff_sheet_set,
@@ -1626,7 +1884,7 @@ async def set_specific_hordenbuff_helper(
 
     data["uebernahmen"][helfer_name] = ziel
 
-    save_json(HORDENBUFF_FILE, data)
+    save_json(hordenbuff_file(), data)
 
     await asyncio.to_thread(
         hordenbuff_sheet_set,
@@ -1663,7 +1921,7 @@ async def set_hordenbuff_char(message, charakter):
 
     data["uebernahmen"][helfer_name] = charakter
 
-    save_json(HORDENBUFF_FILE, data)
+    save_json(hordenbuff_file(), data)
 
     await asyncio.to_thread(
         hordenbuff_sheet_set,
@@ -1710,7 +1968,7 @@ async def delete_rend_entry(message, charakter):
         if name.lower() != charakter.lower()
     ]
 
-    save_json(HORDENBUFF_FILE, data)
+    save_json(hordenbuff_file(), data)
 
     await asyncio.to_thread(hordenbuff_sheet_delete, rend, charakter)
 
@@ -1718,54 +1976,78 @@ async def delete_rend_entry(message, charakter):
     await delete_command_message(message)
 
 
+async def process_hordenbuff_reminders_for_current_guild():
+    # Nach Ablauf eines Rendbuffs wird der Hordenbuff-Channel automatisch bereinigt.
+    # Beispiel: Rend 19:35 -> um 19:40 wird geloescht und der naechste Post erstellt.
+    expired_rend = await asyncio.to_thread(get_recent_expired_horden_rend)
+    if expired_rend:
+        await clear_hordenbuff_channel_and_post_next(expired_rend)
+
+    rend = await asyncio.to_thread(get_next_horden_rend_safe)
+
+    if not rend:
+        return
+
+    channels = []
+
+    for channel_id in hordenbuff_channel_ids_for_current_guild():
+        channel = client.get_channel(channel_id)
+
+        if channel is None:
+            try:
+                channel = await client.fetch_channel(channel_id)
+            except Exception as e:
+                print(f"Hordenbuff-Reminder-Channel {channel_id} nicht gefunden:", e)
+                continue
+
+        channels.append(channel)
+
+    if not channels:
+        return
+
+    data = load_hordenbuff_state(rend)
+
+    rend_dt = datetime.strptime(
+        f"{rend['datum']} {rend['uhrzeit']}",
+        "%d.%m.%Y %H:%M"
+    )
+
+    now = datetime.now(BERLIN_TZ).replace(tzinfo=None)
+    minutes_left = int((rend_dt - now).total_seconds() / 60)
+
+    reminders = {
+        30: "⏰ **Rend in 30 Minuten!** Bitte rechtzeitig vorbereiten.",
+        15: "⏰ **Rend in 15 Minuten!** Ally-Char/duellfähigen Char bereithalten.",
+        5: "🚨 **Rend in 5 Minuten!** Jetzt einloggen und bereitmachen."
+    }
+
+    for minute, reminder_text in reminders.items():
+        already_sent = str(minute) in data.get("reminders_sent", [])
+
+        if minute - 1 <= minutes_left <= minute and not already_sent:
+            for channel in channels:
+                await channel.send(reminder_text)
+
+            data.setdefault("reminders_sent", [])
+            data["reminders_sent"].append(str(minute))
+
+            save_json(hordenbuff_file(), data)
+
+            await update_hordenbuff_post()
+
+
 async def hordenbuff_reminder_loop():
     await client.wait_until_ready()
 
     while not client.is_closed():
-        try:
-            # Nach Ablauf eines Rendbuffs wird der Hordenbuff-Channel automatisch bereinigt.
-            # Beispiel: Rend 19:35 -> um 19:40 wird geloescht und der naechste Post erstellt.
-            expired_rend = await asyncio.to_thread(get_recent_expired_horden_rend)
-            if expired_rend:
-                await clear_hordenbuff_channel_and_post_next(expired_rend)
-
-            rend = await asyncio.to_thread(get_next_horden_rend_safe)
-
-            if rend:
-                channel = client.get_channel(HORDENBUFF_CHANNEL_ID)
-
-                if channel:
-                    data = load_hordenbuff_state(rend)
-
-                    rend_dt = datetime.strptime(
-                        f"{rend['datum']} {rend['uhrzeit']}",
-                        "%d.%m.%Y %H:%M"
-                    )
-
-                    now = datetime.now(BERLIN_TZ).replace(tzinfo=None)
-                    minutes_left = int((rend_dt - now).total_seconds() / 60)
-
-                    reminders = {
-                        30: "⏰ **Rend in 30 Minuten!** Bitte rechtzeitig vorbereiten.",
-                        15: "⏰ **Rend in 15 Minuten!** Ally-Char/duellfähigen Char bereithalten.",
-                        5: "🚨 **Rend in 5 Minuten!** Jetzt einloggen und bereitmachen."
-                    }
-
-                    for minute, reminder_text in reminders.items():
-                        already_sent = str(minute) in data.get("reminders_sent", [])
-
-                        if minute - 1 <= minutes_left <= minute and not already_sent:
-                            await channel.send(reminder_text)
-
-                            data.setdefault("reminders_sent", [])
-                            data["reminders_sent"].append(str(minute))
-
-                            save_json(HORDENBUFF_FILE, data)
-
-                            await update_hordenbuff_post()
-
-        except Exception as e:
-            print("Fehler im Hordenbuff-Reminder:", e)
+        for guild_slug in [LICHTLOOT_GUILD_SLUG, PANEM_GUILD_SLUG]:
+            token = CURRENT_GUILD_SLUG.set(guild_slug)
+            try:
+                await process_hordenbuff_reminders_for_current_guild()
+            except Exception as e:
+                print(f"Fehler im Hordenbuff-Reminder fuer {guild_slug}:", e)
+            finally:
+                CURRENT_GUILD_SLUG.reset(token)
 
         await asyncio.sleep(60)
 
@@ -2312,7 +2594,7 @@ async def get_naxx_event_info():
 
 
 def lichtloot_get(params):
-    query = urllib.parse.urlencode(params)
+    query = urllib.parse.urlencode(dict({"guild": current_guild_slug()}, **params))
     url = LICHTLOOT_API_URL + "?" + query
 
     with urllib.request.urlopen(url, timeout=30) as response:
@@ -2320,7 +2602,7 @@ def lichtloot_get(params):
 
 
 def lichtloot_post(payload):
-    data = json.dumps(payload).encode("utf-8")
+    data = json.dumps(dict({"guild": current_guild_slug()}, **payload)).encode("utf-8")
 
     request = urllib.request.Request(
         LICHTLOOT_API_URL,
@@ -2334,7 +2616,7 @@ def lichtloot_post(payload):
 
 
 def railway_get(params):
-    query = urllib.parse.urlencode(dict({"guild": LICHTLOOT_GUILD_SLUG}, **params))
+    query = urllib.parse.urlencode(dict({"guild": current_guild_slug()}, **params))
     url = LICHTLOOT_RAILWAY_API_URL + "?" + query
 
     with urllib.request.urlopen(url, timeout=30) as response:
@@ -2342,7 +2624,7 @@ def railway_get(params):
 
 
 def railway_post(payload):
-    data = json.dumps(dict({"guild": LICHTLOOT_GUILD_SLUG}, **payload)).encode("utf-8")
+    data = json.dumps(dict({"guild": current_guild_slug()}, **payload)).encode("utf-8")
 
     request = urllib.request.Request(
         LICHTLOOT_RAILWAY_API_URL,
@@ -3113,7 +3395,7 @@ async def prio_sync_loop():
         await asyncio.sleep(PRIO_SYNC_INTERVAL_SECONDS)
 
 async def handle_ticker_update(message):
-    if message.channel.id != TICKER_CHANNEL_ID:
+    if not is_ticker_channel(message.channel.id):
         return
 
     new_buffs = parse_ticker_message(message.content)
@@ -3121,11 +3403,11 @@ async def handle_ticker_update(message):
     if not new_buffs:
         return
 
-    old_data = load_json(DATA_FILE, [])
+    old_data = load_json(worldbuff_file(), [])
 
     merge_buffs_into_data(old_data, new_buffs)
 
-    save_json(DATA_FILE, old_data)
+    save_json(worldbuff_file(), old_data)
     await asyncio.to_thread(sync_worldbuff_ticker_cache_to_sheet, old_data)
 
     print(f"{len(new_buffs)} Worldbuffs aus Ticker übernommen oder geprüft.")
@@ -3139,9 +3421,9 @@ async def handle_ticker_update(message):
 @client.event
 async def on_ready():
     print(f"Bot online als {client.user}")
-    print(f"Überwache Ticker-Channel: {TICKER_CHANNEL_ID}")
+    print(f"Überwache Ticker-Channels: {sorted(TICKER_CHANNEL_IDS)}")
     print(f"Postet Übersicht in Channel: {POST_CHANNEL_ID}")
-    print(f"Hordenbuff-Channel: {HORDENBUFF_CHANNEL_ID}")
+    print(f"Hordenbuff-Channels: {sorted(HORDENBUFF_CHANNEL_IDS)}")
     print("Version 4.9 gestartet: Raid-Ankuendigungen und DC-Abgleich aktiv.")
 
     await asyncio.to_thread(sync_worldbuff_ticker_cache_to_sheet)
@@ -3174,6 +3456,8 @@ async def on_message_edit(before, after):
     if after.author == client.user:
         return
 
+    CURRENT_GUILD_SLUG.set(guild_slug_for_channel(after.channel.id))
+
     #for raid in get_raid_names_for_channel(after.channel.id):
     #  schedule_prio_check_update(raid, f"Nachricht im {raid}-Channel bearbeitet")
 
@@ -3184,6 +3468,8 @@ async def on_message_edit(before, after):
 async def on_message(message):
     if message.author == client.user:
         return
+
+    CURRENT_GUILD_SLUG.set(guild_slug_for_channel(message.channel.id))
 
     content = message.content.strip()
     lower = content.lower()
@@ -3594,6 +3880,26 @@ async def on_message(message):
     if lower == "!wb":
         await update_worldbuff_post()
         await update_hordenbuff_post()
+        await delete_command_message(message)
+        return
+
+    if lower in ["!worldbuff", "!worldbuffs"]:
+        slots = await asyncio.to_thread(get_open_worldbuff_signup_slots)
+
+        if not slots:
+            await send_temp(
+                message.channel,
+                "⚠️ Es wurde kein freier Nef-, Ony- oder Hakkar-Termin gefunden."
+            )
+            await delete_command_message(message)
+            return
+
+        await message.channel.send(
+            "✅ **Worldbuff eintragen**\n"
+            "Wähle Nef, Ony oder Hakkar mit passendem freien Termin aus und trage danach deinen Charakternamen ein.",
+            view=WorldbuffSignupView(slots),
+            delete_after=180
+        )
         await delete_command_message(message)
         return
 
