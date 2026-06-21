@@ -47,6 +47,10 @@ LICHTLOOT_RAILWAY_API_URL = os.getenv(
     "https://lichtloot-production.up.railway.app/api/apps-script"
 )
 LICHTLOOT_API_URL = os.getenv("LICHTLOOT_API_URL", LICHTLOOT_RAILWAY_API_URL)
+LICHTLOOT_APPS_SCRIPT_URL = os.getenv(
+    "LICHTLOOT_APPS_SCRIPT_URL",
+    "https://script.google.com/macros/s/AKfycbzwRZ1908IawmEh3WdROu_TBwfu8Yr1YXJ1VicqEIf15eZ2zzRE3Yw9OaaeJ0ZADbye2g/exec"
+)
 LICHTLOOT_GUILD_SLUG = os.getenv("LICHTLOOT_GUILD_SLUG", "lichtloot")
 PANEM_GUILD_SLUG = os.getenv("PANEM_GUILD_SLUG", "panemloot")
 
@@ -283,7 +287,7 @@ def claim_worldbuff_slot_in_sheet(slot, charakter, discord_name):
         "status": "bestätigt"
     }
 
-    result = lichtloot_post(payload)
+    result = lichtloot_apps_script_post(payload)
     clear_worldbuff_csv_cache()
     return result
 
@@ -308,14 +312,29 @@ async def worldbuff_signup_core(slot, charakter, discord_name):
     )
 
 
+def infer_worldbuff_char_from_discord_name(display_name):
+    name = str(display_name or "").strip()
+    if not name:
+        return ""
+
+    for separator in [" / ", "/", "|", " - "]:
+        if separator in name:
+            name = name.split(separator)[-1].strip()
+            break
+
+    name = re.sub(r"\([^)]*\)", "", name).strip()
+    return name[:50]
+
+
 class WorldbuffSignupModal(discord.ui.Modal):
-    def __init__(self, slot):
+    def __init__(self, slot, default_char=""):
         self.slot = slot
         title = f"{slot.get('buff', 'Worldbuff')} eintragen"
         super().__init__(title=title[:45])
         self.charakter = discord.ui.TextInput(
             label="Charaktername",
-            placeholder="z. B. Ariee",
+            placeholder="z. B. Juksi",
+            default=str(default_char or "")[:50],
             required=True,
             max_length=50
         )
@@ -354,7 +373,8 @@ class WorldbuffSignupSelect(discord.ui.Select):
     async def callback(self, interaction):
         index = int(self.values[0])
         slot = self.slots[index]
-        await interaction.response.send_modal(WorldbuffSignupModal(slot))
+        charakter = infer_worldbuff_char_from_discord_name(interaction.user.display_name)
+        await interaction.response.send_modal(WorldbuffSignupModal(slot, charakter))
 
 
 class WorldbuffSignupView(discord.ui.View):
@@ -971,7 +991,7 @@ def sende_wurf_ans_sheet(buff, charakter, discord_name):
         "status": "bestätigt"
     }
 
-    result = lichtloot_post(payload)
+    result = lichtloot_apps_script_post(payload)
     clear_worldbuff_csv_cache()
     return result
 
@@ -2628,6 +2648,20 @@ def lichtloot_post(payload):
         return json.loads(response.read().decode("utf-8"))
 
 
+def lichtloot_apps_script_post(payload):
+    data = json.dumps(dict({"guild": current_guild_slug()}, **payload)).encode("utf-8")
+
+    request = urllib.request.Request(
+        LICHTLOOT_APPS_SCRIPT_URL,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def railway_get(params):
     query = urllib.parse.urlencode(dict({"guild": current_guild_slug()}, **params))
     url = LICHTLOOT_RAILWAY_API_URL + "?" + query
@@ -3909,7 +3943,8 @@ async def on_message(message):
 
         await message.channel.send(
             "✅ **Worldbuff eintragen**\n"
-            "Wähle Nef, Ony oder Hakkar mit passendem freien Termin aus und trage danach deinen Charakternamen ein.",
+            "Wähle Nef, Ony oder Hakkar mit passendem freien Termin aus. "
+            "Danach öffnet sich ein Fenster für den Charakternamen.",
             view=WorldbuffSignupView(slots),
             delete_after=180
         )
