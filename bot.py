@@ -903,27 +903,42 @@ def get_csv_content():
 def parse_ticker_message(text):
     buffs = []
 
-    pattern = re.compile(
-        r"^(?:[🟢🔴🟠⚪]\s*)?"
-        r"\**(Hakkar|hakkar|ZG|zg|Ony|ony|Onyxia|Nef|nef|Nefarian|Rend|rend)\**\s+"
-        r"(\d{2}\.\d{2}\.\d{4})\s+"
-        r"([A-Za-zÄÖÜäöü]{2})\s+"
-        r"(\d{2}:\d{2})\s+"
-        r"(.+)$"
-    )
+    buff_words = r"(Hakkar|hakkar|ZG|zg|Ony|ony|Onyxia|Nef|nef|Nefarian|Rend|rend)"
+    date_words = r"(\d{1,2}\.\d{1,2}\.\d{4})"
+    day_words = r"(?:Mo|Di|Mi|Do|Fr|Sa|So|Montag|Dienstag|Mittwoch|Donnerstag|Freitag|Samstag|Sonntag)"
+    time_words = r"(\d{1,2}:\d{2})"
+    prefix = r"^(?:[🟢🔴🟠⚪🟡✅❌🔥🌿☠️💀•\-–—]\s*)?"
+    suffix = r"\s+(.+)$"
+
+    patterns = [
+        re.compile(prefix + r"\**" + buff_words + r"\**\s+" + date_words + r"\s+(?:" + day_words + r")\s+" + time_words + suffix, re.IGNORECASE),
+        re.compile(prefix + date_words + r"\s+(?:" + day_words + r")\s+" + time_words + r"\s+\**" + buff_words + r"\**" + suffix, re.IGNORECASE),
+        re.compile(prefix + r"\**" + buff_words + r"\**\s+" + date_words + r"\s+" + time_words + suffix, re.IGNORECASE),
+        re.compile(prefix + date_words + r"\s+" + time_words + r"\s+\**" + buff_words + r"\**" + suffix, re.IGNORECASE),
+    ]
 
     for line in text.splitlines():
         line = line.strip()
         line = line.replace("**", "")
 
-        match = pattern.match(line)
+        match = None
+        matched_pattern_index = -1
+        for index, pattern in enumerate(patterns):
+            match = pattern.match(line)
+            if match:
+                matched_pattern_index = index
+                break
 
         if match:
-            buff, datum, tag, uhrzeit, gilde = match.groups()
+            groups = match.groups()
+            if matched_pattern_index in [0, 2]:
+                buff, datum, uhrzeit, gilde = groups
+            else:
+                datum, uhrzeit, buff, gilde = groups
             buffs.append({
                 "buff": normalize_buff(buff),
                 "datum": datum,
-                "tag": tag,
+                "tag": "",
                 "uhrzeit": uhrzeit,
                 "gilde": gilde.strip()
             })
@@ -1013,7 +1028,7 @@ def sync_worldbuff_ticker_cache_to_sheet(data=None):
     }
 
     try:
-        result = lichtloot_post(payload)
+        result = lichtloot_apps_script_post(payload)
         print(f"Worldbuffticker-Sync: {result}")
         return result
     except Exception as e:
@@ -1209,6 +1224,8 @@ async def sync_recent_ticker_messages(limit=500):
 
     if added:
         await asyncio.to_thread(save_json, worldbuff_file(), data)
+
+    await asyncio.to_thread(sync_worldbuff_ticker_cache_to_sheet, data)
 
     print(f"Ticker-Historie geprüft: {len(found_buffs)} Buff-Zeilen gefunden, {added} neu gespeichert.")
     return added
