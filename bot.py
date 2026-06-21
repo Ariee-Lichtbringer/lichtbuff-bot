@@ -326,6 +326,30 @@ def infer_worldbuff_char_from_discord_name(display_name):
     return name[:50]
 
 
+class WorldbuffSignupModal(discord.ui.Modal):
+    def __init__(self, slot, default_char=""):
+        self.slot = slot
+        title = f"{slot.get('buff', 'Worldbuff')} eintragen"
+        super().__init__(title=title[:45])
+        self.charakter = discord.ui.TextInput(
+            label="Charaktername",
+            placeholder="z. B. Juksi",
+            default=str(default_char or "")[:50],
+            required=True,
+            max_length=50
+        )
+        self.add_item(self.charakter)
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        result_text = await worldbuff_signup_core(
+            self.slot,
+            str(self.charakter.value or ""),
+            interaction.user.display_name
+        )
+        await interaction.followup.send(result_text, ephemeral=True)
+
+
 class WorldbuffSignupSelect(discord.ui.Select):
     def __init__(self, slots):
         self.slots = slots
@@ -350,9 +374,7 @@ class WorldbuffSignupSelect(discord.ui.Select):
         index = int(self.values[0])
         slot = self.slots[index]
         charakter = infer_worldbuff_char_from_discord_name(interaction.user.display_name)
-        await interaction.response.defer(ephemeral=True)
-        result_text = await worldbuff_signup_core(slot, charakter, interaction.user.display_name)
-        await interaction.followup.send(result_text, ephemeral=True)
+        await interaction.response.send_modal(WorldbuffSignupModal(slot, charakter))
 
 
 class WorldbuffSignupView(discord.ui.View):
@@ -3922,7 +3944,7 @@ async def on_message(message):
         await message.channel.send(
             "✅ **Worldbuff eintragen**\n"
             "Wähle Nef, Ony oder Hakkar mit passendem freien Termin aus. "
-            "Der Bot nimmt deinen Char aus deinem Discord-Namen, z. B. `Ariee / Juksi` → `Juksi`.",
+            "Danach öffnet sich ein Fenster für den Charakternamen.",
             view=WorldbuffSignupView(slots),
             delete_after=180
         )
