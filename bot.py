@@ -459,7 +459,7 @@ async def hordenbuff_signup_core(ally_char="", horde_char="", author_name=""):
             f"Grund: {save_result.get('error', 'unbekannt') if isinstance(save_result, dict) else 'unbekannt'}"
         )
 
-    await update_hordenbuff_post()
+    await update_hordenbuff_post(force=True)
     return result_text
 
 
@@ -1404,7 +1404,7 @@ async def clear_hordenbuff_channel_and_post_next(expired_rend):
         "reminders_sent": []
     })
 
-    await update_hordenbuff_post()
+    await update_hordenbuff_post(force=True)
 
 
 def load_hordenbuff_state(rend):
@@ -1716,7 +1716,7 @@ def build_hordenbuff_text(rend, data):
     return text
 
 
-async def update_hordenbuff_post():
+async def update_hordenbuff_post(force=False):
     global hordenbuff_last_update_at
 
     now = time.monotonic()
@@ -1732,7 +1732,7 @@ async def update_hordenbuff_post():
             print(f"Hordenbuff-Update uebersprungen: Discord Rate Limit noch {rest} Sekunden aktiv.")
             return
 
-        if now - hordenbuff_last_update_at < HORDENBUFF_UPDATE_MIN_SECONDS:
+        if not force and now - hordenbuff_last_update_at < HORDENBUFF_UPDATE_MIN_SECONDS:
             print("Hordenbuff-Update uebersprungen: Aktualisierung wurde gerade erst ausgefuehrt.")
             return
 
@@ -1822,7 +1822,7 @@ async def add_rend_spieler(message, charakter):
         "Benötigt Buff für aktiven Termin; Helfer offen"
     )
 
-    await update_hordenbuff_post()
+    await update_hordenbuff_post(force=True)
     await delete_command_message(message)
 
 
@@ -1853,7 +1853,7 @@ async def auto_assign_hordenbuff_helper(message, helfer_name):
             f"ℹ️ {helfer_name} ist bereits für **{ziel}** eingeteilt."
         )
 
-        await update_hordenbuff_post()
+        await update_hordenbuff_post(force=True)
         await delete_command_message(message)
         return
 
@@ -1874,7 +1874,7 @@ async def auto_assign_hordenbuff_helper(message, helfer_name):
             f"✅ {helfer_name} wurde als Helfer eingetragen. Aktuell ist noch kein freier Ally-Char offen."
         )
 
-        await update_hordenbuff_post()
+        await update_hordenbuff_post(force=True)
         await delete_command_message(message)
         return
 
@@ -1891,7 +1891,7 @@ async def auto_assign_hordenbuff_helper(message, helfer_name):
         "Benötigt Buff für aktiven Termin; Helfer zugeteilt"
     )
 
-    await update_hordenbuff_post()
+    await update_hordenbuff_post(force=True)
     await delete_command_message(message)
 
     
@@ -1945,7 +1945,7 @@ async def set_specific_hordenbuff_helper(
         "Benötigt Buff für aktiven Termin; Helfer zugeteilt"
     )
 
-    await update_hordenbuff_post()
+    await update_hordenbuff_post(force=True)
     await delete_command_message(message)
 
 
@@ -1982,7 +1982,7 @@ async def set_hordenbuff_char(message, charakter):
         "Benötigt Buff für aktiven Termin; Helfer zugeteilt"
     )
 
-    await update_hordenbuff_post()
+    await update_hordenbuff_post(force=True)
     await delete_command_message(message)
 
 
@@ -2022,7 +2022,7 @@ async def delete_rend_entry(message, charakter):
 
     await asyncio.to_thread(hordenbuff_sheet_delete, rend, charakter)
 
-    await update_hordenbuff_post()
+    await update_hordenbuff_post(force=True)
     await delete_command_message(message)
 
 
@@ -2083,7 +2083,7 @@ async def process_hordenbuff_reminders_for_current_guild():
 
             save_json(hordenbuff_file(), data)
 
-            await update_hordenbuff_post()
+            await update_hordenbuff_post(force=True)
 
 
 async def hordenbuff_reminder_loop():
@@ -2889,10 +2889,10 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
     if update_type == "worldbuff_update":
         await update_worldbuff_post()
     elif update_type == "hordenbuff_update":
-        await update_hordenbuff_post()
+        await update_hordenbuff_post(force=True)
     else:
         await update_worldbuff_post()
-        await update_hordenbuff_post()
+        await update_hordenbuff_post(force=True)
 
     if resolve_old_queue and row_number:
         await asyncio.to_thread(lichtloot_post, {
@@ -3479,7 +3479,7 @@ async def handle_ticker_update(message):
     await update_worldbuff_post()
 
     if any(normalize_buff(b["buff"]) == "Rend" for b in new_buffs):
-        await update_hordenbuff_post()
+        await update_hordenbuff_post(force=True)
 
 
 @client.event
@@ -3943,7 +3943,7 @@ async def on_message(message):
 
     if lower == "!wb":
         await update_worldbuff_post()
-        await update_hordenbuff_post()
+        await update_hordenbuff_post(force=True)
         await delete_command_message(message)
         return
 
@@ -3969,7 +3969,7 @@ async def on_message(message):
         return
 
     if lower in ["!hordenbuff", "!hordebuff", "!horde"]:
-        await update_hordenbuff_post()
+        await update_hordenbuff_post(force=True)
         await delete_command_message(message)
         return
 
@@ -4127,7 +4127,7 @@ async def on_message(message):
                 await update_worldbuff_post()
 
                 if buff == "Rend":
-                    await update_hordenbuff_post()
+                    await update_hordenbuff_post(force=True)
 
             else:
                 await message.channel.send(
