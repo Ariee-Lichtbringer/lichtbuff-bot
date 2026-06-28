@@ -60,6 +60,10 @@ LICHTLOOT_APPS_SCRIPT_URL = os.getenv(
 )
 LICHTLOOT_GUILD_SLUG = os.getenv("LICHTLOOT_GUILD_SLUG", "lichtloot")
 PANEM_GUILD_SLUG = os.getenv("PANEM_GUILD_SLUG", "panemloot")
+WORLDBUFF_GUILD_SLUGS = [
+    LICHTLOOT_GUILD_SLUG,
+    PANEM_GUILD_SLUG
+]
 
 CHANNEL_GUILD_SLUGS = {
     PANEM_TICKER_CHANNEL_ID: PANEM_GUILD_SLUG,
@@ -1019,10 +1023,6 @@ def sende_wurf_ans_sheet(buff, charakter, discord_name):
 
 
 def sync_worldbuff_ticker_cache_to_sheet(data=None):
-    if current_guild_slug() != LICHTLOOT_GUILD_SLUG:
-        print(f"Worldbuffticker-Sync fuer {current_guild_slug()} uebersprungen.")
-        return {"success": True, "skipped": True}
-
     if not LICHTBOT_QUEUE_TOKEN:
         print("Worldbuffticker-Sync uebersprungen: LICHTBOT_QUEUE_TOKEN fehlt.")
         return {"success": False, "error": "LICHTBOT_QUEUE_TOKEN fehlt."}
@@ -1238,7 +1238,7 @@ async def sync_recent_ticker_messages(limit=500):
     return added
 
 
-async def update_worldbuff_post():
+async def update_worldbuff_post(sync_ticker=True):
     if not can_post_worldbuff_overview():
         print(f"Worldbuff-Uebersicht fuer {current_guild_slug()} uebersprungen: kein Zielchannel konfiguriert.")
         return
@@ -1249,7 +1249,8 @@ async def update_worldbuff_post():
         print("Ziel-Channel nicht gefunden.")
         return
 
-    await sync_recent_ticker_messages()
+    if sync_ticker:
+        await sync_recent_ticker_messages()
     await delete_last_post(channel)
 
     text = await asyncio.to_thread(build_overview)
@@ -1268,6 +1269,31 @@ async def update_worldbuff_post():
 
         if last_msg:
             save_json(worldbuff_post_file(), {"message_id": last_msg.id, "message_ids": message_ids})
+
+
+async def sync_recent_ticker_messages_for_all_guilds(limit=500):
+    total_added = 0
+
+    for guild_slug in WORLDBUFF_GUILD_SLUGS:
+        token = CURRENT_GUILD_SLUG.set(guild_slug)
+        try:
+            total_added += await sync_recent_ticker_messages(limit=limit)
+        except Exception as e:
+            print(f"Ticker-Sync fuer {guild_slug} fehlgeschlagen:", e)
+        finally:
+            CURRENT_GUILD_SLUG.reset(token)
+
+    return total_added
+
+
+async def update_worldbuff_overview_from_all_guilds():
+    await sync_recent_ticker_messages_for_all_guilds()
+
+    token = CURRENT_GUILD_SLUG.set(LICHTLOOT_GUILD_SLUG)
+    try:
+        await update_worldbuff_post(sync_ticker=False)
+    finally:
+        CURRENT_GUILD_SLUG.reset(token)
 
 
 def get_next_horden_rend():
@@ -3051,11 +3077,11 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
     row_number = item.get("rowNumber")
 
     if update_type == "worldbuff_update":
-        await update_worldbuff_post()
+        await update_worldbuff_overview_from_all_guilds()
     elif update_type == "hordenbuff_update":
         await update_hordenbuff_post(force=True)
     else:
-        await update_worldbuff_post()
+        await update_worldbuff_overview_from_all_guilds()
         await update_hordenbuff_post(force=True)
 
     if resolve_old_queue and row_number:
@@ -3640,7 +3666,7 @@ async def handle_ticker_update(message):
 
     print(f"{len(new_buffs)} Worldbuffs aus Ticker übernommen oder geprüft.")
 
-    await update_worldbuff_post()
+    await update_worldbuff_overview_from_all_guilds()
 
     if any(normalize_buff(b["buff"]) == "Rend" for b in new_buffs):
         await update_hordenbuff_post(force=True)
@@ -3655,7 +3681,7 @@ async def on_ready():
     print(f"Loganalyse-Channels: {sorted(LOG_ANALYSIS_CHANNEL_IDS)}")
     print("Version 4.9 gestartet: Raid-Ankuendigungen und DC-Abgleich aktiv.")
 
-    await asyncio.to_thread(sync_worldbuff_ticker_cache_to_sheet)
+    await update_worldbuff_overview_from_all_guilds()
 
     if not hasattr(client, "hordenbuff_task_started"):
         client.hordenbuff_task_started = True
