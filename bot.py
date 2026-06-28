@@ -82,6 +82,9 @@ CSV_URL = "https://docs.google.com/spreadsheets/d/1eItzaMGhpJ28vv4sDA8wwmu0YhUxc
 CSV_CACHE_CONTENT = ""
 CSV_CACHE_TIME = None
 CSV_CACHE_SECONDS = 300
+WORLDBUFF_API_CACHE_ROWS = []
+WORLDBUFF_API_CACHE_TIME = None
+WORLDBUFF_API_CACHE_SECONDS = 60
 HORDENBUFF_CSV_URL = "https://docs.google.com/spreadsheets/d/1eItzaMGhpJ28vv4sDA8wwmu0YhUxcbiz-2VLiCVyjv4/export?format=csv&gid=1246908857"
 HORDENBUFF_CSV_CACHE_CONTENT = ""
 HORDENBUFF_CSV_CACHE_TIME = None
@@ -912,6 +915,56 @@ def iter_worldbuff_sheet_rows():
     return result
 
 
+def get_worldbuff_rows_from_apps_script(days=14):
+    global WORLDBUFF_API_CACHE_ROWS, WORLDBUFF_API_CACHE_TIME
+
+    now = datetime.now()
+    if WORLDBUFF_API_CACHE_ROWS and WORLDBUFF_API_CACHE_TIME:
+        if (now - WORLDBUFF_API_CACHE_TIME).total_seconds() < WORLDBUFF_API_CACHE_SECONDS:
+            return list(WORLDBUFF_API_CACHE_ROWS)
+
+    try:
+        result = lichtloot_apps_script_get({
+            "action": "getPublicWorldbuffs",
+            "days": days,
+            "t": int(time.time())
+        })
+        raw_rows = result.get("buffs") or result.get("entries") or []
+        rows = []
+
+        for row in raw_rows:
+            if not isinstance(row, dict):
+                continue
+
+            datum = normalize_sheet_date(row.get("datum") or row.get("date") or "")
+            uhrzeit = normalize_sheet_time(row.get("uhrzeit") or row.get("time") or "")
+            buff = normalize_buff(row.get("buff") or row.get("name") or row.get("type") or "")
+            gilde = clean_sheet_value(row.get("gilde") or row.get("guild") or row.get("fraktion") or "")
+
+            if buff not in ["Hakkar", "Ony", "Nef", "Rend"]:
+                continue
+            if not datum or not uhrzeit or not gilde:
+                continue
+
+            rows.append({
+                "buff": buff,
+                "datum": datum,
+                "tag": clean_sheet_value(row.get("tag") or "") or make_tag_from_date(datum),
+                "uhrzeit": uhrzeit,
+                "gilde": gilde,
+                "charakter": clean_sheet_value(row.get("charakter") or row.get("caster") or row.get("werfer") or ""),
+                "status": clean_sheet_value(row.get("status") or "")
+            })
+
+        WORLDBUFF_API_CACHE_ROWS = rows
+        WORLDBUFF_API_CACHE_TIME = now
+        print(f"Apps-Script-Worldbuffs: {len(rows)} Buff-Zeilen gelesen.")
+        return list(rows)
+    except Exception as e:
+        print("Apps-Script-Worldbuffs Fehler:", e)
+        return []
+
+
 def get_active_horden_rend_from_state():
     data = load_json(hordenbuff_file(), {})
     event_key = str(data.get("event_key", ""))
@@ -1032,7 +1085,13 @@ def parse_ticker_message(text):
 
 
 def import_buffs_aus_sheet():
-    rows = iter_worldbuff_sheet_rows()
+    rows = get_worldbuff_rows_from_apps_script(days=14)
+    source = "Apps Script"
+
+    if not rows:
+        rows = iter_worldbuff_sheet_rows()
+        source = "CSV"
+
     sheet_buffs = []
 
     for row in rows:
@@ -1047,16 +1106,16 @@ def import_buffs_aus_sheet():
         })
 
     if not sheet_buffs:
-        print("Worldbuff-Sheet geladen, aber keine gueltigen Buff-Zeilen gefunden. Pruefe CSV_URL und Kopfzeile.")
+        print("Worldbuff-Sheet geladen, aber keine gueltigen Buff-Zeilen gefunden. Pruefe Apps Script, CSV_URL und Kopfzeile.")
     else:
-        print(f"Worldbuff-Sheet: {len(sheet_buffs)} Buff-Zeilen gelesen.")
+        print(f"Worldbuff-Sheet via {source}: {len(sheet_buffs)} Buff-Zeilen gelesen.")
 
     return sheet_buffs
 
 
 def import_werfer_aus_sheet():
     werfer = {}
-    rows = iter_worldbuff_sheet_rows()
+    rows = get_worldbuff_rows_from_apps_script(days=14) or iter_worldbuff_sheet_rows()
 
     for row in rows:
         datum = row.get("datum", "")
@@ -2805,6 +2864,14 @@ def lichtloot_apps_script_post(payload):
     )
 
     with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def lichtloot_apps_script_get(params):
+    query = urllib.parse.urlencode(dict({"guild": current_guild_slug()}, **params))
+    url = LICHTLOOT_APPS_SCRIPT_URL + "?" + query
+
+    with urllib.request.urlopen(url, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
