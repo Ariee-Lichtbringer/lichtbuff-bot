@@ -2361,7 +2361,7 @@ def build_raid_announcement_text(raid):
         raid.get("createdBy") or
         raid.get("erstelltVon") or
         raid.get("created_by") or
-        "Gildenleitung"
+        "Unbekannt"
     ).strip()
 
     text = (
