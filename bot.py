@@ -3802,8 +3802,6 @@ async def on_ready():
     print(f"Loganalyse-Channels: {sorted(LOG_ANALYSIS_CHANNEL_IDS)}")
     print("Version 4.9 gestartet: Raid-Ankuendigungen und DC-Abgleich aktiv.")
 
-    await update_worldbuff_overview_from_all_guilds()
-
     if not hasattr(client, "hordenbuff_task_started"):
         client.hordenbuff_task_started = True
         client.loop.create_task(hordenbuff_reminder_loop())
@@ -3815,6 +3813,10 @@ async def on_ready():
     if not hasattr(client, "lichtloot_queue_task_started"):
         client.lichtloot_queue_task_started = True
         client.loop.create_task(lichtloot_queue_loop())
+
+    if not hasattr(client, "worldbuff_startup_task_started"):
+        client.worldbuff_startup_task_started = True
+        client.loop.create_task(update_worldbuff_overview_from_all_guilds())
 
     if not hasattr(client, "log_analysis_history_sync_started"):
         client.log_analysis_history_sync_started = True
