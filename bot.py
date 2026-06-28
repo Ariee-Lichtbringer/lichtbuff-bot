@@ -2364,6 +2364,40 @@ def build_log_analysis_post_text(payload):
         lines.append(f"🧾 **Warcraft Logs:** {report_url}")
     return "\n".join(lines)
 
+def build_log_analysis_post_embed(payload):
+    analysis_type = str(payload.get("analysisType") or payload.get("type") or "log").upper()
+    raid = normalize_raid_name(payload.get("raid") or "")
+    raid_label = raid or "Raid"
+    raid_date = format_log_analysis_post_date(payload.get("raidDate") or "")
+    report_code = str(payload.get("reportCode") or "").strip()
+    report_url = str(payload.get("reportUrl") or "").strip()
+
+    color = 0x3B82F6 if analysis_type == "CLA" else 0x22C55E
+    embed = discord.Embed(
+        title=f"{analysis_type}-Loganalyse fertig",
+        description="Die Auswertung ist bereit und kann über die Buttons geöffnet werden.",
+        color=color
+    )
+    embed.add_field(name="Raid", value=raid_label, inline=True)
+    embed.add_field(name="Datum", value=raid_date, inline=True)
+    if report_code:
+        embed.add_field(name="Report", value=f"`{report_code}`", inline=True)
+    if report_url:
+        embed.url = report_url
+    embed.set_footer(text="LichtLoot · Warcraft Logs Auswertung")
+    return embed
+
+def build_log_analysis_post_view(payload):
+    analysis_type = str(payload.get("analysisType") or payload.get("type") or "log").upper()
+    sheet_url = str(payload.get("sheetUrl") or "").strip()
+    report_url = str(payload.get("reportUrl") or "").strip()
+    view = discord.ui.View(timeout=None)
+    if sheet_url.startswith("http"):
+        view.add_item(discord.ui.Button(label=f"{analysis_type} öffnen", style=discord.ButtonStyle.link, url=sheet_url))
+    if report_url.startswith("http"):
+        view.add_item(discord.ui.Button(label="Warcraft Logs", style=discord.ButtonStyle.link, url=report_url))
+    return view
+
 async def post_log_analysis_from_queue(payload):
     channel_id = str(payload.get("channelId") or "").strip()
     if not channel_id:
@@ -2383,7 +2417,10 @@ async def post_log_analysis_from_queue(payload):
     channel = client.get_channel(int(channel_id))
     if channel is None:
         channel = await client.fetch_channel(int(channel_id))
-    await channel.send(build_log_analysis_post_text(payload))
+    await channel.send(
+        embed=build_log_analysis_post_embed(payload),
+        view=build_log_analysis_post_view(payload)
+    )
     print(f"Loganalyse gepostet: {payload.get('analysisType')} {raid} in {channel_id}")
 
 
