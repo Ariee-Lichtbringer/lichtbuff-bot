@@ -3147,7 +3147,9 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
         removed = await asyncio.to_thread(remove_deleted_worldbuff_from_all_caches, payload)
         print(f"Worldbuff-Loeschung aus Queue verarbeitet, {removed} Cache-Eintraege entfernt.")
 
-    if update_type == "worldbuff_update":
+    if update_type == "raid_announcement":
+        await post_raid_announcement_by_id(payload.get("raidId") or payload.get("id"))
+    elif update_type == "worldbuff_update":
         await update_worldbuff_overview_from_all_guilds()
     elif update_type == "hordenbuff_update":
         await update_hordenbuff_post(force=True)
@@ -3705,6 +3707,45 @@ async def raid_announcement_loop():
             print("Fehler im Raid-Ankuendigungs-Loop:", e)
 
         await asyncio.sleep(RAID_ANNOUNCEMENT_CHECK_SECONDS)
+
+
+async def post_raid_announcement_by_id(raid_id):
+    raid_id = str(raid_id or "").strip()
+    if not raid_id:
+        return False
+
+    result = await asyncio.to_thread(lichtloot_get, {
+        "action": "getActiveRaids",
+        "t": int(time.time())
+    })
+    raids = result.get("allRaids") or result.get("raids") or []
+    raid = next(
+        (
+            item for item in raids
+            if str(item.get("raidId") or item.get("id") or "").strip() == raid_id
+            or str(item.get("playerPin") or "").strip() == raid_id
+        ),
+        None
+    )
+
+    if not raid:
+        print(f"Raid-Ankuendigung manuell: Raid {raid_id} nicht gefunden.")
+        return False
+
+    raid_name = normalize_raid_name(raid.get("raid") or raid.get("raidName") or "")
+    channel_id = get_primary_raid_channel_id(raid_name)
+    if not channel_id:
+        print(f"Raid-Ankuendigung manuell: Kein Channel fuer {raid_name} hinterlegt.")
+        return False
+
+    channel = client.get_channel(int(channel_id))
+    if channel is None:
+        channel = await client.fetch_channel(int(channel_id))
+
+    await channel.send(build_raid_announcement_text(raid))
+    print(f"Raid-Ankuendigung manuell gepostet: {raid_id} in {channel_id}")
+    await asyncio.sleep(2)
+    return True
 
 
 async def prio_sync_loop():
