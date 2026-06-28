@@ -87,6 +87,7 @@ WORLDBUFF_PLAN_CSV_URL = "https://docs.google.com/spreadsheets/d/1o7fzOAn9wC0iWc
 WORLDBUFF_PLAN_CACHE_CONTENT = ""
 WORLDBUFF_PLAN_CACHE_TIME = None
 DATA_FILE = "worldbuffs.json"
+DELETED_WORLDBUFF_FILE = "deleted_worldbuffs.json"
 POST_FILE = "last_post.json"
 HORDENBUFF_FILE = "hordenbuff.json"
 HORDENBUFF_CLEANUP_FILE = "hordenbuff_cleanup.json"
@@ -161,6 +162,10 @@ def hordenbuff_cleanup_file():
 
 def worldbuff_file():
     return guild_scoped_file(DATA_FILE)
+
+
+def deleted_worldbuff_file():
+    return DELETED_WORLDBUFF_FILE
 
 
 def worldbuff_post_file():
@@ -587,6 +592,69 @@ def make_buff_slot_key(buff_data):
         return f"{datum}|{zeit}|LICHTBRINGER"
 
     return f"{datum}|{zeit}|{gilde}"
+
+
+def load_deleted_worldbuff_keys():
+    data = load_json(deleted_worldbuff_file(), {})
+    if isinstance(data, list):
+        return {str(key): "" for key in data}
+    if isinstance(data, dict):
+        return {str(key): str(value or "") for key, value in data.items()}
+    return {}
+
+
+def save_deleted_worldbuff_keys(keys):
+    save_json(deleted_worldbuff_file(), keys or {})
+
+
+def is_deleted_worldbuff(buff_data):
+    try:
+        return make_buff_key(buff_data) in load_deleted_worldbuff_keys()
+    except Exception:
+        return False
+
+
+def remember_deleted_worldbuff(term):
+    if not term:
+        return ""
+
+    try:
+        key = make_buff_key(term)
+    except Exception:
+        return ""
+
+    keys = load_deleted_worldbuff_keys()
+    keys[key] = datetime.now(BERLIN_TZ).isoformat()
+    save_deleted_worldbuff_keys(keys)
+    return key
+
+
+def remove_deleted_worldbuff_from_all_caches(term):
+    deleted_key = remember_deleted_worldbuff(term)
+    if not deleted_key:
+        return 0
+
+    removed = 0
+    for guild_slug in WORLDBUFF_GUILD_SLUGS:
+        token = CURRENT_GUILD_SLUG.set(guild_slug)
+        try:
+            data = load_json(worldbuff_file(), [])
+            kept = []
+            for entry in data:
+                try:
+                    if make_buff_key(entry) == deleted_key:
+                        removed += 1
+                        continue
+                except Exception:
+                    pass
+                kept.append(entry)
+            if len(kept) != len(data):
+                save_json(worldbuff_file(), kept)
+                sync_worldbuff_ticker_cache_to_sheet(kept)
+        finally:
+            CURRENT_GUILD_SLUG.reset(token)
+
+    return removed
 
 
 def normalize_guild_for_overview(gilde):
@@ -1027,7 +1095,8 @@ def sync_worldbuff_ticker_cache_to_sheet(data=None):
         print("Worldbuffticker-Sync uebersprungen: LICHTBOT_QUEUE_TOKEN fehlt.")
         return {"success": False, "error": "LICHTBOT_QUEUE_TOKEN fehlt."}
 
-    buffs = data if data is not None else load_json(worldbuff_file(), [])
+    raw_buffs = data if data is not None else load_json(worldbuff_file(), [])
+    buffs = [buff for buff in raw_buffs if not is_deleted_worldbuff(buff)]
     payload = {
         "action": "lichtbotSyncWorldbuffTicker",
         "queueToken": LICHTBOT_QUEUE_TOKEN,
@@ -1094,6 +1163,7 @@ def build_overview():
         ]
 
     merge_buffs_into_data(data, sheet_buffs)
+    data = [b for b in data if not is_deleted_worldbuff(b)]
 
     werfer = import_werfer_aus_sheet()
 
@@ -1223,6 +1293,8 @@ async def sync_recent_ticker_messages(limit=500):
         except Exception as e:
             print(f"Ticker-Historie {channel_id} konnte nicht gelesen werden:", e)
             continue
+
+    found_buffs = [buff for buff in found_buffs if not is_deleted_worldbuff(buff)]
 
     if not found_buffs:
         return 0
@@ -3075,6 +3147,16 @@ def hordenbuff_sheet_delete(rend, name):
 async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
     update_type = str(item.get("type") or "").strip()
     row_number = item.get("rowNumber")
+    payload = {}
+
+    try:
+        payload = json.loads(item.get("payload") or "{}")
+    except Exception:
+        payload = {}
+
+    if update_type == "worldbuff_update" and payload.get("deleted"):
+        removed = await asyncio.to_thread(remove_deleted_worldbuff_from_all_caches, payload)
+        print(f"Worldbuff-Loeschung aus Queue verarbeitet, {removed} Cache-Eintraege entfernt.")
 
     if update_type == "worldbuff_update":
         await update_worldbuff_overview_from_all_guilds()
@@ -3652,7 +3734,7 @@ async def handle_ticker_update(message):
     if not is_ticker_channel(message.channel.id):
         return
 
-    new_buffs = parse_ticker_message(message.content)
+    new_buffs = [buff for buff in parse_ticker_message(message.content) if not is_deleted_worldbuff(buff)]
 
     if not new_buffs:
         return
