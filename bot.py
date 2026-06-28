@@ -38,6 +38,8 @@ HORDENBUFF_CHANNEL_IDS = {
 LOG_ANALYSIS_CHANNEL_IDS = {
     LOG_ANALYSIS_CHANNEL_ID
 }
+LOG_ANALYSIS_BOOTSTRAP_COUNT = int(os.getenv("LOG_ANALYSIS_BOOTSTRAP_COUNT", "10"))
+LOG_ANALYSIS_HISTORY_LIMIT = int(os.getenv("LOG_ANALYSIS_HISTORY_LIMIT", "300"))
 
 # LichtLoot / Prio-Check AQ40
 AQ40_CHANNEL_ID = 1439219220528500806
@@ -2729,18 +2731,18 @@ def extract_warcraft_log_urls(text):
     return urls
 
 
-async def handle_log_analysis_message(message):
+async def handle_log_analysis_message(message, announce=True):
     if int(message.channel.id) not in LOG_ANALYSIS_CHANNEL_IDS:
-        return
+        return []
 
     text = collect_message_text(message)
     logs = extract_warcraft_log_urls(text)
     if not logs:
-        return
+        return []
 
     if not LICHTBOT_QUEUE_TOKEN:
         print("Loganalyse uebersprungen: LICHTBOT_QUEUE_TOKEN fehlt.")
-        return
+        return []
 
     saved = []
 
@@ -2770,7 +2772,7 @@ async def handle_log_analysis_message(message):
         except Exception as e:
             print("Loganalyse-Speicherung fehlgeschlagen:", e)
 
-    if saved:
+    if announce and saved:
         try:
             await message.channel.send(
                 "✅ Loganalyse in LichtLoot aufgenommen: "
@@ -2779,6 +2781,61 @@ async def handle_log_analysis_message(message):
             )
         except:
             pass
+
+    return saved
+
+
+async def sync_recent_log_analyses_from_channel(channel_id, target_count=LOG_ANALYSIS_BOOTSTRAP_COUNT, history_limit=LOG_ANALYSIS_HISTORY_LIMIT):
+    if not LICHTBOT_QUEUE_TOKEN:
+        print("Loganalyse-History-Sync uebersprungen: LICHTBOT_QUEUE_TOKEN fehlt.")
+        return []
+
+    try:
+        channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+    except Exception as e:
+        print(f"Loganalyse-Channel {channel_id} konnte nicht geladen werden:", e)
+        return []
+
+    saved_codes = []
+    seen_codes = set()
+
+    try:
+        async for msg in channel.history(limit=history_limit):
+            if msg.author == client.user:
+                continue
+
+            logs = extract_warcraft_log_urls(collect_message_text(msg))
+            new_logs = [
+                log for log in logs
+                if log["reportCode"].lower() not in seen_codes
+            ]
+            if not new_logs:
+                continue
+
+            for log in new_logs:
+                seen_codes.add(log["reportCode"].lower())
+
+            saved = await handle_log_analysis_message(msg, announce=False)
+            for code in saved:
+                key = code.lower()
+                if key not in [item.lower() for item in saved_codes]:
+                    saved_codes.append(code)
+
+            if len(saved_codes) >= target_count:
+                break
+    except Exception as e:
+        print("Loganalyse-History-Sync fehlgeschlagen:", e)
+
+    print(f"Loganalyse-History-Sync: {len(saved_codes)} Report(s) an LichtLoot gesendet.")
+    return saved_codes[:target_count]
+
+
+async def sync_recent_log_analyses():
+    all_saved = []
+    for channel_id in LOG_ANALYSIS_CHANNEL_IDS:
+        saved = await sync_recent_log_analyses_from_channel(channel_id)
+        all_saved.extend(saved)
+    return all_saved
 
 
 PUBLIC_API_CACHE = {}
@@ -3585,6 +3642,10 @@ async def on_ready():
         client.lichtloot_queue_task_started = True
         client.loop.create_task(lichtloot_queue_loop())
 
+    if not hasattr(client, "log_analysis_history_sync_started"):
+        client.log_analysis_history_sync_started = True
+        client.loop.create_task(sync_recent_log_analyses())
+
     # Automatischer AQ40-Prio-Report deaktiviert.
     # if not hasattr(client, "prio_report_task_started"):
     #     client.prio_report_task_started = True
@@ -3621,6 +3682,17 @@ async def on_message(message):
 
     content = message.content.strip()
     lower = content.lower()
+
+    if lower.startswith("!lllogsync"):
+        if int(message.channel.id) not in LOG_ANALYSIS_CHANNEL_IDS:
+            await message.channel.send("⚠️ Dieser Befehl funktioniert nur im Loganalyse-Channel.", delete_after=20)
+            return
+        saved = await sync_recent_log_analyses_from_channel(message.channel.id)
+        await message.channel.send(
+            f"✅ {len(saved)} Warcraft-Logs aus der Channel-History an LichtLoot gesendet.",
+            delete_after=30
+        )
+        return
 
     if lower.startswith("!lldebug"):
         parts = lower.replace(".", "").split()
