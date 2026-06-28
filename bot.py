@@ -1035,7 +1035,9 @@ def import_buffs_aus_sheet():
             "datum": row.get("datum", ""),
             "tag": row.get("tag", ""),
             "uhrzeit": row.get("uhrzeit", ""),
-            "gilde": row.get("gilde", "")
+            "gilde": row.get("gilde", ""),
+            "charakter": row.get("charakter", ""),
+            "status": row.get("status", "")
         })
 
     if not sheet_buffs:
@@ -1148,22 +1150,8 @@ def merge_buffs_into_data(data, new_buffs):
 
 
 def build_overview():
-    data = load_json(worldbuff_file(), [])
     sheet_buffs = import_buffs_aus_sheet()
-
-    sheet_slots = {
-        make_buff_slot_key(b)
-        for b in sheet_buffs
-    }
-
-    if sheet_slots:
-        data = [
-            b for b in data
-            if make_buff_slot_key(b) not in sheet_slots
-        ]
-
-    merge_buffs_into_data(data, sheet_buffs)
-    data = [b for b in data if not is_deleted_worldbuff(b)]
+    data = list(sheet_buffs)
 
     werfer = import_werfer_aus_sheet()
 
@@ -1244,12 +1232,13 @@ def build_overview():
 
         key = make_buff_key(b)
         info = werfer.get(key)
+        charakter = b.get("charakter") or (info and info.get("charakter")) or ""
 
-        if info and info.get("charakter"):
+        if charakter:
             if is_lichtbringer(gilde):
-                werfer_text = f" - 🔵 {info['charakter']}"
+                werfer_text = f" - 🔵 {charakter}"
             else:
-                werfer_text = f" - ⚔️ {info['charakter']}"
+                werfer_text = f" - ⚔️ {charakter}"
 
         text += f"{emoji} **{buff}** {zeit} - {gilde}{werfer_text}\n"
 
