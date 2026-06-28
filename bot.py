@@ -23,6 +23,7 @@ PANEM_TICKER_CHANNEL_ID = 1482656882857349277
 POST_CHANNEL_ID = 1281152286772695071
 HORDENBUFF_CHANNEL_ID = 1510764309062615220
 PANEM_HORDENBUFF_CHANNEL_ID = 1518153802983669810
+LOG_ANALYSIS_CHANNEL_ID = 1279032487628242995
 
 TICKER_CHANNEL_IDS = {
     TICKER_CHANNEL_ID,
@@ -32,6 +33,10 @@ TICKER_CHANNEL_IDS = {
 HORDENBUFF_CHANNEL_IDS = {
     HORDENBUFF_CHANNEL_ID,
     PANEM_HORDENBUFF_CHANNEL_ID
+}
+
+LOG_ANALYSIS_CHANNEL_IDS = {
+    LOG_ANALYSIS_CHANNEL_ID
 }
 
 # LichtLoot / Prio-Check AQ40
@@ -2701,6 +2706,81 @@ def railway_post(payload):
         return json.loads(response.read().decode("utf-8"))
 
 
+def extract_warcraft_log_urls(text):
+    urls = []
+    seen = set()
+    pattern = re.compile(r"https?://(?:[a-z]+\.)?warcraftlogs\.com/reports/[A-Za-z0-9]+[^\s<>)\]]*", re.IGNORECASE)
+
+    for match in pattern.finditer(str(text or "")):
+        url = match.group(0).rstrip(".,;:!")
+        code_match = re.search(r"/reports/([A-Za-z0-9]+)", url, re.IGNORECASE)
+        if not code_match:
+            continue
+        report_code = code_match.group(1)
+        key = report_code.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        urls.append({
+            "url": url,
+            "reportCode": report_code
+        })
+
+    return urls
+
+
+async def handle_log_analysis_message(message):
+    if int(message.channel.id) not in LOG_ANALYSIS_CHANNEL_IDS:
+        return
+
+    text = collect_message_text(message)
+    logs = extract_warcraft_log_urls(text)
+    if not logs:
+        return
+
+    if not LICHTBOT_QUEUE_TOKEN:
+        print("Loganalyse uebersprungen: LICHTBOT_QUEUE_TOKEN fehlt.")
+        return
+
+    saved = []
+
+    for log in logs:
+        payload = {
+            "action": "lichtbotSaveLogAnalysis",
+            "queueToken": LICHTBOT_QUEUE_TOKEN,
+            "reportUrl": log["url"],
+            "reportCode": log["reportCode"],
+            "status": "pending",
+            "title": "Discord Log",
+            "discordChannelId": str(message.channel.id),
+            "discordMessageId": str(message.id),
+            "discordAuthor": getattr(message.author, "display_name", "") or str(message.author),
+            "postedAt": message.created_at.isoformat(),
+            "summary": json.dumps({
+                "note": "Automatisch aus Discord erkannt. Detailanalyse wird im LichtLoot-Dashboard vorbereitet."
+            }, ensure_ascii=False)
+        }
+
+        try:
+            result = await asyncio.to_thread(railway_post, payload)
+            if result.get("success"):
+                saved.append(log["reportCode"])
+            else:
+                print("Loganalyse konnte nicht gespeichert werden:", result)
+        except Exception as e:
+            print("Loganalyse-Speicherung fehlgeschlagen:", e)
+
+    if saved:
+        try:
+            await message.channel.send(
+                "✅ Loganalyse in LichtLoot aufgenommen: "
+                + ", ".join(f"`{code}`" for code in saved),
+                delete_after=30
+            )
+        except:
+            pass
+
+
 PUBLIC_API_CACHE = {}
 PUBLIC_API_CACHE_LOCK = threading.Lock()
 
@@ -3488,6 +3568,7 @@ async def on_ready():
     print(f"Überwache Ticker-Channels: {sorted(TICKER_CHANNEL_IDS)}")
     print(f"Postet Übersicht in Channel: {POST_CHANNEL_ID}")
     print(f"Hordenbuff-Channels: {sorted(HORDENBUFF_CHANNEL_IDS)}")
+    print(f"Loganalyse-Channels: {sorted(LOG_ANALYSIS_CHANNEL_IDS)}")
     print("Version 4.9 gestartet: Raid-Ankuendigungen und DC-Abgleich aktiv.")
 
     await asyncio.to_thread(sync_worldbuff_ticker_cache_to_sheet)
@@ -3525,6 +3606,7 @@ async def on_message_edit(before, after):
     #for raid in get_raid_names_for_channel(after.channel.id):
     #  schedule_prio_check_update(raid, f"Nachricht im {raid}-Channel bearbeitet")
 
+    await handle_log_analysis_message(after)
     await handle_ticker_update(after)
 
 
@@ -3534,6 +3616,8 @@ async def on_message(message):
         return
 
     CURRENT_GUILD_SLUG.set(guild_slug_for_channel(message.channel.id))
+
+    await handle_log_analysis_message(message)
 
     content = message.content.strip()
     lower = content.lower()
