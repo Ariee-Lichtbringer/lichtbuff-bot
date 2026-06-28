@@ -2311,16 +2311,36 @@ def collect_message_text(message):
         parts.append(message.content)
 
     for embed in getattr(message, "embeds", []) or []:
+        if getattr(embed, "url", None):
+            parts.append(str(embed.url))
         if embed.title:
             parts.append(embed.title)
         if embed.description:
             parts.append(embed.description)
+        if getattr(embed, "author", None):
+            if getattr(embed.author, "name", None):
+                parts.append(str(embed.author.name))
+            if getattr(embed.author, "url", None):
+                parts.append(str(embed.author.url))
         for field in embed.fields:
+            if field.name:
+                parts.append(str(field.name))
             if field.value:
                 parts.append(str(field.value))
                 parts.append("<<FIELD_BREAK>>")
         if embed.footer and embed.footer.text:
             parts.append(embed.footer.text)
+        if getattr(embed, "thumbnail", None) and getattr(embed.thumbnail, "url", None):
+            parts.append(str(embed.thumbnail.url))
+        if getattr(embed, "image", None) and getattr(embed.image, "url", None):
+            parts.append(str(embed.image.url))
+
+    for row in getattr(message, "components", []) or []:
+        for child in getattr(row, "children", []) or []:
+            if getattr(child, "url", None):
+                parts.append(str(child.url))
+            if getattr(child, "label", None):
+                parts.append(str(child.label))
 
     return "\n".join(parts)
 
@@ -2731,6 +2751,11 @@ def extract_warcraft_log_urls(text):
     return urls
 
 
+def is_logsync_command(text):
+    value = str(text or "").strip().lower()
+    return bool(re.match(r"^!+\s*(?:lllogsync|logsync)\b", value))
+
+
 async def handle_log_analysis_message(message, announce=True):
     if int(message.channel.id) not in LOG_ANALYSIS_CHANNEL_IDS:
         return []
@@ -2797,10 +2822,11 @@ async def sync_recent_log_analyses_from_channel(channel_id, target_count=LOG_ANA
         return []
 
     saved_codes = []
+    saved_code_keys = set()
     seen_codes = set()
 
     try:
-        async for msg in channel.history(limit=history_limit):
+        async for msg in channel.history(limit=history_limit, oldest_first=False):
             if msg.author == client.user:
                 continue
 
@@ -2818,8 +2844,9 @@ async def sync_recent_log_analyses_from_channel(channel_id, target_count=LOG_ANA
             saved = await handle_log_analysis_message(msg, announce=False)
             for code in saved:
                 key = code.lower()
-                if key not in [item.lower() for item in saved_codes]:
+                if key not in saved_code_keys:
                     saved_codes.append(code)
+                    saved_code_keys.add(key)
 
             if len(saved_codes) >= target_count:
                 break
@@ -3683,7 +3710,7 @@ async def on_message(message):
     content = message.content.strip()
     lower = content.lower()
 
-    if lower.startswith("!lllogsync"):
+    if is_logsync_command(content):
         if int(message.channel.id) not in LOG_ANALYSIS_CHANNEL_IDS:
             await message.channel.send("⚠️ Dieser Befehl funktioniert nur im Loganalyse-Channel.", delete_after=20)
             return
