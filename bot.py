@@ -42,7 +42,11 @@ HORDENBUFF_CHANNEL_IDS = {
 }
 
 LOG_ANALYSIS_CHANNEL_IDS = {
-    LOG_ANALYSIS_CHANNEL_ID
+    LOG_ANALYSIS_CHANNEL_ID,
+    1509236359141785600,  # BWL Log Channel
+    1509236588410834965,  # MC Log Channel
+    1509235847109804082,  # Naxx Log Channel
+    1509236271816511651   # AQ40 Log Channel
 }
 LOG_ANALYSIS_BOOTSTRAP_COUNT = int(os.getenv("LOG_ANALYSIS_BOOTSTRAP_COUNT", "10"))
 LOG_ANALYSIS_HISTORY_LIMIT = int(os.getenv("LOG_ANALYSIS_HISTORY_LIMIT", "300"))
@@ -2326,6 +2330,62 @@ def normalize_raid_name(value):
     }
     return aliases.get(raid, raid)
 
+def format_log_analysis_post_date(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return "-"
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%d.%m.%Y")
+        except Exception:
+            pass
+    return raw
+
+def build_log_analysis_post_text(payload):
+    analysis_type = str(payload.get("analysisType") or payload.get("type") or "log").upper()
+    raid = normalize_raid_name(payload.get("raid") or "")
+    raid_label = raid or "Raid"
+    raid_date = format_log_analysis_post_date(payload.get("raidDate") or "")
+    sheet_url = str(payload.get("sheetUrl") or "").strip()
+    report_url = str(payload.get("reportUrl") or "").strip()
+    report_code = str(payload.get("reportCode") or "").strip()
+
+    lines = [
+        f"📊 **{analysis_type}-Loganalyse fertig**",
+        "",
+        f"**Raid:** {raid_label}",
+        f"**Datum:** {raid_date}"
+    ]
+    if report_code:
+        lines.append(f"**Report:** `{report_code}`")
+    lines.append("")
+    lines.append(f"🔗 **{analysis_type} öffnen:** {sheet_url}")
+    if report_url:
+        lines.append(f"🧾 **Warcraft Logs:** {report_url}")
+    return "\n".join(lines)
+
+async def post_log_analysis_from_queue(payload):
+    channel_id = str(payload.get("channelId") or "").strip()
+    if not channel_id:
+        print("Loganalyse-Post ohne ChannelId uebersprungen.")
+        return
+
+    raid = normalize_raid_name(payload.get("raid") or "")
+    if raid not in {"MC", "BWL", "NAXX", "AQ40"}:
+        print(f"Loganalyse-Post fuer {raid or 'unbekannt'} uebersprungen.")
+        return
+
+    sheet_url = str(payload.get("sheetUrl") or "").strip()
+    if not sheet_url:
+        print("Loganalyse-Post ohne Sheet-Link uebersprungen.")
+        return
+
+    channel = client.get_channel(int(channel_id))
+    if channel is None:
+        channel = await client.fetch_channel(int(channel_id))
+    await channel.send(build_log_analysis_post_text(payload))
+    print(f"Loganalyse gepostet: {payload.get('analysisType')} {raid} in {channel_id}")
+
 
 def format_raid_announcement_date(value):
     raw = str(value or "").strip()
@@ -3228,7 +3288,8 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
     payload = {}
 
     try:
-        payload = json.loads(item.get("payload") or "{}")
+        raw_payload = item.get("payload") or {}
+        payload = raw_payload if isinstance(raw_payload, dict) else json.loads(raw_payload or "{}")
     except Exception:
         payload = {}
 
@@ -3238,6 +3299,8 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
 
     if update_type == "raid_announcement":
         await post_raid_announcement_by_id(payload.get("raidId") or payload.get("id"))
+    elif update_type == "log_analysis_post":
+        await post_log_analysis_from_queue(payload)
     elif update_type == "worldbuff_update":
         await update_worldbuff_overview_from_all_guilds()
     elif update_type == "hordenbuff_update":
