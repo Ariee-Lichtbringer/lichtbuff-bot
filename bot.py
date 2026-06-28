@@ -1162,6 +1162,7 @@ def build_overview():
     ende = heute + timedelta(days=7)
 
     gefiltert = []
+    heutige_buffs = 0
 
     for b in data:
         try:
@@ -1169,9 +1170,17 @@ def build_overview():
 
             if heute <= buff_datum <= ende:
                 gefiltert.append(b)
+                if buff_datum == heute:
+                    heutige_buffs += 1
 
         except:
             continue
+
+    print(
+        "Worldbuff-Uebersicht Zeitraum: "
+        f"{heute.strftime('%d.%m.%Y')} bis {ende.strftime('%d.%m.%Y')} "
+        f"- {len(gefiltert)} Termine, davon heute {heutige_buffs}."
+    )
 
     data = gefiltert
 
