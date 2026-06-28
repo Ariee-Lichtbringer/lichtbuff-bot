@@ -2357,11 +2357,18 @@ def build_raid_announcement_text(raid):
     raid_date = format_raid_announcement_date(raid.get("raidDate"))
     raid_time = format_raid_announcement_time(raid.get("raidTime"))
     player_pin = str(raid.get("playerPin") or "").strip()
+    created_by = str(
+        raid.get("createdBy") or
+        raid.get("erstelltVon") or
+        raid.get("created_by") or
+        "Gildenleitung"
+    ).strip()
 
     text = (
         f"📣 **Neuer Raid erstellt: {raid_name}**\n"
         f"🗓️ **Datum:** {raid_date}\n"
-        f"⏰ **Start:** {raid_time}\n\n"
+        f"⏰ **Start:** {raid_time}\n"
+        f"👤 **Erstellt von:** {created_by}\n\n"
         f"🔑 **Prio-PIN:** `{player_pin}`\n"
         f"➡️ **Prios eintragen:** {LICHTLOOT_URL}\n\n"
         "Bitte tragt eure Prios rechtzeitig ein."
