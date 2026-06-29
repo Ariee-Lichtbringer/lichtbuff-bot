@@ -68,6 +68,10 @@ LICHTLOOT_APPS_SCRIPT_URL = os.getenv(
     "LICHTLOOT_APPS_SCRIPT_URL",
     "https://script.google.com/macros/s/AKfycbzwRZ1908IawmEh3WdROu_TBwfu8Yr1YXJ1VicqEIf15eZ2zzRE3Yw9OaaeJ0ZADbye2g/exec"
 )
+WORLDBUFF_GUIDE_IMAGE_URL = os.getenv(
+    "WORLDBUFF_GUIDE_IMAGE_URL",
+    "https://lichtloot.de/images/worldbuff-anleitung.jpg"
+)
 LICHTLOOT_GUILD_SLUG = os.getenv("LICHTLOOT_GUILD_SLUG", "lichtloot")
 PANEM_GUILD_SLUG = os.getenv("PANEM_GUILD_SLUG", "panemloot")
 WORLDBUFF_GUILD_SLUGS = [
@@ -1288,7 +1292,7 @@ def build_overview():
 
     text = "📢 **Worldbuffs**"
     text += f" · Stand {now}\n"
-    text += "_Nächste 7 Tage · Eintragen per `!worldbuff` oder schnell per `!wurf buff Name`_\n"
+    text += "_Nächste 7 Tage · Eintragen per `!worldbuff`_\n"
 
     current_date = ""
 
@@ -1321,6 +1325,18 @@ def build_overview():
         text += f"{emoji} **{buff}** {zeit} - {gilde}{werfer_text}\n"
 
     return text
+
+
+def build_worldbuff_guide_embed():
+    if not WORLDBUFF_GUIDE_IMAGE_URL:
+        return None
+    embed = discord.Embed(
+        title="Worldbuff eintragen",
+        description="Kurzanleitung für die Anmeldung per `!worldbuff`.",
+        color=0x5865F2
+    )
+    embed.set_image(url=WORLDBUFF_GUIDE_IMAGE_URL)
+    return embed
 
 
 async def delete_last_post(channel):
@@ -1393,17 +1409,18 @@ async def update_worldbuff_post(sync_ticker=True):
     await delete_last_post(channel)
 
     text = await asyncio.to_thread(build_overview)
+    guide_embed = build_worldbuff_guide_embed()
 
     if len(text) <= 1900:
-        msg = await channel.send(text)
+        msg = await channel.send(text, embed=guide_embed)
         save_json(worldbuff_post_file(), {"message_id": msg.id, "message_ids": [msg.id]})
     else:
         chunks = [text[i:i + 1900] for i in range(0, len(text), 1900)]
         last_msg = None
         message_ids = []
 
-        for chunk in chunks:
-            last_msg = await channel.send(chunk)
+        for index, chunk in enumerate(chunks):
+            last_msg = await channel.send(chunk, embed=guide_embed if index == 0 else None)
             message_ids.append(last_msg.id)
 
         if last_msg:
