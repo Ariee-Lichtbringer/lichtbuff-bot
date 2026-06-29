@@ -72,6 +72,10 @@ WORLDBUFF_GUIDE_IMAGE_URL = os.getenv(
     "WORLDBUFF_GUIDE_IMAGE_URL",
     "https://lichtloot.de/images/worldbuff-anleitung.jpg"
 )
+HORDENBUFF_GUIDE_IMAGE_URL = os.getenv(
+    "HORDENBUFF_GUIDE_IMAGE_URL",
+    "https://lichtloot.de/images/Hordenbuff.jpg"
+)
 LICHTLOOT_GUILD_SLUG = os.getenv("LICHTLOOT_GUILD_SLUG", "lichtloot")
 PANEM_GUILD_SLUG = os.getenv("PANEM_GUILD_SLUG", "panemloot")
 WORLDBUFF_GUILD_SLUGS = [
@@ -1339,6 +1343,18 @@ def build_worldbuff_guide_embed():
     return embed
 
 
+def build_hordenbuff_guide_embed():
+    if not HORDENBUFF_GUIDE_IMAGE_URL:
+        return None
+    embed = discord.Embed(
+        title="Hordenbuffs eintragen",
+        description="Kurzanleitung für die Anmeldung per `!rend`.",
+        color=0xED1C24
+    )
+    embed.set_image(url=HORDENBUFF_GUIDE_IMAGE_URL)
+    return embed
+
+
 async def delete_last_post(channel):
     post_data = load_json(worldbuff_post_file(), {})
     message_ids = post_data.get("message_ids")
@@ -1954,6 +1970,7 @@ async def update_hordenbuff_post(force=False):
 
             data = await asyncio.to_thread(merge_hordenbuff_sheet_data, rend, load_hordenbuff_state(rend))
             text = build_hordenbuff_text(rend, data)
+            guide_embed = build_hordenbuff_guide_embed()
             message_id = get_hordenbuff_message_id(data, channel_id)
 
             try:
@@ -1961,15 +1978,15 @@ async def update_hordenbuff_post(force=False):
                     try:
                         msg = await channel.fetch_message(message_id)
                     except discord.NotFound:
-                        msg = await channel.send(text)
+                        msg = await channel.send(text, embed=guide_embed)
                         set_hordenbuff_message_id(data, channel_id, msg.id)
                         save_json(hordenbuff_file(), data)
                         continue
 
-                    await msg.edit(content=text)
+                    await msg.edit(content=text, embed=guide_embed)
                     save_json(hordenbuff_file(), data)
                 else:
-                    msg = await channel.send(text)
+                    msg = await channel.send(text, embed=guide_embed)
                     set_hordenbuff_message_id(data, channel_id, msg.id)
                     save_json(hordenbuff_file(), data)
 
