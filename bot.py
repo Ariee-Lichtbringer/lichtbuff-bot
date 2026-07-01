@@ -2586,6 +2586,7 @@ def build_raid_announcement_embed(raid):
     tank_slots = str(raid.get("tankSlots") or "").strip()
     heal_slots = str(raid.get("healSlots") or "").strip()
     dd_slots = str(raid.get("ddSlots") or "").strip()
+    signup_deadline = format_raid_announcement_time(raid.get("signupDeadline") or raid.get("signup_deadline") or "")
     created_by = str(
         raid.get("createdBy") or
         raid.get("erstelltVon") or
@@ -3902,6 +3903,9 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             payload.get("raidId") or payload.get("id"),
             payload.get("channelId") or payload.get("discordChannelId")
         )
+        if posted == "stale":
+            print(f"Veraltete Raid-Ankuendigung aus Queue uebersprungen: {payload}")
+            posted = True
         if not posted:
             raise RuntimeError(f"Raid-Ankuendigung konnte nicht gepostet werden: {payload}")
     elif update_type == "log_analysis_post":
@@ -4506,7 +4510,8 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None):
         )
 
     if not raid:
-        raise RuntimeError(f"Raid-Ankuendigung manuell: Raid {raid_id} nicht gefunden.")
+        print(f"Raid-Ankuendigung manuell: Raid {raid_id} nicht gefunden, Queue-Eintrag ist veraltet.")
+        return "stale"
 
     raid_name = normalize_raid_name(raid.get("raid") or raid.get("raidName") or "")
     channel_id = (
@@ -4600,7 +4605,7 @@ async def on_ready():
     print(f"Postet Übersicht in Channel: {POST_CHANNEL_ID}")
     print(f"Hordenbuff-Channels: {sorted(HORDENBUFF_CHANNEL_IDS)}")
     print(f"Loganalyse-Channels: {sorted(LOG_ANALYSIS_CHANNEL_IDS)}")
-    print("Version 4.9 gestartet: manuelle Raid-Ankuendigungen und DC-Abgleich aktiv.")
+    print("Version 4.9.3 gestartet: Raid-Ankuendigung Hotfix signup_deadline + stale Queue aktiv.")
 
     if not hasattr(client, "hordenbuff_task_started"):
         client.hordenbuff_task_started = True
