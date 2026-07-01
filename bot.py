@@ -98,6 +98,35 @@ CLASS_EMOJI_ENV = {
     "warlock": ("CLASS_EMOJI_WARLOCK", "classicon_warlock"),
     "shaman": ("CLASS_EMOJI_SHAMAN", "classicon_shaman"),
 }
+CLASS_EMOJI_NAME_ALIASES = {
+    "warrior": ["krieger", "warrior", "classicon_warrior"],
+    "druid": ["druide", "druid", "classicon_druid"],
+    "paladin": ["pala", "paladin", "classicon_paladin"],
+    "rogue": ["schurke", "rogue", "classicon_rogue"],
+    "hunter": ["jäger", "jaeger", "jager", "hunter", "classicon_hunter"],
+    "priest": ["priester", "priest", "classicon_priest"],
+    "mage": ["magier", "mage", "classicon_mage"],
+    "warlock": ["hexenmeister", "hexer", "warlock", "classicon_warlock"],
+    "shaman": ["schamane", "shaman", "classicon_shaman"],
+}
+SPEC_EMOJI_FALLBACKS = {
+    "tank": "🛡️",
+    "heal": "➕",
+    "feral": "⚔️",
+    "balance": "🌑",
+    "survival": "🏹",
+    "marksman": "🏹",
+    "beastmaster": "🏹",
+}
+SPEC_EMOJI_NAME_ALIASES = {
+    "tank": ["tank", "prot", "schutz"],
+    "heal": ["heilung", "heal", "heiler", "holy", "resto", "restoration", "diszi"],
+    "feral": ["feraldd", "feral"],
+    "balance": ["eule", "balance", "moonkin"],
+    "survival": ["survival"],
+    "marksman": ["marksman", "marksmanship"],
+    "beastmaster": ["beastmaster", "beastmastery", "bm"],
+}
 LICHTLOOT_GUILD_SLUG = os.getenv("LICHTLOOT_GUILD_SLUG", "lichtloot")
 PANEM_GUILD_SLUG = os.getenv("PANEM_GUILD_SLUG", "panemloot")
 WORLDBUFF_GUILD_SLUGS = [
@@ -179,6 +208,8 @@ hordenbuff_update_lock = asyncio.Lock()
 hordenbuff_last_update_at = 0
 hordenbuff_rate_limited_until = 0
 CURRENT_GUILD_SLUG = contextvars.ContextVar("CURRENT_GUILD_SLUG", default=LICHTLOOT_GUILD_SLUG)
+class_emoji_cache = {}
+spec_emoji_cache = {}
 
 
 def guild_slug_for_channel(channel_id):
@@ -2685,6 +2716,7 @@ def signup_class_icon(class_name):
         "schurke": "rogue",
         "jäger": "hunter",
         "jaeger": "hunter",
+        "jager": "hunter",
         "priester": "priest",
         "magier": "mage",
         "hexenmeister": "warlock",
@@ -2697,6 +2729,9 @@ def signup_class_icon(class_name):
         return raw
     if raw.isdigit() and len(raw) >= 15:
         return f"<:{emoji_name}:{raw}>"
+    cached = class_emoji_cache.get(key)
+    if cached:
+        return cached
     return CLASS_EMOJI_FALLBACKS.get(key, "◆")
 
 
@@ -2710,12 +2745,70 @@ def signup_class_select_emoji(class_name):
     return icon
 
 
-def signup_spec_icon(spec_text, role=""):
+def normalize_emoji_name(value):
+    text = str(value or "").strip().lower()
+    text = text.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+    return re.sub(r"[^a-z0-9_]+", "", text)
+
+
+def refresh_class_emoji_cache():
+    found_classes = {}
+    found_specs = {}
+    all_emojis = []
+    try:
+        for guild in client.guilds:
+            all_emojis.extend(getattr(guild, "emojis", []) or [])
+    except Exception:
+        return found_classes, found_specs
+
+    by_name = {normalize_emoji_name(emoji.name): emoji for emoji in all_emojis}
+    for class_key, names in CLASS_EMOJI_NAME_ALIASES.items():
+        for name in names:
+            emoji = by_name.get(normalize_emoji_name(name))
+            if emoji:
+                found_classes[class_key] = str(emoji)
+                break
+    for spec_key, names in SPEC_EMOJI_NAME_ALIASES.items():
+        for name in names:
+            emoji = by_name.get(normalize_emoji_name(name))
+            if emoji:
+                found_specs[spec_key] = str(emoji)
+                break
+    class_emoji_cache.clear()
+    class_emoji_cache.update(found_classes)
+    spec_emoji_cache.clear()
+    spec_emoji_cache.update(found_specs)
+    return found_classes, found_specs
+
+
+def signup_spec_icon_key(spec_text, role=""):
     text = str(spec_text or role or "").strip().lower()
     if any(word in text for word in ["tank", "prot", "schutz", "def"]):
-        return "🛡️"
+        return "tank"
     if any(word in text for word in ["heal", "heiler", "holy", "resto", "restoration", "diszi"]):
-        return "➕"
+        return "heal"
+    if any(word in text for word in ["survival"]):
+        return "survival"
+    if any(word in text for word in ["marksman", "marksmanship"]):
+        return "marksman"
+    if any(word in text for word in ["beastmaster", "beast mastery", "bm"]):
+        return "beastmaster"
+    if any(word in text for word in ["feral"]):
+        return "feral"
+    if any(word in text for word in ["balance", "eule", "moonkin"]):
+        return "balance"
+    return ""
+
+
+def signup_spec_icon(spec_text, role=""):
+    text = str(spec_text or role or "").strip().lower()
+    icon_key = signup_spec_icon_key(spec_text, role)
+    if icon_key and spec_emoji_cache.get(icon_key):
+        return spec_emoji_cache[icon_key]
+    if any(word in text for word in ["tank", "prot", "schutz", "def"]):
+        return SPEC_EMOJI_FALLBACKS["tank"]
+    if any(word in text for word in ["heal", "heiler", "holy", "resto", "restoration", "diszi"]):
+        return SPEC_EMOJI_FALLBACKS["heal"]
     if any(word in text for word in ["fire", "feuer", "flamme"]):
         return "🔥"
     if any(word in text for word in ["frost", "eis"]):
@@ -4755,6 +4848,9 @@ async def on_ready():
     print(f"Postet Übersicht in Channel: {POST_CHANNEL_ID}")
     print(f"Hordenbuff-Channels: {sorted(HORDENBUFF_CHANNEL_IDS)}")
     print(f"Loganalyse-Channels: {sorted(LOG_ANALYSIS_CHANNEL_IDS)}")
+    found_class_emojis, found_spec_emojis = refresh_class_emoji_cache()
+    print(f"Raid-Anmelder Klassenemojis gefunden: {', '.join(sorted(found_class_emojis.keys())) or 'keine'}")
+    print(f"Raid-Anmelder Skillungsemojis gefunden: {', '.join(sorted(found_spec_emojis.keys())) or 'keine'}")
     print("Version 4.9.3 gestartet: Raid-Ankuendigung Hotfix signup_deadline + stale Queue aktiv.")
 
     if not hasattr(client, "hordenbuff_task_started"):
