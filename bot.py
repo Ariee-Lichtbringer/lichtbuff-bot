@@ -2740,6 +2740,12 @@ def signup_class_icon(class_name):
 
 
 def signup_class_select_emoji(class_name):
+    icon = signup_class_icon(class_name)
+    if icon.startswith("<:") or icon.startswith("<a:"):
+        try:
+            return discord.PartialEmoji.from_str(icon)
+        except Exception:
+            pass
     key = str(class_name or "").strip().lower()
     aliases = {
         "krieger": "warrior",
