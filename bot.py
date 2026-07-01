@@ -150,7 +150,7 @@ SPEC_EMOJI_NAME_ALIASES = {
     "tank": ["tank", "prot", "schutz"],
     "heal": ["heilung", "heal", "heiler", "resto", "restoration"],
     "holy": ["holy", "heilig"],
-    "paladin_holy": ["paladin_holy", "pala_holy", "palaholy", "holy_paladin", "heilig_paladin"],
+    "paladin_holy": ["holy_pala", "paladin_holy", "pala_holy", "palaholy", "holy_paladin", "heilig_paladin"],
     "priest_holy": ["priest_holy", "priester_holy", "holy_priest", "heilig_priester"],
     "discipline": ["disziplin", "discipline", "disc"],
     "shadow": ["schatten", "shadow"],
@@ -2716,7 +2716,7 @@ def build_raid_announcement_embed(raid):
         "Gildenleitung"
     ).strip()
     description_text = (description or "Raidanmeldung ist geöffnet.").strip()
-    width_line = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    width_line = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     if width_line not in description_text:
         description_text = f"{description_text}\n\n{width_line}"
 
@@ -3388,9 +3388,14 @@ class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
                 f"✅ Anmeldung gespeichert: **{char_name}** · {self.class_name} · {spec}",
                 ephemeral=True
             )
-            await refresh_raid_signup_message(interaction, self.raid, self.origin_channel_id, self.origin_message_id)
         except Exception as e:
             await interaction.response.send_message(f"⚠️ Anmeldung fehlgeschlagen: {e}", ephemeral=True)
+            return
+
+        try:
+            await refresh_raid_signup_message(interaction, self.raid, self.origin_channel_id, self.origin_message_id)
+        except Exception as e:
+            print("Raid-Anmelder-Refresh nach Anmeldung fehlgeschlagen:", e)
 
 
 class RaidSignupStatusModal(discord.ui.Modal):
@@ -3421,9 +3426,14 @@ class RaidSignupStatusModal(discord.ui.Modal):
             await save_raid_signup_status(interaction, self.raid, char_name, self.status, note)
             label = "auf die Bank gesetzt" if self.status == "bench" else "als abwesend markiert"
             await interaction.response.send_message(f"✅ **{char_name}** wurde {label}.", ephemeral=True)
-            await refresh_raid_signup_message(interaction, self.raid)
         except Exception as e:
             await interaction.response.send_message(f"⚠️ Status konnte nicht geändert werden: {e}", ephemeral=True)
+            return
+
+        try:
+            await refresh_raid_signup_message(interaction, self.raid)
+        except Exception as e:
+            print("Raid-Anmelder-Refresh nach Statusaenderung fehlgeschlagen:", e)
 
 
 def signup_spec_select_emoji(spec_key):
