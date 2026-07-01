@@ -2493,6 +2493,7 @@ def build_raid_announcement_text(raid):
     tank_slots = str(raid.get("tankSlots") or "").strip()
     heal_slots = str(raid.get("healSlots") or "").strip()
     dd_slots = str(raid.get("ddSlots") or "").strip()
+    signup_deadline = format_raid_announcement_time(raid.get("signupDeadline") or raid.get("signup_deadline") or "")
     created_by = str(
         raid.get("createdBy") or
         raid.get("erstelltVon") or
@@ -2564,6 +2565,8 @@ def build_raid_announcement_embed(raid):
     embed.add_field(name="Raidlead", value=created_by, inline=True)
     embed.add_field(name="Datum", value=raid_date, inline=True)
     embed.add_field(name="Start", value=raid_time, inline=True)
+    if signup_deadline != "noch offen":
+        embed.add_field(name="Anmeldeschluss", value=signup_deadline, inline=True)
 
     slot_parts = []
     if max_players:
