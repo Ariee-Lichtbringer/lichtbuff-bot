@@ -2355,6 +2355,41 @@ def get_primary_raid_channel_id(raid):
     return sources[0].get("channel_id")
 
 
+async def sync_accessible_discord_channels():
+    if not LICHTBOT_QUEUE_TOKEN:
+        print("Discord-Channel-Sync uebersprungen: LICHTBOT_QUEUE_TOKEN fehlt.")
+        return {"success": False, "error": "LICHTBOT_QUEUE_TOKEN fehlt."}
+
+    channels = []
+    for guild in client.guilds:
+        member = guild.me or guild.get_member(client.user.id)
+        if member is None:
+            continue
+
+        for channel in getattr(guild, "text_channels", []):
+            permissions = channel.permissions_for(member)
+            if not permissions.view_channel or not permissions.send_messages:
+                continue
+            channels.append({
+                "id": str(channel.id),
+                "name": channel.name,
+                "type": "text",
+                "category": channel.category.name if channel.category else "",
+                "position": int(getattr(channel, "position", 0) or 0),
+                "canSend": True,
+                "discordGuildId": str(guild.id),
+                "discordGuildName": guild.name,
+            })
+
+    result = await asyncio.to_thread(lichtloot_post, {
+        "action": "lichtbotSaveDiscordChannels",
+        "queueToken": LICHTBOT_QUEUE_TOKEN,
+        "channels": channels
+    })
+    print(f"Discord-Channel-Sync gespeichert: {result.get('saved', 0)} Channels.")
+    return result
+
+
 def normalize_raid_name(value):
     raid = str(value or "").strip().upper()
     aliases = {
@@ -4571,6 +4606,10 @@ async def on_ready():
     if not hasattr(client, "lichtloot_queue_task_started"):
         client.lichtloot_queue_task_started = True
         client.loop.create_task(lichtloot_queue_loop())
+
+    if not hasattr(client, "discord_channel_sync_started"):
+        client.discord_channel_sync_started = True
+        client.loop.create_task(sync_accessible_discord_channels())
 
     if not hasattr(client, "worldbuff_startup_task_started"):
         client.worldbuff_startup_task_started = True
