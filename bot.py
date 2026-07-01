@@ -63,7 +63,16 @@ LICHTLOOT_RAILWAY_API_URL = os.getenv(
     "LICHTLOOT_RAILWAY_API_URL",
     "https://lichtloot-production.up.railway.app/api/apps-script"
 )
-LICHTLOOT_API_URL = os.getenv("LICHTLOOT_API_URL", LICHTLOOT_RAILWAY_API_URL)
+def normalize_lichtloot_api_url(value):
+    url = str(value or "").strip() or LICHTLOOT_RAILWAY_API_URL
+    parsed = urlparse(url)
+    host = (parsed.netloc or "").lower()
+    if host in {"lichtloot.de", "www.lichtloot.de"}:
+        return LICHTLOOT_RAILWAY_API_URL
+    return url
+
+
+LICHTLOOT_API_URL = normalize_lichtloot_api_url(os.getenv("LICHTLOOT_API_URL", LICHTLOOT_RAILWAY_API_URL))
 LICHTLOOT_APPS_SCRIPT_URL = os.getenv(
     "LICHTLOOT_APPS_SCRIPT_URL",
     "https://script.google.com/macros/s/AKfycbzwRZ1908IawmEh3WdROu_TBwfu8Yr1YXJ1VicqEIf15eZ2zzRE3Yw9OaaeJ0ZADbye2g/exec"
@@ -3971,7 +3980,7 @@ def lichtloot_get(params):
     url = LICHTLOOT_API_URL + "?" + query
 
     with urllib.request.urlopen(url, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
+        return parse_json_api_response(response, "LichtLoot GET", url)
 
 
 def lichtloot_post(payload):
@@ -3985,7 +3994,20 @@ def lichtloot_post(payload):
     )
 
     with urllib.request.urlopen(request, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
+        return parse_json_api_response(response, "LichtLoot POST", LICHTLOOT_API_URL)
+
+
+def parse_json_api_response(response, label, url):
+    body = response.read().decode("utf-8", errors="replace")
+    content_type = str(response.headers.get("Content-Type") or "").lower()
+    if "json" not in content_type and body.lstrip().startswith("<"):
+        parsed = urlparse(url)
+        raise RuntimeError(f"{label}: API lieferte HTML statt JSON von {parsed.netloc or url}. Bitte LICHTLOOT_API_URL auf Railway /api/apps-script setzen.")
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as error:
+        snippet = re.sub(r"\s+", " ", body[:220]).strip()
+        raise RuntimeError(f"{label}: Ungueltige API-Antwort ({error}). Anfang: {snippet}")
 
 
 def lichtloot_apps_script_post(payload):
