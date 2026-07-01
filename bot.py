@@ -3898,10 +3898,12 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
         print(f"Worldbuff-Loeschung aus Queue verarbeitet, {removed} Cache-Eintraege entfernt.")
 
     if update_type == "raid_announcement":
-        await post_raid_announcement_by_id(
+        posted = await post_raid_announcement_by_id(
             payload.get("raidId") or payload.get("id"),
             payload.get("channelId") or payload.get("discordChannelId")
         )
+        if not posted:
+            raise RuntimeError(f"Raid-Ankuendigung konnte nicht gepostet werden: {payload}")
     elif update_type == "log_analysis_post":
         await post_log_analysis_from_queue(payload)
     elif update_type == "worldbuff_update":
@@ -4471,7 +4473,7 @@ async def raid_announcement_loop():
 async def post_raid_announcement_by_id(raid_id, channel_id=None):
     raid_id = str(raid_id or "").strip()
     if not raid_id:
-        return False
+        raise RuntimeError("Raid-Ankuendigung manuell: Raid-ID fehlt.")
 
     helper = None
     raid = None
@@ -4504,8 +4506,7 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None):
         )
 
     if not raid:
-        print(f"Raid-Ankuendigung manuell: Raid {raid_id} nicht gefunden.")
-        return False
+        raise RuntimeError(f"Raid-Ankuendigung manuell: Raid {raid_id} nicht gefunden.")
 
     raid_name = normalize_raid_name(raid.get("raid") or raid.get("raidName") or "")
     channel_id = (
@@ -4515,21 +4516,18 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None):
         or str(get_primary_raid_channel_id(raid_name) or "").strip()
     )
     if not channel_id:
-        print(f"Raid-Ankuendigung manuell: Kein Channel fuer {raid_name} hinterlegt.")
-        return False
+        raise RuntimeError(f"Raid-Ankuendigung manuell: Kein Channel fuer {raid_name} hinterlegt.")
 
     try:
         channel_numeric_id = int(channel_id)
     except Exception:
-        print(f"Raid-Ankuendigung manuell: Ungueltige Channel-ID {channel_id}.")
-        return False
+        raise RuntimeError(f"Raid-Ankuendigung manuell: Ungueltige Channel-ID {channel_id}.")
 
     channel = client.get_channel(channel_numeric_id)
     if channel is None:
         channel = await client.fetch_channel(channel_numeric_id)
     if channel is None:
-        print(f"Raid-Ankuendigung manuell: Channel {channel_id} nicht gefunden.")
-        return False
+        raise RuntimeError(f"Raid-Ankuendigung manuell: Channel {channel_id} nicht gefunden.")
 
     embed = build_raid_announcement_embed(raid)
     try:
@@ -4545,10 +4543,15 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None):
         print("Raid-Anmelder-Daten konnten beim Posten nicht geladen werden:", e)
         embed.add_field(name="Anmeldungen", value="Noch keine Anmeldungen.", inline=False)
 
-    await channel.send(
-        embed=embed,
-        view=RaidSignupView(raid)
-    )
+    try:
+        await channel.send(embed=embed, view=RaidSignupView(raid))
+    except discord.HTTPException as e:
+        print(f"Raid-Ankuendigung mit Auswahlfeld fehlgeschlagen, versuche Embed ohne Auswahlfeld: {e}")
+        try:
+            await channel.send(embed=embed)
+        except discord.HTTPException as embed_error:
+            print(f"Raid-Ankuendigung als Embed fehlgeschlagen, versuche Klartext: {embed_error}")
+            await channel.send(build_raid_announcement_text(raid))
     print(f"Raid-Ankuendigung manuell gepostet: {raid_id} in {channel_id}")
     await asyncio.sleep(2)
     return True
