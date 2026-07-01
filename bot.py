@@ -112,20 +112,65 @@ CLASS_EMOJI_NAME_ALIASES = {
 SPEC_EMOJI_FALLBACKS = {
     "tank": "🛡️",
     "heal": "➕",
+    "holy": "➕",
+    "discipline": "💠",
+    "shadow": "🌑",
+    "arms": "⚔️",
+    "fury": "⚔️",
+    "retri": "✨",
+    "fire": "🔥",
+    "frost": "❄️",
+    "arcane": "✦",
+    "assassination": "🗡️",
+    "subtlety": "🗡️",
+    "combat": "🗡️",
+    "affliction": "💀",
+    "demonology": "💀",
+    "destruction": "🔥",
     "feral": "⚔️",
     "balance": "🌑",
     "survival": "🏹",
     "marksman": "🏹",
     "beastmaster": "🏹",
+    "elemental": "⚡",
+    "enhancement": "⚡",
 }
 SPEC_EMOJI_NAME_ALIASES = {
     "tank": ["tank", "prot", "schutz"],
-    "heal": ["heilung", "heal", "heiler", "holy", "resto", "restoration", "diszi"],
+    "heal": ["heilung", "heal", "heiler", "resto", "restoration"],
+    "holy": ["holy", "heilig"],
+    "discipline": ["disziplin", "discipline", "disc"],
+    "shadow": ["schatten", "shadow"],
+    "arms": ["arms", "waffen"],
+    "fury": ["fury"],
+    "retri": ["retri", "ret", "vergeltung"],
+    "fire": ["feuer", "fire"],
+    "frost": ["frost", "eis"],
+    "arcane": ["arkan", "arcane"],
+    "assassination": ["assassination", "assa"],
+    "subtlety": ["subtlety", "sub"],
+    "combat": ["combat", "kampf"],
+    "affliction": ["affliction", "affli", "gebrechen"],
+    "demonology": ["demonology", "demo"],
+    "destruction": ["destruction", "destro", "zerstoerung"],
     "feral": ["feraldd", "feral"],
     "balance": ["eule", "balance", "moonkin"],
     "survival": ["survival"],
     "marksman": ["marksman", "marksmanship"],
     "beastmaster": ["beastmaster", "beastmastery", "bm"],
+    "elemental": ["elemental", "ele"],
+    "enhancement": ["enhancement", "enh"],
+}
+RAID_SIGNUP_SPECS = {
+    "Warrior": [("Arms", "arms"), ("Fury", "fury"), ("Tank", "tank")],
+    "Druid": [("Heilung", "heal"), ("Tank", "tank"), ("FeralDD", "feral"), ("Eule", "balance")],
+    "Paladin": [("Holy", "holy"), ("Retri", "retri"), ("Tank", "tank")],
+    "Rogue": [("Assassination", "assassination"), ("Combat", "combat"), ("Subtlety", "subtlety")],
+    "Hunter": [("Survival", "survival"), ("Marksman", "marksman"), ("Beastmaster", "beastmaster")],
+    "Priest": [("Disziplin", "discipline"), ("Holy", "holy"), ("Schatten", "shadow")],
+    "Mage": [("Fire", "fire"), ("Frost", "frost"), ("Arcane", "arcane")],
+    "Warlock": [("Affliction", "affliction"), ("Demonology", "demonology"), ("Destruction", "destruction")],
+    "Shaman": [("Heilung", "heal"), ("Elemental", "elemental"), ("Enhancement", "enhancement")],
 }
 LICHTLOOT_GUILD_SLUG = os.getenv("LICHTLOOT_GUILD_SLUG", "lichtloot")
 PANEM_GUILD_SLUG = os.getenv("PANEM_GUILD_SLUG", "panemloot")
@@ -2705,9 +2750,9 @@ def infer_signup_role(spec_text):
     text = str(spec_text or "").strip().lower()
     if any(word in text for word in ["tank", "prot", "schutz", "def"]):
         return "tank"
-    if any(word in text for word in ["heal", "heiler", "holy", "resto", "restoration", "diszi"]):
+    if any(word in text for word in ["heal", "heiler", "holy", "heilig", "resto", "restoration", "diszi", "disziplin", "discipline"]):
         return "heal"
-    if any(word in text for word in ["dd", "dps", "damage", "fury", "arms", "waffen", "fire", "frost", "shadow", "combat", "assa", "feral", "balance", "ele", "enh"]):
+    if any(word in text for word in ["dd", "dps", "damage", "fury", "arms", "waffen", "fire", "feuer", "frost", "shadow", "schatten", "combat", "assa", "feral", "balance", "ele", "enh", "retri", "survival", "marksman", "beastmaster", "affliction", "demonology", "destruction"]):
         return "dd"
     return "flex"
 
@@ -2802,8 +2847,38 @@ def signup_spec_icon_key(spec_text, role=""):
     text = str(spec_text or role or "").strip().lower()
     if any(word in text for word in ["tank", "prot", "schutz", "def"]):
         return "tank"
-    if any(word in text for word in ["heal", "heiler", "holy", "resto", "restoration", "diszi"]):
+    if any(word in text for word in ["disziplin", "discipline", "disc"]):
+        return "discipline"
+    if any(word in text for word in ["holy", "heilig"]):
+        return "holy"
+    if any(word in text for word in ["schatten", "shadow"]):
+        return "shadow"
+    if any(word in text for word in ["heal", "heiler", "resto", "restoration"]):
         return "heal"
+    if any(word in text for word in ["arms", "waffen"]):
+        return "arms"
+    if any(word in text for word in ["fury"]):
+        return "fury"
+    if any(word in text for word in ["retri", "vergeltung"]):
+        return "retri"
+    if any(word in text for word in ["fire", "feuer"]):
+        return "fire"
+    if any(word in text for word in ["frost", "eis"]):
+        return "frost"
+    if any(word in text for word in ["arcane", "arkan"]):
+        return "arcane"
+    if any(word in text for word in ["assassination", "assa"]):
+        return "assassination"
+    if any(word in text for word in ["subtlety", "sub"]):
+        return "subtlety"
+    if any(word in text for word in ["combat", "kampf"]):
+        return "combat"
+    if any(word in text for word in ["affliction", "affli", "gebrechen"]):
+        return "affliction"
+    if any(word in text for word in ["demonology", "demo"]):
+        return "demonology"
+    if any(word in text for word in ["destruction", "destro"]):
+        return "destruction"
     if any(word in text for word in ["survival"]):
         return "survival"
     if any(word in text for word in ["marksman", "marksmanship"]):
@@ -2814,6 +2889,10 @@ def signup_spec_icon_key(spec_text, role=""):
         return "feral"
     if any(word in text for word in ["balance", "eule", "moonkin"]):
         return "balance"
+    if any(word in text for word in ["elemental", "ele"]):
+        return "elemental"
+    if any(word in text for word in ["enhancement", "enh"]):
+        return "enhancement"
     return ""
 
 
@@ -2822,6 +2901,8 @@ def signup_spec_icon(spec_text, role=""):
     icon_key = signup_spec_icon_key(spec_text, role)
     if icon_key and spec_emoji_cache.get(icon_key):
         return spec_emoji_cache[icon_key]
+    if icon_key and SPEC_EMOJI_FALLBACKS.get(icon_key):
+        return SPEC_EMOJI_FALLBACKS[icon_key]
     if any(word in text for word in ["tank", "prot", "schutz", "def"]):
         return SPEC_EMOJI_FALLBACKS["tank"]
     if any(word in text for word in ["heal", "heiler", "holy", "resto", "restoration", "diszi"]):
@@ -3187,22 +3268,19 @@ class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
         placeholder="z. B. Burny",
         max_length=40
     )
-    spec = discord.ui.TextInput(
-        label="Skillung / Rolle",
-        placeholder="z. B. Fury, Prot, Holy, Fire, Resto",
-        max_length=60
-    )
 
-    def __init__(self, raid, class_name):
+    def __init__(self, raid, class_name, spec_label, spec_key):
         super().__init__()
         self.raid = raid
         self.class_name = class_name
+        self.spec_label = spec_label
+        self.spec_key = spec_key
 
     async def on_submit(self, interaction):
         char_name = str(self.char_name.value or "").strip()
-        spec = str(self.spec.value or "").strip()
-        if not char_name or not spec:
-            await interaction.response.send_message("Bitte Charaktername und Skillung angeben.", ephemeral=True)
+        spec = str(self.spec_label or "").strip()
+        if not char_name:
+            await interaction.response.send_message("Bitte Charaktername angeben.", ephemeral=True)
             return
 
         payload = {
@@ -3273,6 +3351,52 @@ class RaidSignupStatusModal(discord.ui.Modal):
             await interaction.response.send_message(f"⚠️ Status konnte nicht geändert werden: {e}", ephemeral=True)
 
 
+def signup_spec_select_emoji(spec_key):
+    icon = spec_emoji_cache.get(spec_key) or SPEC_EMOJI_FALLBACKS.get(spec_key, "✦")
+    if isinstance(icon, str) and (icon.startswith("<:") or icon.startswith("<a:")):
+        try:
+            return discord.PartialEmoji.from_str(icon)
+        except Exception:
+            pass
+    return icon
+
+
+def raid_signup_spec_options(class_name):
+    specs = RAID_SIGNUP_SPECS.get(str(class_name or "").strip(), [("Flex", "flex")])
+    options = []
+    for label, key in specs:
+        options.append(discord.SelectOption(
+            label=label,
+            value=key,
+            emoji=signup_spec_select_emoji(key)
+        ))
+    return options
+
+
+class RaidSignupSpecSelect(discord.ui.Select):
+    def __init__(self, raid, class_name):
+        self.raid = raid
+        self.class_name = class_name
+        super().__init__(
+            placeholder=f"Skillung für {class_name} wählen",
+            min_values=1,
+            max_values=1,
+            options=raid_signup_spec_options(class_name)
+        )
+
+    async def callback(self, interaction):
+        spec_key = self.values[0]
+        specs = RAID_SIGNUP_SPECS.get(self.class_name, [])
+        spec_label = next((label for label, key in specs if key == spec_key), spec_key)
+        await interaction.response.send_modal(RaidSignupModal(self.raid, self.class_name, spec_label, spec_key))
+
+
+class RaidSignupSpecView(discord.ui.View):
+    def __init__(self, raid, class_name):
+        super().__init__(timeout=180)
+        self.add_item(RaidSignupSpecSelect(raid, class_name))
+
+
 class RaidSignupClassSelect(discord.ui.Select):
     def __init__(self, raid):
         self.raid = raid
@@ -3284,7 +3408,12 @@ class RaidSignupClassSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction):
-        await interaction.response.send_modal(RaidSignupModal(self.raid, self.values[0]))
+        class_name = self.values[0]
+        await interaction.response.send_message(
+            f"Skillung für **{class_name}** wählen:",
+            view=RaidSignupSpecView(self.raid, class_name),
+            ephemeral=True
+        )
 
 
 class RaidSignupView(discord.ui.View):
