@@ -2952,9 +2952,12 @@ async def refresh_raid_signup_message(interaction, raid):
             "playerPin": str(raid.get("playerPin") or ""),
             "t": int(time.time())
         })
-        embed = build_raid_announcement_embed(raid)
+        fresh_raid = helper.get("raid") if isinstance(helper, dict) else None
+        if not fresh_raid:
+            fresh_raid = raid
+        embed = build_raid_announcement_embed(fresh_raid)
         add_raid_signup_roster_fields(embed, helper)
-        await interaction.message.edit(embed=embed, view=RaidSignupView(raid))
+        await interaction.message.edit(embed=embed, view=RaidSignupView(fresh_raid))
     except Exception as e:
         print("Raid-Anmelder-Message konnte nicht aktualisiert werden:", e)
 
