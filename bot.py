@@ -3169,7 +3169,7 @@ def raid_signup_summary_from_helper(helper):
     return result or "Noch keine Anmeldungen."
 
 
-async def refresh_raid_signup_message(interaction, raid):
+async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None, origin_message_id=None):
     try:
         helper = await asyncio.to_thread(lichtloot_get, {
             "action": "getRaidHelper",
@@ -3182,13 +3182,21 @@ async def refresh_raid_signup_message(interaction, raid):
             fresh_raid = raid
         embed = build_raid_announcement_embed(fresh_raid)
         add_raid_signup_roster_fields(embed, helper)
-        await interaction.message.edit(embed=embed, view=RaidSignupView(fresh_raid))
+        target_message = getattr(interaction, "message", None)
+        if origin_channel_id and origin_message_id:
+            channel = client.get_channel(int(origin_channel_id))
+            if channel is None:
+                channel = await client.fetch_channel(int(origin_channel_id))
+            target_message = await channel.fetch_message(int(origin_message_id))
+        await target_message.edit(embed=embed, view=RaidSignupView(fresh_raid))
     except Exception as e:
         print("Raid-Anmelder-Message konnte nicht aktualisiert werden:", e)
 
 
-def raid_signup_source(interaction):
-    return f"DiscordSignup:{interaction.channel_id}:{getattr(interaction.message, 'id', '')}"
+def raid_signup_source(interaction, origin_channel_id=None, origin_message_id=None):
+    channel_id = str(origin_channel_id or interaction.channel_id or "")
+    message_id = str(origin_message_id or getattr(interaction.message, "id", "") or "")
+    return f"DiscordSignup:{channel_id}:{message_id}"
 
 
 async def get_current_raid_helper(raid):
@@ -3269,12 +3277,14 @@ class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
         max_length=40
     )
 
-    def __init__(self, raid, class_name, spec_label, spec_key):
+    def __init__(self, raid, class_name, spec_label, spec_key, origin_channel_id=None, origin_message_id=None):
         super().__init__()
         self.raid = raid
         self.class_name = class_name
         self.spec_label = spec_label
         self.spec_key = spec_key
+        self.origin_channel_id = origin_channel_id
+        self.origin_message_id = origin_message_id
 
     async def on_submit(self, interaction):
         char_name = str(self.char_name.value or "").strip()
@@ -3290,8 +3300,8 @@ class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
             "raid": self.raid.get("raid") or self.raid.get("raidName") or "",
             "raidDate": self.raid.get("raidDate") or "",
             "raidTime": self.raid.get("raidTime") or "",
-            "discordChannelId": str(interaction.channel_id or ""),
-            "raidHelperMessageId": str(getattr(interaction.message, "id", "") or ""),
+            "discordChannelId": str(self.origin_channel_id or interaction.channel_id or ""),
+            "raidHelperMessageId": str(self.origin_message_id or getattr(interaction.message, "id", "") or ""),
             "rows": [{
                 "char": char_name,
                 "spieler": char_name,
@@ -3301,7 +3311,7 @@ class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
                 "note": f"Skillung: {spec}",
                 "discordUserId": str(interaction.user.id),
                 "discordName": str(interaction.user.display_name),
-                "source": raid_signup_source(interaction)
+                "source": raid_signup_source(interaction, self.origin_channel_id, self.origin_message_id)
             }]
         }
 
@@ -3313,7 +3323,7 @@ class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
                 f"✅ Anmeldung gespeichert: **{char_name}** · {self.class_name} · {spec}",
                 ephemeral=True
             )
-            await refresh_raid_signup_message(interaction, self.raid)
+            await refresh_raid_signup_message(interaction, self.raid, self.origin_channel_id, self.origin_message_id)
         except Exception as e:
             await interaction.response.send_message(f"⚠️ Anmeldung fehlgeschlagen: {e}", ephemeral=True)
 
@@ -3374,9 +3384,11 @@ def raid_signup_spec_options(class_name):
 
 
 class RaidSignupSpecSelect(discord.ui.Select):
-    def __init__(self, raid, class_name):
+    def __init__(self, raid, class_name, origin_channel_id=None, origin_message_id=None):
         self.raid = raid
         self.class_name = class_name
+        self.origin_channel_id = origin_channel_id
+        self.origin_message_id = origin_message_id
         super().__init__(
             placeholder=f"Skillung für {class_name} wählen",
             min_values=1,
@@ -3388,13 +3400,20 @@ class RaidSignupSpecSelect(discord.ui.Select):
         spec_key = self.values[0]
         specs = RAID_SIGNUP_SPECS.get(self.class_name, [])
         spec_label = next((label for label, key in specs if key == spec_key), spec_key)
-        await interaction.response.send_modal(RaidSignupModal(self.raid, self.class_name, spec_label, spec_key))
+        await interaction.response.send_modal(RaidSignupModal(
+            self.raid,
+            self.class_name,
+            spec_label,
+            spec_key,
+            self.origin_channel_id,
+            self.origin_message_id
+        ))
 
 
 class RaidSignupSpecView(discord.ui.View):
-    def __init__(self, raid, class_name):
+    def __init__(self, raid, class_name, origin_channel_id=None, origin_message_id=None):
         super().__init__(timeout=180)
-        self.add_item(RaidSignupSpecSelect(raid, class_name))
+        self.add_item(RaidSignupSpecSelect(raid, class_name, origin_channel_id, origin_message_id))
 
 
 class RaidSignupClassSelect(discord.ui.Select):
@@ -3411,7 +3430,12 @@ class RaidSignupClassSelect(discord.ui.Select):
         class_name = self.values[0]
         await interaction.response.send_message(
             f"Skillung für **{class_name}** wählen:",
-            view=RaidSignupSpecView(self.raid, class_name),
+            view=RaidSignupSpecView(
+                self.raid,
+                class_name,
+                interaction.channel_id,
+                getattr(interaction.message, "id", "")
+            ),
             ephemeral=True
         )
 
