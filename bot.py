@@ -2992,6 +2992,81 @@ async def refresh_raid_signup_message(interaction, raid):
         print("Raid-Anmelder-Message konnte nicht aktualisiert werden:", e)
 
 
+def raid_signup_source(interaction):
+    return f"DiscordSignup:{interaction.channel_id}:{getattr(interaction.message, 'id', '')}"
+
+
+async def get_current_raid_helper(raid):
+    return await asyncio.to_thread(lichtloot_get, {
+        "action": "getRaidHelper",
+        "raidId": str(raid.get("raidId") or raid.get("id") or ""),
+        "playerPin": str(raid.get("playerPin") or ""),
+        "t": int(time.time())
+    })
+
+
+async def find_existing_discord_signup(raid, char_name, interaction):
+    wanted_char = str(char_name or "").strip().lower()
+    wanted_user = str(interaction.user.id)
+    wanted_source = raid_signup_source(interaction)
+    try:
+        helper = await get_current_raid_helper(raid)
+    except Exception:
+        return {}
+
+    for row in (helper.get("externalSignups") or []) + (helper.get("signups") or []):
+        row_char = str(row.get("char") or row.get("player") or "").strip().lower()
+        row_user = str(row.get("discordUserId") or "").strip()
+        row_source = str(row.get("source") or "").strip()
+        if row_char == wanted_char and (row_user == wanted_user or row_source == wanted_source):
+            return row
+    return {}
+
+
+async def save_raid_signup_status(interaction, raid, char_name, status, note=""):
+    existing = await find_existing_discord_signup(raid, char_name, interaction)
+    if not existing:
+        raise RuntimeError("Für diesen Charakter wurde keine Anmeldung von dir gefunden.")
+    existing_note = str(existing.get("note") or "").strip()
+    status_note = str(note or "").strip()
+    if status == "bench":
+        note_text = existing_note or "Bank"
+        if status_note:
+            note_text = f"{note_text} | Bank: {status_note}"
+    elif status == "absent":
+        note_text = existing_note or "Abwesend"
+        if status_note:
+            note_text = f"{note_text} | Abwesend: {status_note}"
+    else:
+        note_text = existing_note
+
+    payload = {
+        "action": "saveDiscordSignupRows",
+        "queueToken": LICHTBOT_QUEUE_TOKEN,
+        "raidId": str(raid.get("raidId") or raid.get("id") or ""),
+        "raid": raid.get("raid") or raid.get("raidName") or "",
+        "raidDate": raid.get("raidDate") or "",
+        "raidTime": raid.get("raidTime") or "",
+        "discordChannelId": str(interaction.channel_id or ""),
+        "raidHelperMessageId": str(getattr(interaction.message, "id", "") or ""),
+        "rows": [{
+            "char": char_name,
+            "spieler": char_name,
+            "klasse": str(existing.get("className") or existing.get("klasse") or ""),
+            "role": str(existing.get("role") or ""),
+            "status": status,
+            "note": note_text,
+            "discordUserId": str(interaction.user.id),
+            "discordName": str(interaction.user.display_name),
+            "source": raid_signup_source(interaction)
+        }]
+    }
+    result = await asyncio.to_thread(lichtloot_post, payload)
+    if not result.get("success"):
+        raise RuntimeError(result.get("error") or "Status konnte nicht gespeichert werden.")
+    return result
+
+
 class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
     char_name = discord.ui.TextInput(
         label="Charaktername",
@@ -3034,7 +3109,7 @@ class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
                 "note": f"Skillung: {spec}",
                 "discordUserId": str(interaction.user.id),
                 "discordName": str(interaction.user.display_name),
-                "source": f"DiscordSignup:{interaction.channel_id}:{getattr(interaction.message, 'id', '')}"
+                "source": raid_signup_source(interaction)
             }]
         }
 
@@ -3049,6 +3124,39 @@ class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
             await refresh_raid_signup_message(interaction, self.raid)
         except Exception as e:
             await interaction.response.send_message(f"⚠️ Anmeldung fehlgeschlagen: {e}", ephemeral=True)
+
+
+class RaidSignupStatusModal(discord.ui.Modal):
+    char_name = discord.ui.TextInput(
+        label="Charaktername",
+        placeholder="z. B. Ariee",
+        max_length=40
+    )
+    note = discord.ui.TextInput(
+        label="Notiz optional",
+        placeholder="z. B. Arbeit, später da, Ersatzbank",
+        required=False,
+        max_length=100
+    )
+
+    def __init__(self, raid, status, title):
+        super().__init__(title=title)
+        self.raid = raid
+        self.status = status
+
+    async def on_submit(self, interaction):
+        char_name = str(self.char_name.value or "").strip()
+        note = str(self.note.value or "").strip()
+        if not char_name:
+            await interaction.response.send_message("Bitte Charaktername angeben.", ephemeral=True)
+            return
+        try:
+            await save_raid_signup_status(interaction, self.raid, char_name, self.status, note)
+            label = "auf die Bank gesetzt" if self.status == "bench" else "als abwesend markiert"
+            await interaction.response.send_message(f"✅ **{char_name}** wurde {label}.", ephemeral=True)
+            await refresh_raid_signup_message(interaction, self.raid)
+        except Exception as e:
+            await interaction.response.send_message(f"⚠️ Status konnte nicht geändert werden: {e}", ephemeral=True)
 
 
 class RaidSignupClassSelect(discord.ui.Select):
@@ -3068,7 +3176,16 @@ class RaidSignupClassSelect(discord.ui.Select):
 class RaidSignupView(discord.ui.View):
     def __init__(self, raid):
         super().__init__(timeout=None)
+        self.raid = raid
         self.add_item(RaidSignupClassSelect(raid))
+
+    @discord.ui.button(label="Bank", emoji="🪑", style=discord.ButtonStyle.secondary, custom_id="raid_signup_bench")
+    async def bench_signup(self, interaction, button):
+        await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "bench", "Auf die Bank setzen"))
+
+    @discord.ui.button(label="Abwesend", emoji="🚫", style=discord.ButtonStyle.secondary, custom_id="raid_signup_absent")
+    async def absent_signup(self, interaction, button):
+        await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "absent", "Als abwesend markieren"))
 
 
 def get_raid_names_for_channel(channel_id):
