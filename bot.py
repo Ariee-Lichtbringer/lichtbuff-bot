@@ -113,6 +113,8 @@ SPEC_EMOJI_FALLBACKS = {
     "tank": "🛡️",
     "heal": "➕",
     "holy": "➕",
+    "paladin_holy": "✨",
+    "priest_holy": "➕",
     "discipline": "💠",
     "shadow": "🌑",
     "arms": "⚔️",
@@ -139,6 +141,8 @@ SPEC_EMOJI_NAME_ALIASES = {
     "tank": ["tank", "prot", "schutz"],
     "heal": ["heilung", "heal", "heiler", "resto", "restoration"],
     "holy": ["holy", "heilig"],
+    "paladin_holy": ["paladin_holy", "pala_holy", "palaholy", "holy_paladin", "heilig_paladin"],
+    "priest_holy": ["priest_holy", "priester_holy", "holy_priest", "heilig_priester"],
     "discipline": ["disziplin", "discipline", "disc"],
     "shadow": ["schatten", "shadow"],
     "arms": ["arms", "waffen"],
@@ -164,10 +168,10 @@ SPEC_EMOJI_NAME_ALIASES = {
 RAID_SIGNUP_SPECS = {
     "Warrior": [("Arms", "arms"), ("Fury", "fury"), ("Tank", "tank")],
     "Druid": [("Heilung", "heal"), ("Tank", "tank"), ("FeralDD", "feral"), ("Eule", "balance")],
-    "Paladin": [("Holy", "holy"), ("Retri", "retri"), ("Tank", "tank")],
+    "Paladin": [("Holy", "paladin_holy"), ("Retri", "retri"), ("Tank", "tank")],
     "Rogue": [("Assassination", "assassination"), ("Combat", "combat"), ("Subtlety", "subtlety")],
     "Hunter": [("Survival", "survival"), ("Marksman", "marksman"), ("Beastmaster", "beastmaster")],
-    "Priest": [("Disziplin", "discipline"), ("Holy", "holy"), ("Schatten", "shadow")],
+    "Priest": [("Disziplin", "discipline"), ("Holy", "priest_holy"), ("Schatten", "shadow")],
     "Mage": [("Fire", "fire"), ("Frost", "frost"), ("Arcane", "arcane")],
     "Warlock": [("Affliction", "affliction"), ("Demonology", "demonology"), ("Destruction", "destruction")],
     "Shaman": [("Heilung", "heal"), ("Elemental", "elemental"), ("Enhancement", "enhancement")],
@@ -2843,13 +2847,18 @@ def refresh_class_emoji_cache():
     return found_classes, found_specs
 
 
-def signup_spec_icon_key(spec_text, role=""):
+def signup_spec_icon_key(spec_text, role="", class_name=""):
     text = str(spec_text or role or "").strip().lower()
     if any(word in text for word in ["tank", "prot", "schutz", "def"]):
         return "tank"
     if any(word in text for word in ["disziplin", "discipline", "disc"]):
         return "discipline"
     if any(word in text for word in ["holy", "heilig"]):
+        canonical_class = canonical_signup_class(class_name).lower()
+        if canonical_class == "paladin":
+            return "paladin_holy"
+        if canonical_class == "priest":
+            return "priest_holy"
         return "holy"
     if any(word in text for word in ["schatten", "shadow"]):
         return "shadow"
@@ -2896,9 +2905,9 @@ def signup_spec_icon_key(spec_text, role=""):
     return ""
 
 
-def signup_spec_icon(spec_text, role=""):
+def signup_spec_icon(spec_text, role="", class_name=""):
     text = str(spec_text or role or "").strip().lower()
-    icon_key = signup_spec_icon_key(spec_text, role)
+    icon_key = signup_spec_icon_key(spec_text, role, class_name)
     if icon_key and spec_emoji_cache.get(icon_key):
         return spec_emoji_cache[icon_key]
     if icon_key and SPEC_EMOJI_FALLBACKS.get(icon_key):
@@ -3009,7 +3018,8 @@ def format_signup_roster_line(row):
     player = str(row.get("player") or row.get("char") or "-").strip() or "-"
     role = str(row.get("role") or "").strip()
     spec = signup_spec_from_note(row.get("note"), role) or role or "Flex"
-    return f"{signup_spec_icon(spec, role)} **{player}** · `{spec}`"
+    class_name = str(row.get("className") or row.get("klasse") or "").strip()
+    return f"{signup_spec_icon(spec, role, class_name)} **{player}** · `{spec}`"
 
 
 def raid_signup_roster_from_helper(helper):
@@ -3155,7 +3165,7 @@ def raid_signup_summary_from_helper(helper):
             player = str(row.get("player") or row.get("char") or "-").strip()
             role = str(row.get("role") or "").strip()
             spec = signup_spec_from_note(row.get("note"), role)
-            lines.append(f"{signup_spec_icon(spec, role)} `{spec or role or 'Flex'}` {player}")
+            lines.append(f"{signup_spec_icon(spec, role, class_name)} `{spec or role or 'Flex'}` {player}")
             shown += 1
         if shown >= 18:
             break
