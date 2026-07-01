@@ -2736,13 +2736,20 @@ def signup_class_icon(class_name):
 
 
 def signup_class_select_emoji(class_name):
-    icon = signup_class_icon(class_name)
-    if icon.startswith("<:") or icon.startswith("<a:"):
-        try:
-            return discord.PartialEmoji.from_str(icon)
-        except Exception:
-            return CLASS_EMOJI_FALLBACKS.get(str(class_name or "").strip().lower(), "◆")
-    return icon
+    key = str(class_name or "").strip().lower()
+    aliases = {
+        "krieger": "warrior",
+        "druide": "druid",
+        "schurke": "rogue",
+        "jäger": "hunter",
+        "jaeger": "hunter",
+        "jager": "hunter",
+        "priester": "priest",
+        "magier": "mage",
+        "hexenmeister": "warlock",
+        "schamane": "shaman",
+    }
+    return CLASS_EMOJI_FALLBACKS.get(aliases.get(key, key), "◆")
 
 
 def normalize_emoji_name(value):
