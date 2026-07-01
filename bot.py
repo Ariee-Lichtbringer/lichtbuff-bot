@@ -76,6 +76,28 @@ HORDENBUFF_GUIDE_IMAGE_URL = os.getenv(
     "HORDENBUFF_GUIDE_IMAGE_URL",
     "https://lichtloot.de/images/Hordenbuff.jpg"
 )
+CLASS_EMOJI_FALLBACKS = {
+    "warrior": "⚔️",
+    "druid": "🌿",
+    "paladin": "✨",
+    "rogue": "🗡️",
+    "hunter": "🏹",
+    "priest": "💠",
+    "mage": "🔥",
+    "warlock": "💀",
+    "shaman": "⚡",
+}
+CLASS_EMOJI_ENV = {
+    "warrior": ("CLASS_EMOJI_WARRIOR", "classicon_warrior"),
+    "druid": ("CLASS_EMOJI_DRUID", "classicon_druid"),
+    "paladin": ("CLASS_EMOJI_PALADIN", "classicon_paladin"),
+    "rogue": ("CLASS_EMOJI_ROGUE", "classicon_rogue"),
+    "hunter": ("CLASS_EMOJI_HUNTER", "classicon_hunter"),
+    "priest": ("CLASS_EMOJI_PRIEST", "classicon_priest"),
+    "mage": ("CLASS_EMOJI_MAGE", "classicon_mage"),
+    "warlock": ("CLASS_EMOJI_WARLOCK", "classicon_warlock"),
+    "shaman": ("CLASS_EMOJI_SHAMAN", "classicon_shaman"),
+}
 LICHTLOOT_GUILD_SLUG = os.getenv("LICHTLOOT_GUILD_SLUG", "lichtloot")
 PANEM_GUILD_SLUG = os.getenv("PANEM_GUILD_SLUG", "panemloot")
 WORLDBUFF_GUILD_SLUGS = [
@@ -2657,27 +2679,35 @@ def infer_signup_role(spec_text):
 
 def signup_class_icon(class_name):
     key = str(class_name or "").strip().lower()
-    icons = {
-        "warrior": "⚔️",
-        "krieger": "⚔️",
-        "druid": "🌿",
-        "druide": "🌿",
-        "paladin": "✨",
-        "rogue": "🗡️",
-        "schurke": "🗡️",
-        "hunter": "🏹",
-        "jäger": "🏹",
-        "jaeger": "🏹",
-        "priest": "💠",
-        "priester": "💠",
-        "mage": "🔥",
-        "magier": "🔥",
-        "warlock": "💀",
-        "hexenmeister": "💀",
-        "shaman": "⚡",
-        "schamane": "⚡",
+    aliases = {
+        "krieger": "warrior",
+        "druide": "druid",
+        "schurke": "rogue",
+        "jäger": "hunter",
+        "jaeger": "hunter",
+        "priester": "priest",
+        "magier": "mage",
+        "hexenmeister": "warlock",
+        "schamane": "shaman",
     }
-    return icons.get(key, "◆")
+    key = aliases.get(key, key)
+    env_name, emoji_name = CLASS_EMOJI_ENV.get(key, ("", ""))
+    raw = str(os.getenv(env_name, "") or "").strip()
+    if raw.startswith("<:") or raw.startswith("<a:"):
+        return raw
+    if raw.isdigit() and len(raw) >= 15:
+        return f"<:{emoji_name}:{raw}>"
+    return CLASS_EMOJI_FALLBACKS.get(key, "◆")
+
+
+def signup_class_select_emoji(class_name):
+    icon = signup_class_icon(class_name)
+    if icon.startswith("<:") or icon.startswith("<a:"):
+        try:
+            return discord.PartialEmoji.from_str(icon)
+        except Exception:
+            return CLASS_EMOJI_FALLBACKS.get(str(class_name or "").strip().lower(), "◆")
+    return icon
 
 
 def signup_spec_icon(spec_text, role=""):
@@ -2892,15 +2922,15 @@ def add_raid_signup_roster_fields(embed, helper):
 
 def raid_signup_class_options():
     return [
-        discord.SelectOption(label="Warrior", value="Warrior", emoji="⚔️"),
-        discord.SelectOption(label="Druid", value="Druid", emoji="🌿"),
-        discord.SelectOption(label="Paladin", value="Paladin", emoji="✨"),
-        discord.SelectOption(label="Rogue", value="Rogue", emoji="🗡️"),
-        discord.SelectOption(label="Hunter", value="Hunter", emoji="🏹"),
-        discord.SelectOption(label="Priest", value="Priest", emoji="💠"),
-        discord.SelectOption(label="Mage", value="Mage", emoji="🔥"),
-        discord.SelectOption(label="Warlock", value="Warlock", emoji="💀"),
-        discord.SelectOption(label="Shaman", value="Shaman", emoji="⚡"),
+        discord.SelectOption(label="Warrior", value="Warrior", emoji=signup_class_select_emoji("Warrior")),
+        discord.SelectOption(label="Druid", value="Druid", emoji=signup_class_select_emoji("Druid")),
+        discord.SelectOption(label="Paladin", value="Paladin", emoji=signup_class_select_emoji("Paladin")),
+        discord.SelectOption(label="Rogue", value="Rogue", emoji=signup_class_select_emoji("Rogue")),
+        discord.SelectOption(label="Hunter", value="Hunter", emoji=signup_class_select_emoji("Hunter")),
+        discord.SelectOption(label="Priest", value="Priest", emoji=signup_class_select_emoji("Priest")),
+        discord.SelectOption(label="Mage", value="Mage", emoji=signup_class_select_emoji("Mage")),
+        discord.SelectOption(label="Warlock", value="Warlock", emoji=signup_class_select_emoji("Warlock")),
+        discord.SelectOption(label="Shaman", value="Shaman", emoji=signup_class_select_emoji("Shaman")),
     ]
 
 
