@@ -2488,6 +2488,11 @@ def build_raid_announcement_text(raid):
     raid_date = format_raid_announcement_date(raid.get("raidDate"))
     raid_time = format_raid_announcement_time(raid.get("raidTime"))
     player_pin = str(raid.get("playerPin") or "").strip()
+    description = str(raid.get("description") or "").strip()
+    max_players = str(raid.get("maxPlayers") or "").strip()
+    tank_slots = str(raid.get("tankSlots") or "").strip()
+    heal_slots = str(raid.get("healSlots") or "").strip()
+    dd_slots = str(raid.get("ddSlots") or "").strip()
     created_by = str(
         raid.get("createdBy") or
         raid.get("erstelltVon") or
@@ -2495,17 +2500,87 @@ def build_raid_announcement_text(raid):
         "Unbekannt"
     ).strip()
 
-    text = (
-        f"📣 **Neuer Raid erstellt: {raid_name}**\n"
-        f"🗓️ **Datum:** {raid_date}\n"
-        f"⏰ **Start:** {raid_time}\n"
-        f"👤 **Erstellt von:** {created_by}\n\n"
-        f"🔑 **Prio-PIN:** `{player_pin}`\n"
-        f"➡️ **Prios eintragen:** {LICHTLOOT_URL}\n\n"
-        "Bitte tragt eure Prios rechtzeitig ein."
-    )
+    lines = [
+        f"**{raid_name.upper()}**",
+        "",
+    ]
+    if description:
+        lines.extend([description, ""])
+
+    lines.extend([
+        f"📣 **Raidlead:** {created_by}",
+        f"🗓️ **Datum:** {raid_date}",
+        f"⏰ **Start:** {raid_time}",
+    ])
+
+    if max_players or tank_slots or heal_slots or dd_slots:
+        slot_parts = []
+        if max_players:
+            slot_parts.append(f"Gesamt {max_players}")
+        if tank_slots:
+            slot_parts.append(f"Tanks {tank_slots}")
+        if heal_slots:
+            slot_parts.append(f"Heals {heal_slots}")
+        if dd_slots:
+            slot_parts.append(f"DD {dd_slots}")
+        lines.append("👥 **Slots:** " + " · ".join(slot_parts))
+
+    lines.extend([
+        "",
+        f"🔑 **Prio-PIN:** `{player_pin}`",
+        f"🌐 **Webansicht:** {LICHTLOOT_URL}",
+        "",
+        "Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein."
+    ])
+
+    text = "\n".join(lines)
 
     return text[:1900]
+
+
+def build_raid_announcement_embed(raid):
+    raid_short = normalize_raid_name(raid.get("raid") or raid.get("raidName") or "")
+    raid_name = str(raid.get("raidName") or raid_short or "Raid").strip()
+    raid_date = format_raid_announcement_date(raid.get("raidDate"))
+    raid_time = format_raid_announcement_time(raid.get("raidTime"))
+    player_pin = str(raid.get("playerPin") or "").strip() or "-"
+    description = str(raid.get("description") or "").strip()
+    max_players = str(raid.get("maxPlayers") or "").strip()
+    tank_slots = str(raid.get("tankSlots") or "").strip()
+    heal_slots = str(raid.get("healSlots") or "").strip()
+    dd_slots = str(raid.get("ddSlots") or "").strip()
+    created_by = str(
+        raid.get("createdBy") or
+        raid.get("erstelltVon") or
+        raid.get("created_by") or
+        "Gildenleitung"
+    ).strip()
+
+    embed = discord.Embed(
+        title=raid_name.upper(),
+        description=(description or "Raidanmeldung ist geöffnet.")[:3900],
+        color=0x7c3aed
+    )
+    embed.add_field(name="Raidlead", value=created_by, inline=True)
+    embed.add_field(name="Datum", value=raid_date, inline=True)
+    embed.add_field(name="Start", value=raid_time, inline=True)
+
+    slot_parts = []
+    if max_players:
+        slot_parts.append(f"Gesamt {max_players}")
+    if tank_slots:
+        slot_parts.append(f"Tanks {tank_slots}")
+    if heal_slots:
+        slot_parts.append(f"Heals {heal_slots}")
+    if dd_slots:
+        slot_parts.append(f"DD {dd_slots}")
+    if slot_parts:
+        embed.add_field(name="Slots", value=" · ".join(slot_parts), inline=False)
+
+    embed.add_field(name="Prio-PIN", value=f"`{player_pin}`", inline=True)
+    embed.add_field(name="Webansicht", value=LICHTLOOT_URL, inline=True)
+    embed.set_footer(text="Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein.")
+    return embed
 
 
 def get_raid_names_for_channel(channel_id):
@@ -3369,7 +3444,10 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
         print(f"Worldbuff-Loeschung aus Queue verarbeitet, {removed} Cache-Eintraege entfernt.")
 
     if update_type == "raid_announcement":
-        await post_raid_announcement_by_id(payload.get("raidId") or payload.get("id"))
+        await post_raid_announcement_by_id(
+            payload.get("raidId") or payload.get("id"),
+            payload.get("channelId") or payload.get("discordChannelId")
+        )
     elif update_type == "log_analysis_post":
         await post_log_analysis_from_queue(payload)
     elif update_type == "worldbuff_update":
@@ -3561,6 +3639,7 @@ async def sync_discord_signup_rows_for_source(raid, source):
 
     payload = {
         "action": "saveDiscordSignupRows",
+        "queueToken": LICHTBOT_QUEUE_TOKEN,
         "raid": raid,
         "raidDate": raid_date,
         "raidTime": raid_time,
@@ -3911,7 +3990,7 @@ async def raid_announcement_loop():
                     channel = await client.fetch_channel(int(channel_id))
 
                 try:
-                    await channel.send(build_raid_announcement_text(raid))
+                    await channel.send(embed=build_raid_announcement_embed(raid))
                     print(f"Raid-Ankuendigung gepostet: {raid.get('raidId')} in {channel_id}")
                     await asyncio.sleep(2)
                 except discord.HTTPException as e:
@@ -3932,7 +4011,7 @@ async def raid_announcement_loop():
         await asyncio.sleep(RAID_ANNOUNCEMENT_CHECK_SECONDS)
 
 
-async def post_raid_announcement_by_id(raid_id):
+async def post_raid_announcement_by_id(raid_id, channel_id=None):
     raid_id = str(raid_id or "").strip()
     if not raid_id:
         return False
@@ -3956,7 +4035,7 @@ async def post_raid_announcement_by_id(raid_id):
         return False
 
     raid_name = normalize_raid_name(raid.get("raid") or raid.get("raidName") or "")
-    channel_id = get_primary_raid_channel_id(raid_name)
+    channel_id = str(channel_id or "").strip() or get_primary_raid_channel_id(raid_name)
     if not channel_id:
         print(f"Raid-Ankuendigung manuell: Kein Channel fuer {raid_name} hinterlegt.")
         return False
@@ -3965,7 +4044,7 @@ async def post_raid_announcement_by_id(raid_id):
     if channel is None:
         channel = await client.fetch_channel(int(channel_id))
 
-    await channel.send(build_raid_announcement_text(raid))
+    await channel.send(embed=build_raid_announcement_embed(raid))
     print(f"Raid-Ankuendigung manuell gepostet: {raid_id} in {channel_id}")
     await asyncio.sleep(2)
     return True
@@ -4014,15 +4093,11 @@ async def on_ready():
     print(f"Postet Übersicht in Channel: {POST_CHANNEL_ID}")
     print(f"Hordenbuff-Channels: {sorted(HORDENBUFF_CHANNEL_IDS)}")
     print(f"Loganalyse-Channels: {sorted(LOG_ANALYSIS_CHANNEL_IDS)}")
-    print("Version 4.9 gestartet: Raid-Ankuendigungen und DC-Abgleich aktiv.")
+    print("Version 4.9 gestartet: manuelle Raid-Ankuendigungen und DC-Abgleich aktiv.")
 
     if not hasattr(client, "hordenbuff_task_started"):
         client.hordenbuff_task_started = True
         client.loop.create_task(hordenbuff_reminder_loop())
-
-    if not hasattr(client, "raid_announcement_task_started"):
-        client.raid_announcement_task_started = True
-        client.loop.create_task(raid_announcement_loop())
 
     if not hasattr(client, "lichtloot_queue_task_started"):
         client.lichtloot_queue_task_started = True
