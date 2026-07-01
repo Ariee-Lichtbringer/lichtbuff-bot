@@ -3039,7 +3039,7 @@ def format_signup_roster_line(row):
     role = str(row.get("role") or "").strip()
     spec = signup_spec_from_note(row.get("note"), role) or role or "Flex"
     class_name = str(row.get("className") or row.get("klasse") or "").strip()
-    return f"{signup_spec_icon(spec, role, class_name)} **{player}** · `{spec}`"
+    return f"{signup_spec_icon(spec, role, class_name)} **{player}** · {spec}"
 
 
 def raid_signup_roster_from_helper(helper):
@@ -3121,16 +3121,22 @@ def add_raid_signup_roster_fields(embed, helper):
         value = "\n".join(format_signup_roster_line(row) for row in roster["tank"][:10])
         embed.add_field(name=f"🛡️ Tank ({len(roster['tank'])})", value=value[:1024], inline=True)
 
+    inline_fields = 1 if roster["tank"] else 0
     for class_name in sorted(roster["classes"].keys(), key=signup_class_sort_key):
         rows = roster["classes"][class_name]
-        value = "\n".join(format_signup_roster_line(row) for row in rows[:10])
-        if len(rows) > 10:
-            value += f"\n... und {len(rows) - 10} weitere"
+        value = "\n".join(format_signup_roster_line(row) for row in rows[:8])
+        if len(rows) > 8:
+            value += f"\n+ {len(rows) - 8} weitere"
         embed.add_field(
             name=f"{signup_class_icon(class_name)} {class_name} ({len(rows)})",
             value=value[:1024],
             inline=True
         )
+        inline_fields += 1
+
+    while inline_fields % 3:
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
+        inline_fields += 1
 
     if roster["tentative"]:
         value = ", ".join(f"**{str(row.get('player') or row.get('char') or '-').strip()}**" for row in roster["tentative"][:14])
