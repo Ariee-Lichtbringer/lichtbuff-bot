@@ -2976,11 +2976,15 @@ def raid_signup_status_line(helper):
     signups, roster, counts = raid_signup_roster_from_helper(helper)
     heal_slots = str(raid.get("healSlots") or "").strip()
     heal_text = f"{counts['heal']}/{heal_slots}" if heal_slots else str(counts["heal"])
+    tank_icon = spec_emoji_cache.get("tank") or SPEC_EMOJI_FALLBACKS["tank"]
+    melee_icon = class_emoji_cache.get("warrior") or CLASS_EMOJI_FALLBACKS["warrior"]
+    ranged_icon = spec_emoji_cache.get("marksman") or class_emoji_cache.get("hunter") or CLASS_EMOJI_FALLBACKS["hunter"]
+    heal_icon = spec_emoji_cache.get("heal") or SPEC_EMOJI_FALLBACKS["heal"]
     return (
-        f"🛡️ Tanks **{counts['tank']}** · "
-        f"⚔️ Melee **{counts['melee']}** · "
-        f"🏹 Ranged **{counts['ranged']}** · "
-        f"➕ Healers **{heal_text}**"
+        f"{tank_icon} Tanks **{counts['tank']}** · "
+        f"{melee_icon} Melee **{counts['melee']}** · "
+        f"{ranged_icon} Ranged **{counts['ranged']}** · "
+        f"{heal_icon} Healers **{heal_text}**"
     )
 
 
