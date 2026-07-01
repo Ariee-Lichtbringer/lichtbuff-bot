@@ -2447,6 +2447,7 @@ DISCORD_RAIDHELPER_SOURCES = {
 
 PRIO_CHECK_UPDATE_TASKS = {}
 PRIO_SYNC_INTERVAL_SECONDS = 300
+DISCORD_CHANNEL_SYNC_INTERVAL_SECONDS = 900
 
 
 def get_primary_raid_channel_id(raid):
@@ -2490,6 +2491,16 @@ async def sync_accessible_discord_channels():
     })
     print(f"Discord-Channel-Sync gespeichert: {result.get('saved', 0)} Channels.")
     return result
+
+
+async def discord_channel_sync_loop():
+    await client.wait_until_ready()
+    while not client.is_closed():
+        try:
+            await sync_accessible_discord_channels()
+        except Exception as e:
+            print("Discord-Channel-Sync Fehler:", e)
+        await asyncio.sleep(DISCORD_CHANNEL_SYNC_INTERVAL_SECONDS)
 
 
 def normalize_raid_name(value):
@@ -5099,7 +5110,7 @@ async def on_ready():
 
     if not hasattr(client, "discord_channel_sync_started"):
         client.discord_channel_sync_started = True
-        client.loop.create_task(sync_accessible_discord_channels())
+        client.loop.create_task(discord_channel_sync_loop())
 
     if not hasattr(client, "worldbuff_startup_task_started"):
         client.worldbuff_startup_task_started = True
@@ -5145,6 +5156,15 @@ async def on_message(message):
 
     content = message.content.strip()
     lower = content.lower()
+
+    if lower.startswith("!syncchannels") or lower.startswith("!channel-sync"):
+        try:
+            result = await sync_accessible_discord_channels()
+            saved = int(result.get("saved", 0) or 0)
+            await message.channel.send(f"✅ Discord-Channel neu synchronisiert: **{saved}** Channel gespeichert.", delete_after=30)
+        except Exception as e:
+            await message.channel.send(f"⚠️ Channel-Sync fehlgeschlagen: `{e}`", delete_after=30)
+        return
 
     if is_logsync_command(content):
         if int(message.channel.id) not in LOG_ANALYSIS_CHANNEL_IDS:
