@@ -2646,10 +2646,14 @@ def build_raid_announcement_embed(raid):
         raid.get("created_by") or
         "Gildenleitung"
     ).strip()
+    description_text = (description or "Raidanmeldung ist geöffnet.").strip()
+    width_line = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    if width_line not in description_text:
+        description_text = f"{description_text}\n\n{width_line}"
 
     embed = discord.Embed(
         title=raid_name.upper(),
-        description=(description or "Raidanmeldung ist geöffnet.")[:3900],
+        description=description_text[:3900],
         color=0x7c3aed
     )
     embed.add_field(name="Raidlead", value=created_by, inline=True)
