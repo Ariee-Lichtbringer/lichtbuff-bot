@@ -2579,8 +2579,29 @@ def build_raid_announcement_embed(raid):
 
     embed.add_field(name="Prio-PIN", value=f"`{player_pin}`", inline=True)
     embed.add_field(name="Webansicht", value=LICHTLOOT_URL, inline=True)
+    image_url = raid_image_url(raid)
+    if image_url:
+        embed.set_image(url=image_url)
     embed.set_footer(text="Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein.")
     return embed
+
+
+def raid_image_url(raid):
+    explicit = str(raid.get("raidImageUrl") or raid.get("imageUrl") or "").strip()
+    if explicit.startswith("http://") or explicit.startswith("https://"):
+        return explicit
+    raid_key = normalize_raid_name(raid.get("raid") or raid.get("raidName") or "").lower()
+    image_map = {
+        "zg": "zg.jpg",
+        "aq20": "aq20.jpg",
+        "aq40": "aq40.jpg",
+        "bwl": "bwl.jpg",
+        "mc": "mc.jpg",
+        "naxx": "naxx.jpg",
+        "ony": "ony.jpg",
+    }
+    filename = image_map.get(raid_key)
+    return f"{LICHTLOOT_URL}/images/{filename}" if filename else ""
 
 
 def infer_signup_role(spec_text):
@@ -2592,6 +2613,241 @@ def infer_signup_role(spec_text):
     if any(word in text for word in ["dd", "dps", "damage", "fury", "arms", "waffen", "fire", "frost", "shadow", "combat", "assa", "feral", "balance", "ele", "enh"]):
         return "dd"
     return "flex"
+
+
+def signup_class_icon(class_name):
+    key = str(class_name or "").strip().lower()
+    icons = {
+        "warrior": "⚔️",
+        "krieger": "⚔️",
+        "druid": "🌿",
+        "druide": "🌿",
+        "paladin": "✨",
+        "rogue": "🗡️",
+        "schurke": "🗡️",
+        "hunter": "🏹",
+        "jäger": "🏹",
+        "jaeger": "🏹",
+        "priest": "💠",
+        "priester": "💠",
+        "mage": "🔥",
+        "magier": "🔥",
+        "warlock": "💀",
+        "hexenmeister": "💀",
+        "shaman": "⚡",
+        "schamane": "⚡",
+    }
+    return icons.get(key, "◆")
+
+
+def signup_spec_icon(spec_text, role=""):
+    text = str(spec_text or role or "").strip().lower()
+    if any(word in text for word in ["tank", "prot", "schutz", "def"]):
+        return "🛡️"
+    if any(word in text for word in ["heal", "heiler", "holy", "resto", "restoration", "diszi"]):
+        return "➕"
+    if any(word in text for word in ["fire", "feuer", "flamme"]):
+        return "🔥"
+    if any(word in text for word in ["frost", "eis"]):
+        return "❄️"
+    if any(word in text for word in ["shadow", "schatten"]):
+        return "🌑"
+    if any(word in text for word in ["fury", "arms", "waffen", "combat", "assa", "feral", "enh", "ele", "balance", "dd", "dps"]):
+        return "⚔️"
+    return "✦"
+
+
+def signup_spec_from_note(note, role=""):
+    raw = str(note or "").strip()
+    if raw.lower().startswith("skillung:"):
+        return raw.split(":", 1)[1].strip()
+    return raw or str(role or "").strip()
+
+
+SIGNUP_CLASS_ORDER = [
+    "Tank",
+    "Warrior",
+    "Druid",
+    "Paladin",
+    "Rogue",
+    "Hunter",
+    "Priest",
+    "Mage",
+    "Warlock",
+    "Shaman",
+    "Ohne Klasse",
+]
+
+
+def canonical_signup_class(class_name):
+    key = str(class_name or "").strip().lower()
+    aliases = {
+        "warrior": "Warrior",
+        "krieger": "Warrior",
+        "druid": "Druid",
+        "druide": "Druid",
+        "paladin": "Paladin",
+        "rogue": "Rogue",
+        "schurke": "Rogue",
+        "hunter": "Hunter",
+        "jäger": "Hunter",
+        "jaeger": "Hunter",
+        "priest": "Priest",
+        "priester": "Priest",
+        "mage": "Mage",
+        "magier": "Mage",
+        "warlock": "Warlock",
+        "hexenmeister": "Warlock",
+        "shaman": "Shaman",
+        "schamane": "Shaman",
+    }
+    return aliases.get(key, str(class_name or "").strip() or "Ohne Klasse")
+
+
+def signup_class_sort_key(class_name):
+    canonical = canonical_signup_class(class_name)
+    try:
+        return (SIGNUP_CLASS_ORDER.index(canonical), canonical.lower())
+    except ValueError:
+        return (len(SIGNUP_CLASS_ORDER), canonical.lower())
+
+
+def signup_role_bucket(row):
+    status = str(row.get("status") or "").strip().lower()
+    if status == "absent":
+        return "absent"
+    if status == "tentative":
+        return "tentative"
+    if status == "bench":
+        return "bench"
+
+    role = str(row.get("role") or "").strip().lower()
+    spec = signup_spec_from_note(row.get("note"), role).lower()
+    if role == "tank" or any(word in spec for word in ["tank", "prot", "schutz", "def"]):
+        return "tank"
+    if role == "heal" or any(word in spec for word in ["heal", "heiler", "holy", "resto", "restoration", "diszi"]):
+        return "heal"
+    return "dd"
+
+
+def signup_damage_range(row):
+    class_name = canonical_signup_class(row.get("className") or row.get("klasse"))
+    spec = signup_spec_from_note(row.get("note"), row.get("role")).lower()
+    if class_name in {"Mage", "Warlock", "Hunter"}:
+        return "ranged"
+    if class_name == "Priest":
+        return "ranged" if "shadow" in spec or "schatten" in spec else "ranged"
+    if class_name == "Shaman":
+        return "ranged" if any(word in spec for word in ["ele", "elemental"]) else "melee"
+    if class_name == "Druid":
+        return "ranged" if any(word in spec for word in ["balance", "eule", "moonkin"]) else "melee"
+    return "melee"
+
+
+def format_signup_roster_line(row):
+    player = str(row.get("player") or row.get("char") or "-").strip() or "-"
+    role = str(row.get("role") or "").strip()
+    spec = signup_spec_from_note(row.get("note"), role) or role or "Flex"
+    return f"{signup_spec_icon(spec, role)} **{player}** · `{spec}`"
+
+
+def raid_signup_roster_from_helper(helper):
+    signups = []
+    for row in helper.get("signups") or []:
+        signups.append(row)
+    for row in helper.get("externalSignups") or []:
+        signups.append(row)
+
+    roster = {
+        "tank": [],
+        "classes": {},
+        "tentative": [],
+        "bench": [],
+        "absent": [],
+    }
+    counts = {
+        "tank": 0,
+        "heal": 0,
+        "melee": 0,
+        "ranged": 0,
+        "signed": 0,
+    }
+
+    for row in signups:
+        bucket = signup_role_bucket(row)
+        if bucket == "absent":
+            roster["absent"].append(row)
+            continue
+        if bucket == "tentative":
+            roster["tentative"].append(row)
+            continue
+        if bucket == "bench":
+            roster["bench"].append(row)
+            continue
+
+        counts["signed"] += 1
+        if bucket == "tank":
+            counts["tank"] += 1
+            roster["tank"].append(row)
+            continue
+        if bucket == "heal":
+            counts["heal"] += 1
+        else:
+            counts[signup_damage_range(row)] += 1
+
+        class_name = canonical_signup_class(row.get("className") or row.get("klasse"))
+        roster["classes"].setdefault(class_name, []).append(row)
+
+    return signups, roster, counts
+
+
+def raid_signup_status_line(helper):
+    raid = helper.get("raid") or {}
+    signups, roster, counts = raid_signup_roster_from_helper(helper)
+    heal_slots = str(raid.get("healSlots") or "").strip()
+    heal_text = f"{counts['heal']}/{heal_slots}" if heal_slots else str(counts["heal"])
+    return (
+        f"🛡️ Tanks **{counts['tank']}** · "
+        f"⚔️ Melee **{counts['melee']}** · "
+        f"🏹 Ranged **{counts['ranged']}** · "
+        f"➕ Healers **{heal_text}**"
+    )
+
+
+def add_raid_signup_roster_fields(embed, helper):
+    signups, roster, counts = raid_signup_roster_from_helper(helper)
+    if not signups:
+        embed.add_field(name="Anmeldungen", value="Noch keine Anmeldungen.", inline=False)
+        return
+
+    embed.add_field(name="Rollen", value=raid_signup_status_line(helper), inline=False)
+
+    if roster["tank"]:
+        value = "\n".join(format_signup_roster_line(row) for row in roster["tank"][:10])
+        embed.add_field(name=f"🛡️ Tank ({len(roster['tank'])})", value=value[:1024], inline=True)
+
+    for class_name in sorted(roster["classes"].keys(), key=signup_class_sort_key):
+        rows = roster["classes"][class_name]
+        value = "\n".join(format_signup_roster_line(row) for row in rows[:10])
+        if len(rows) > 10:
+            value += f"\n... und {len(rows) - 10} weitere"
+        embed.add_field(
+            name=f"{signup_class_icon(class_name)} {class_name} ({len(rows)})",
+            value=value[:1024],
+            inline=True
+        )
+
+    if roster["tentative"]:
+        value = ", ".join(f"**{str(row.get('player') or row.get('char') or '-').strip()}**" for row in roster["tentative"][:14])
+        embed.add_field(name=f"⚖️ Vorläufig ({len(roster['tentative'])})", value=value[:1024], inline=False)
+
+    if roster["bench"]:
+        value = ", ".join(f"**{str(row.get('player') or row.get('char') or '-').strip()}**" for row in roster["bench"][:14])
+        embed.add_field(name=f"🪑 Bank ({len(roster['bench'])})", value=value[:1024], inline=False)
+
+    if roster["absent"]:
+        value = ", ".join(f"**{str(row.get('player') or row.get('char') or '-').strip()}**" for row in roster["absent"][:18])
+        embed.add_field(name=f"🚫 Abwesenheit ({len(roster['absent'])})", value=value[:1024], inline=False)
 
 
 def raid_signup_class_options():
@@ -2618,18 +2874,34 @@ def raid_signup_summary_from_helper(helper):
     if not signups:
         return "Noch keine Anmeldungen."
 
+    grouped = {}
+    for row in signups:
+        class_name = str(row.get("className") or row.get("klasse") or "Ohne Klasse").strip() or "Ohne Klasse"
+        grouped.setdefault(class_name, []).append(row)
+
     lines = []
-    for row in signups[:18]:
-        player = str(row.get("player") or row.get("char") or "-").strip()
-        class_name = str(row.get("className") or row.get("klasse") or "").strip()
-        role = str(row.get("role") or "").strip()
-        note = str(row.get("note") or "").strip()
-        spec = note.replace("Skillung:", "").strip() if note.lower().startswith("skillung:") else note
-        details = " · ".join(part for part in [class_name, spec or role] if part)
-        lines.append(f"• {player}" + (f" ({details})" if details else ""))
-    if len(signups) > 18:
-        lines.append(f"... und {len(signups) - 18} weitere")
-    return "\n".join(lines)
+    shown = 0
+    for class_name in sorted(grouped.keys()):
+        rows = grouped[class_name]
+        lines.append(f"**{signup_class_icon(class_name)} {class_name} ({len(rows)})**")
+        for row in rows[:8]:
+            if shown >= 18:
+                break
+            player = str(row.get("player") or row.get("char") or "-").strip()
+            role = str(row.get("role") or "").strip()
+            spec = signup_spec_from_note(row.get("note"), role)
+            lines.append(f"{signup_spec_icon(spec, role)} `{spec or role or 'Flex'}` {player}")
+            shown += 1
+        if shown >= 18:
+            break
+
+    if len(signups) > shown:
+        lines.append(f"... und {len(signups) - shown} weitere")
+
+    result = "\n".join(lines).strip()
+    if len(result) > 1000:
+        return result[:980].rsplit("\n", 1)[0] + "\n..."
+    return result or "Noch keine Anmeldungen."
 
 
 async def refresh_raid_signup_message(interaction, raid):
@@ -2641,11 +2913,7 @@ async def refresh_raid_signup_message(interaction, raid):
             "t": int(time.time())
         })
         embed = build_raid_announcement_embed(raid)
-        embed.add_field(
-            name="Anmeldungen",
-            value=raid_signup_summary_from_helper(helper),
-            inline=False
-        )
+        add_raid_signup_roster_fields(embed, helper)
         await interaction.message.edit(embed=embed, view=RaidSignupView(raid))
     except Exception as e:
         print("Raid-Anmelder-Message konnte nicht aktualisiert werden:", e)
@@ -4194,8 +4462,21 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None):
     if channel is None:
         channel = await client.fetch_channel(int(channel_id))
 
+    embed = build_raid_announcement_embed(raid)
+    try:
+        helper = await asyncio.to_thread(lichtloot_get, {
+            "action": "getRaidHelper",
+            "raidId": str(raid.get("raidId") or raid.get("id") or ""),
+            "playerPin": str(raid.get("playerPin") or ""),
+            "t": int(time.time())
+        })
+        add_raid_signup_roster_fields(embed, helper)
+    except Exception as e:
+        print("Raid-Anmelder-Daten konnten beim Posten nicht geladen werden:", e)
+        embed.add_field(name="Anmeldungen", value="Noch keine Anmeldungen.", inline=False)
+
     await channel.send(
-        embed=build_raid_announcement_embed(raid),
+        embed=embed,
         view=RaidSignupView(raid)
     )
     print(f"Raid-Ankuendigung manuell gepostet: {raid_id} in {channel_id}")
