@@ -3193,6 +3193,35 @@ async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None,
         print("Raid-Anmelder-Message konnte nicht aktualisiert werden:", e)
 
 
+async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id=None):
+    raid_id = str(raid_id or "").strip()
+    if not raid_id:
+        raise RuntimeError("Raid-Anmelder-Refresh: Raid-ID fehlt.")
+    helper = await asyncio.to_thread(lichtloot_get, {
+        "action": "getRaidHelper",
+        "raidId": raid_id,
+        "playerPin": raid_id,
+        "t": int(time.time())
+    })
+    if not helper or not helper.get("success"):
+        raise RuntimeError("Raid-Anmelder-Refresh: Raid wurde nicht gefunden.")
+    raid = helper.get("raid") or {}
+    channel_id = str(channel_id or raid.get("discordChannelId") or raid.get("discord_channel_id") or "").strip()
+    message_id = str(message_id or raid.get("discordMessageId") or raid.get("discord_message_id") or "").strip()
+    if not channel_id or not message_id:
+        print(f"Raid-Anmelder-Refresh uebersprungen, Channel/Message fehlt: raid={raid_id} channel={channel_id} message={message_id}")
+        return "missing_message"
+    channel = client.get_channel(int(channel_id))
+    if channel is None:
+        channel = await client.fetch_channel(int(channel_id))
+    target_message = await channel.fetch_message(int(message_id))
+    embed = build_raid_announcement_embed(raid)
+    add_raid_signup_roster_fields(embed, helper)
+    await target_message.edit(embed=embed, view=RaidSignupView(raid))
+    print(f"Raid-Anmelder aktualisiert: {raid_id} in {channel_id}/{message_id}")
+    return True
+
+
 def raid_signup_source(interaction, origin_channel_id=None, origin_message_id=None):
     channel_id = str(origin_channel_id or interaction.channel_id or "")
     message_id = str(origin_message_id or getattr(interaction.message, "id", "") or "")
@@ -4325,6 +4354,17 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             posted = True
         if not posted:
             raise RuntimeError(f"Raid-Ankuendigung konnte nicht gepostet werden: {payload}")
+    elif update_type == "raid_announcement_refresh":
+        refreshed = await refresh_raid_signup_message_by_id(
+            payload.get("raidId") or payload.get("id"),
+            payload.get("channelId") or payload.get("discordChannelId"),
+            payload.get("messageId") or payload.get("discordMessageId") or payload.get("raidHelperMessageId")
+        )
+        if refreshed == "missing_message":
+            print(f"Raid-Anmelder-Refresh ohne gespeicherte Discord-Nachricht uebersprungen: {payload}")
+            refreshed = True
+        if not refreshed:
+            raise RuntimeError(f"Raid-Anmelder konnte nicht aktualisiert werden: {payload}")
     elif update_type == "log_analysis_post":
         await post_log_analysis_from_queue(payload)
     elif update_type == "worldbuff_update":
@@ -4965,15 +5005,27 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None):
         print("Raid-Anmelder-Daten konnten beim Posten nicht geladen werden:", e)
         embed.add_field(name="Anmeldungen", value="Noch keine Anmeldungen.", inline=False)
 
+    sent_message = None
     try:
-        await channel.send(embed=embed, view=RaidSignupView(raid))
+        sent_message = await channel.send(embed=embed, view=RaidSignupView(raid))
     except discord.HTTPException as e:
         print(f"Raid-Ankuendigung mit Auswahlfeld fehlgeschlagen, versuche Embed ohne Auswahlfeld: {e}")
         try:
-            await channel.send(embed=embed)
+            sent_message = await channel.send(embed=embed)
         except discord.HTTPException as embed_error:
             print(f"Raid-Ankuendigung als Embed fehlgeschlagen, versuche Klartext: {embed_error}")
-            await channel.send(build_raid_announcement_text(raid))
+            sent_message = await channel.send(build_raid_announcement_text(raid))
+    if sent_message:
+        try:
+            await asyncio.to_thread(lichtloot_post, {
+                "action": "lichtbotSetRaidDiscordMessage",
+                "queueToken": LICHTBOT_QUEUE_TOKEN,
+                "raidId": str(raid.get("raidId") or raid.get("id") or raid_id),
+                "discordChannelId": str(channel_id),
+                "discordMessageId": str(sent_message.id)
+            })
+        except Exception as e:
+            print("Raid-Anmelder-Message-ID konnte nicht gespeichert werden:", e)
     print(f"Raid-Ankuendigung manuell gepostet: {raid_id} in {channel_id}")
     await asyncio.sleep(2)
     return True
