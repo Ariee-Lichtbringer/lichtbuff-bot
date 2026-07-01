@@ -120,6 +120,7 @@ DISCORD_RATE_LIMIT_FALLBACK_SECONDS = 300
 RAID_ANNOUNCEMENT_CHECK_SECONDS = 60
 LICHTLOOT_QUEUE_CHECK_SECONDS = 30
 LICHTLOOT_URL = "https://lichtloot.de"
+DEFAULT_RAID_HELPER_CHANNEL_ID = "1508478036398571601"
 PUBLIC_API_CACHE_SECONDS = int(os.getenv("PUBLIC_API_CACHE_SECONDS", "45"))
 PUBLIC_API_PORT = int(os.getenv("PORT") or os.getenv("PUBLIC_API_PORT", "8000"))
 
@@ -4437,42 +4438,73 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None):
     if not raid_id:
         return False
 
-    result = await asyncio.to_thread(lichtloot_get, {
-        "action": "getActiveRaids",
-        "t": int(time.time())
-    })
-    raids = result.get("allRaids") or result.get("raids") or []
-    raid = next(
-        (
-            item for item in raids
-            if str(item.get("raidId") or item.get("id") or "").strip() == raid_id
-            or str(item.get("playerPin") or "").strip() == raid_id
-        ),
-        None
-    )
+    helper = None
+    raid = None
+
+    try:
+        helper = await asyncio.to_thread(lichtloot_get, {
+            "action": "getRaidHelper",
+            "raidId": raid_id,
+            "playerPin": raid_id,
+            "t": int(time.time())
+        })
+        if helper and helper.get("success"):
+            raid = helper.get("raid")
+    except Exception as e:
+        print("Raid-Ankuendigung manuell: direkter Raid-Lookup fehlgeschlagen:", e)
+
+    if not raid:
+        result = await asyncio.to_thread(lichtloot_get, {
+            "action": "getActiveRaids",
+            "t": int(time.time())
+        })
+        raids = result.get("allRaids") or result.get("raids") or []
+        raid = next(
+            (
+                item for item in raids
+                if str(item.get("raidId") or item.get("id") or "").strip() == raid_id
+                or str(item.get("playerPin") or "").strip() == raid_id
+            ),
+            None
+        )
 
     if not raid:
         print(f"Raid-Ankuendigung manuell: Raid {raid_id} nicht gefunden.")
         return False
 
     raid_name = normalize_raid_name(raid.get("raid") or raid.get("raidName") or "")
-    channel_id = str(channel_id or "").strip() or get_primary_raid_channel_id(raid_name)
+    channel_id = (
+        str(channel_id or "").strip()
+        or str(raid.get("discordChannelId") or raid.get("discord_channel_id") or "").strip()
+        or DEFAULT_RAID_HELPER_CHANNEL_ID
+        or str(get_primary_raid_channel_id(raid_name) or "").strip()
+    )
     if not channel_id:
         print(f"Raid-Ankuendigung manuell: Kein Channel fuer {raid_name} hinterlegt.")
         return False
 
-    channel = client.get_channel(int(channel_id))
+    try:
+        channel_numeric_id = int(channel_id)
+    except Exception:
+        print(f"Raid-Ankuendigung manuell: Ungueltige Channel-ID {channel_id}.")
+        return False
+
+    channel = client.get_channel(channel_numeric_id)
     if channel is None:
-        channel = await client.fetch_channel(int(channel_id))
+        channel = await client.fetch_channel(channel_numeric_id)
+    if channel is None:
+        print(f"Raid-Ankuendigung manuell: Channel {channel_id} nicht gefunden.")
+        return False
 
     embed = build_raid_announcement_embed(raid)
     try:
-        helper = await asyncio.to_thread(lichtloot_get, {
-            "action": "getRaidHelper",
-            "raidId": str(raid.get("raidId") or raid.get("id") or ""),
-            "playerPin": str(raid.get("playerPin") or ""),
-            "t": int(time.time())
-        })
+        if not helper:
+            helper = await asyncio.to_thread(lichtloot_get, {
+                "action": "getRaidHelper",
+                "raidId": str(raid.get("raidId") or raid.get("id") or ""),
+                "playerPin": str(raid.get("playerPin") or ""),
+                "t": int(time.time())
+            })
         add_raid_signup_roster_fields(embed, helper)
     except Exception as e:
         print("Raid-Anmelder-Daten konnten beim Posten nicht geladen werden:", e)
