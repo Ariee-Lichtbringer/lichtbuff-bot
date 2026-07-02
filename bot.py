@@ -50,6 +50,7 @@ LOG_ANALYSIS_CHANNEL_IDS = {
 }
 LOG_ANALYSIS_BOOTSTRAP_COUNT = int(os.getenv("LOG_ANALYSIS_BOOTSTRAP_COUNT", "10"))
 LOG_ANALYSIS_HISTORY_LIMIT = int(os.getenv("LOG_ANALYSIS_HISTORY_LIMIT", "300"))
+DISCORD_EMBED_WIDTH_SPACER = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # LichtLoot / Prio-Check AQ40
 AQ40_CHANNEL_ID = 1439219220528500806
@@ -2716,9 +2717,8 @@ def build_raid_announcement_embed(raid):
         "Gildenleitung"
     ).strip()
     description_text = (description or "Raidanmeldung ist geöffnet.").strip()
-    width_line = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    if width_line not in description_text:
-        description_text = f"{description_text}\n\n{width_line}"
+    if DISCORD_EMBED_WIDTH_SPACER not in description_text:
+        description_text = f"{description_text}\n\n{DISCORD_EMBED_WIDTH_SPACER}"
 
     embed = discord.Embed(
         title=raid_name.upper(),
@@ -2729,7 +2729,7 @@ def build_raid_announcement_embed(raid):
     embed.add_field(name="Datum", value=raid_date, inline=True)
     embed.add_field(name="Start", value=raid_time, inline=True)
     if signup_deadline != "noch offen":
-        embed.add_field(name="Anmeldeschluss", value=signup_deadline, inline=True)
+        embed.add_field(name="Anmeldeschluss", value=signup_deadline, inline=False)
 
     slot_parts = []
     if max_players:
@@ -2745,6 +2745,7 @@ def build_raid_announcement_embed(raid):
 
     embed.add_field(name="Prio-PIN", value=f"`{player_pin}`", inline=True)
     embed.add_field(name="Webansicht", value=LICHTLOOT_URL, inline=True)
+    embed.add_field(name="\u200b", value=DISCORD_EMBED_WIDTH_SPACER, inline=False)
     image_url = raid_image_url(raid)
     if image_url:
         embed.set_image(url=image_url)
@@ -3109,13 +3110,32 @@ def raid_signup_status_line(helper):
     )
 
 
+def add_raid_signup_role_fields(embed, helper):
+    raid = helper.get("raid") or {}
+    _signups, _roster, counts = raid_signup_roster_from_helper(helper)
+    heal_slots = str(raid.get("healSlots") or "").strip()
+    heal_text = f"{counts['heal']}/{heal_slots}" if heal_slots else str(counts["heal"])
+    tank_icon = spec_emoji_cache.get("tank") or SPEC_EMOJI_FALLBACKS["tank"]
+    melee_icon = class_emoji_cache.get("warrior") or CLASS_EMOJI_FALLBACKS["warrior"]
+    ranged_icon = spec_emoji_cache.get("marksman") or class_emoji_cache.get("hunter") or CLASS_EMOJI_FALLBACKS["hunter"]
+    heal_icon = spec_emoji_cache.get("heal") or SPEC_EMOJI_FALLBACKS["heal"]
+    value = (
+        f"{tank_icon} Tanks **{counts['tank']}**    "
+        f"{melee_icon} Melee **{counts['melee']}**    "
+        f"{ranged_icon} Ranged **{counts['ranged']}**    "
+        f"{heal_icon} Healers **{heal_text}**\n"
+        f"{DISCORD_EMBED_WIDTH_SPACER}"
+    )
+    embed.add_field(name="Rollen", value=value, inline=False)
+
+
 def add_raid_signup_roster_fields(embed, helper):
     signups, roster, counts = raid_signup_roster_from_helper(helper)
     if not signups:
         embed.add_field(name="Anmeldungen", value="Noch keine Anmeldungen.", inline=False)
         return
 
-    embed.add_field(name="Rollen", value=raid_signup_status_line(helper), inline=False)
+    add_raid_signup_role_fields(embed, helper)
 
     if roster["tank"]:
         value = "\n".join(format_signup_roster_line(row) for row in roster["tank"][:10])
