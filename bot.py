@@ -544,14 +544,97 @@ class WorldbuffSignupView(discord.ui.View):
             self.add_item(WorldbuffSignupSelect(slots))
 
 
+def clean_hordenbuff_name(value):
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def hordenbuff_name_key(value):
+    return clean_hordenbuff_name(value).casefold()
+
+
+def add_unique_hordenbuff_name(names, name):
+    clean_name = clean_hordenbuff_name(name)
+    if not clean_name:
+        return
+    key = hordenbuff_name_key(clean_name)
+    if not any(hordenbuff_name_key(existing) == key for existing in names):
+        names.append(clean_name)
+
+
+def remove_hordenbuff_name(names, name):
+    key = hordenbuff_name_key(name)
+    return [existing for existing in names if hordenbuff_name_key(existing) != key]
+
+
+def find_hordenbuff_takeover_key(takeovers, helper_name):
+    helper_key = hordenbuff_name_key(helper_name)
+    for existing_helper in list(takeovers.keys()):
+        if hordenbuff_name_key(existing_helper) == helper_key:
+            return existing_helper
+    return None
+
+
+def set_hordenbuff_takeover(data, helper_name, target_name):
+    helper_name = clean_hordenbuff_name(helper_name)
+    target_name = clean_hordenbuff_name(target_name)
+    data.setdefault("uebernahmen", {})
+    data.setdefault("helfer", [])
+    add_unique_hordenbuff_name(data["helfer"], helper_name)
+
+    existing_helper = find_hordenbuff_takeover_key(data["uebernahmen"], helper_name)
+    if existing_helper and existing_helper != helper_name:
+        del data["uebernahmen"][existing_helper]
+
+    target_key = hordenbuff_name_key(target_name)
+    for helper, target in list(data["uebernahmen"].items()):
+        if hordenbuff_name_key(target) == target_key and hordenbuff_name_key(helper) != hordenbuff_name_key(helper_name):
+            del data["uebernahmen"][helper]
+
+    data["uebernahmen"][helper_name] = target_name
+
+
+def dedupe_hordenbuff_state(data):
+    data.setdefault("spieler", [])
+    data.setdefault("helfer", [])
+    data.setdefault("uebernahmen", {})
+
+    deduped_players = []
+    for name in data.get("spieler", []):
+        add_unique_hordenbuff_name(deduped_players, name)
+    data["spieler"] = deduped_players
+
+    deduped_helpers = []
+    for name in data.get("helfer", []):
+        add_unique_hordenbuff_name(deduped_helpers, name)
+    data["helfer"] = deduped_helpers
+
+    deduped_takeovers = {}
+    for helper, target in data.get("uebernahmen", {}).items():
+        helper_name = clean_hordenbuff_name(helper)
+        target_name = clean_hordenbuff_name(target)
+        if not helper_name or not target_name:
+            continue
+        existing_helper = find_hordenbuff_takeover_key(deduped_takeovers, helper_name)
+        if existing_helper:
+            del deduped_takeovers[existing_helper]
+        target_key = hordenbuff_name_key(target_name)
+        for old_helper, old_target in list(deduped_takeovers.items()):
+            if hordenbuff_name_key(old_target) == target_key:
+                del deduped_takeovers[old_helper]
+        deduped_takeovers[helper_name] = target_name
+        add_unique_hordenbuff_name(data["helfer"], helper_name)
+    data["uebernahmen"] = deduped_takeovers
+    return data
+
+
 async def hordenbuff_signup_core(ally_char="", horde_char="", author_name=""):
     rend = await asyncio.to_thread(get_next_horden_rend_safe)
 
     if not rend:
         return "⚠️ Es wurde kein kommender Rend-Termin gefunden."
 
-    ally_char = str(ally_char or "").strip()
-    horde_char = str(horde_char or "").strip()
+    ally_char = clean_hordenbuff_name(ally_char)
+    horde_char = clean_hordenbuff_name(horde_char)
 
     if not ally_char and not horde_char:
         return "Bitte trage mindestens einen Namen ein: Ally-Char oder Horden-Char."
@@ -561,24 +644,22 @@ async def hordenbuff_signup_core(ally_char="", horde_char="", author_name=""):
     data.setdefault("uebernahmen", {})
     data.setdefault("helfer", [])
 
-    if ally_char and ally_char not in data["spieler"]:
-        data["spieler"].append(ally_char)
+    add_unique_hordenbuff_name(data["spieler"], ally_char)
 
-    if horde_char and horde_char not in data["helfer"]:
-        data["helfer"].append(horde_char)
+    add_unique_hordenbuff_name(data["helfer"], horde_char)
 
     if ally_char and horde_char:
         alte_helfer = [
             helper
             for helper, target
             in data["uebernahmen"].items()
-            if target.lower() == ally_char.lower()
+            if hordenbuff_name_key(target) == hordenbuff_name_key(ally_char)
         ]
 
         for helper in alte_helfer:
             del data["uebernahmen"][helper]
 
-        data["uebernahmen"][horde_char] = ally_char
+        set_hordenbuff_takeover(data, horde_char, ally_char)
         status = "zugeteilt"
         note = "Benötigt Buff für aktiven Termin; Helfer zugeteilt"
         sheet_char = ally_char
@@ -591,7 +672,7 @@ async def hordenbuff_signup_core(ally_char="", horde_char="", author_name=""):
     else:
         ziel = get_next_unassigned_char(data)
         if ziel:
-            data["uebernahmen"][horde_char] = ziel
+            set_hordenbuff_takeover(data, horde_char, ziel)
             status = "zugeteilt"
             note = "Benötigt Buff für aktiven Termin; Helfer zugeteilt"
             sheet_char = ziel
@@ -602,7 +683,7 @@ async def hordenbuff_signup_core(ally_char="", horde_char="", author_name=""):
             sheet_char = ""
             result_text = f"✅ **{horde_char}** ist als Horden-Helfer eingetragen."
 
-    save_json(hordenbuff_file(), data)
+    save_json(hordenbuff_file(), dedupe_hordenbuff_state(data))
 
     save_result = await asyncio.to_thread(
         hordenbuff_sheet_set,
@@ -2034,21 +2115,19 @@ def merge_hordenbuff_sheet_data(rend, data):
             continue
 
         if charakter and charakter != "-":
-            if charakter not in synced["spieler"]:
-                synced["spieler"].append(charakter)
+            add_unique_hordenbuff_name(synced["spieler"], charakter)
 
         if uebernehmer and uebernehmer != "-":
-            if uebernehmer not in synced["helfer"]:
-                synced["helfer"].append(uebernehmer)
+            add_unique_hordenbuff_name(synced["helfer"], uebernehmer)
             if charakter and charakter != "-":
-                synced["uebernahmen"][uebernehmer] = charakter
+                set_hordenbuff_takeover(synced, uebernehmer, charakter)
 
-    return synced
+    return dedupe_hordenbuff_state(synced)
 
 
 def get_assigned_targets(data):
     return {
-        target.lower()
+        hordenbuff_name_key(target)
         for target in data.get("uebernahmen", {}).values()
     }
 
@@ -2057,7 +2136,7 @@ def get_next_unassigned_char(data):
     assigned = get_assigned_targets(data)
 
     for charakter in data.get("spieler", []):
-        if charakter.lower() not in assigned:
+        if hordenbuff_name_key(charakter) not in assigned:
             return charakter
 
     return None
@@ -2087,7 +2166,7 @@ def build_hordenbuff_text(rend, data):
         assigned = get_assigned_targets(data)
 
         for name in data["spieler"]:
-            if name.lower() in assigned:
+            if hordenbuff_name_key(name) in assigned:
                 text += f"✅ {name} _(zugeteilt)_\n"
             else:
                 text += f"✅ {name}\n"
@@ -2098,8 +2177,8 @@ def build_hordenbuff_text(rend, data):
 
     uebernahmen = data.get("uebernahmen", {})
     helfer_liste = data.get("helfer", [])
-    zugeteilte_helfer = {name.lower() for name in uebernahmen.keys()}
-    freie_helfer = [name for name in helfer_liste if name.lower() not in zugeteilte_helfer]
+    zugeteilte_helfer = {hordenbuff_name_key(name) for name in uebernahmen.keys()}
+    freie_helfer = [name for name in helfer_liste if hordenbuff_name_key(name) not in zugeteilte_helfer]
 
     if uebernahmen:
         for helfer, ziel in uebernahmen.items():
@@ -2226,10 +2305,9 @@ async def add_rend_spieler(message, charakter):
 
     data = await asyncio.to_thread(merge_hordenbuff_sheet_data, rend, load_hordenbuff_state(rend))
 
-    if charakter not in data["spieler"]:
-        data["spieler"].append(charakter)
+    add_unique_hordenbuff_name(data["spieler"], charakter)
 
-    save_json(hordenbuff_file(), data)
+    save_json(hordenbuff_file(), dedupe_hordenbuff_state(data))
 
     await asyncio.to_thread(
         hordenbuff_sheet_set,
@@ -2259,13 +2337,14 @@ async def auto_assign_hordenbuff_helper(message, helfer_name):
     data.setdefault("helfer", [])
     data.setdefault("uebernahmen", {})
 
-    if helfer_name not in data["helfer"]:
-        data["helfer"].append(helfer_name)
+    helfer_name = clean_hordenbuff_name(helfer_name)
+    add_unique_hordenbuff_name(data["helfer"], helfer_name)
 
-    if helfer_name in data.get("uebernahmen", {}):
-        ziel = data["uebernahmen"][helfer_name]
+    existing_helper = find_hordenbuff_takeover_key(data.get("uebernahmen", {}), helfer_name)
+    if existing_helper:
+        ziel = data["uebernahmen"][existing_helper]
 
-        save_json(hordenbuff_file(), data)
+        save_json(hordenbuff_file(), dedupe_hordenbuff_state(data))
         await send_temp(
             message.channel,
             f"ℹ️ {helfer_name} ist bereits für **{ziel}** eingeteilt."
@@ -2278,7 +2357,7 @@ async def auto_assign_hordenbuff_helper(message, helfer_name):
     ziel = get_next_unassigned_char(data)
 
     if not ziel:
-        save_json(hordenbuff_file(), data)
+        save_json(hordenbuff_file(), dedupe_hordenbuff_state(data))
         await asyncio.to_thread(
             hordenbuff_sheet_set,
             rend,
@@ -2296,9 +2375,9 @@ async def auto_assign_hordenbuff_helper(message, helfer_name):
         await delete_command_message(message)
         return
 
-    data["uebernahmen"][helfer_name] = ziel
+    set_hordenbuff_takeover(data, helfer_name, ziel)
 
-    save_json(hordenbuff_file(), data)
+    save_json(hordenbuff_file(), dedupe_hordenbuff_state(data))
 
     await asyncio.to_thread(
         hordenbuff_sheet_set,
@@ -2330,29 +2409,29 @@ async def set_specific_hordenbuff_helper(
 
     data = await asyncio.to_thread(merge_hordenbuff_sheet_data, rend, load_hordenbuff_state(rend))
 
-    if ziel not in data.get("spieler", []):
-        data.setdefault("spieler", [])
-        data["spieler"].append(ziel)
+    ziel = clean_hordenbuff_name(ziel)
+    helfer_name = clean_hordenbuff_name(helfer_name)
+    data.setdefault("spieler", [])
+    add_unique_hordenbuff_name(data["spieler"], ziel)
 
     data.setdefault("uebernahmen", {})
     data.setdefault("helfer", [])
 
-    if helfer_name not in data["helfer"]:
-        data["helfer"].append(helfer_name)
+    add_unique_hordenbuff_name(data["helfer"], helfer_name)
 
     alte_helfer = [
         helper
         for helper, target
         in data["uebernahmen"].items()
-        if target.lower() == ziel.lower()
+        if hordenbuff_name_key(target) == hordenbuff_name_key(ziel)
     ]
 
     for helper in alte_helfer:
         del data["uebernahmen"][helper]
 
-    data["uebernahmen"][helfer_name] = ziel
+    set_hordenbuff_takeover(data, helfer_name, ziel)
 
-    save_json(hordenbuff_file(), data)
+    save_json(hordenbuff_file(), dedupe_hordenbuff_state(data))
 
     await asyncio.to_thread(
         hordenbuff_sheet_set,
@@ -2379,17 +2458,17 @@ async def set_hordenbuff_char(message, charakter):
         return
 
     data = await asyncio.to_thread(merge_hordenbuff_sheet_data, rend, load_hordenbuff_state(rend))
-    helfer_name = message.author.display_name
+    helfer_name = clean_hordenbuff_name(message.author.display_name)
+    charakter = clean_hordenbuff_name(charakter)
 
     data.setdefault("uebernahmen", {})
     data.setdefault("helfer", [])
 
-    if helfer_name not in data["helfer"]:
-        data["helfer"].append(helfer_name)
+    add_unique_hordenbuff_name(data["helfer"], helfer_name)
 
-    data["uebernahmen"][helfer_name] = charakter
+    set_hordenbuff_takeover(data, helfer_name, charakter)
 
-    save_json(hordenbuff_file(), data)
+    save_json(hordenbuff_file(), dedupe_hordenbuff_state(data))
 
     await asyncio.to_thread(
         hordenbuff_sheet_set,
@@ -2416,16 +2495,17 @@ async def delete_rend_entry(message, charakter):
         return
 
     data = await asyncio.to_thread(merge_hordenbuff_sheet_data, rend, load_hordenbuff_state(rend))
+    charakter_key = hordenbuff_name_key(charakter)
 
     data["spieler"] = [
         name for name in data.get("spieler", [])
-        if name.lower() != charakter.lower()
+        if hordenbuff_name_key(name) != charakter_key
     ]
 
     remove_helpers = []
 
     for helper, ziel in data.get("uebernahmen", {}).items():
-        if ziel.lower() == charakter.lower() or helper.lower() == charakter.lower():
+        if hordenbuff_name_key(ziel) == charakter_key or hordenbuff_name_key(helper) == charakter_key:
             remove_helpers.append(helper)
 
     for helper in remove_helpers:
@@ -2433,10 +2513,10 @@ async def delete_rend_entry(message, charakter):
 
     data["helfer"] = [
         name for name in data.get("helfer", [])
-        if name.lower() != charakter.lower()
+        if hordenbuff_name_key(name) != charakter_key
     ]
 
-    save_json(hordenbuff_file(), data)
+    save_json(hordenbuff_file(), dedupe_hordenbuff_state(data))
 
     await asyncio.to_thread(hordenbuff_sheet_delete, rend, charakter)
 
