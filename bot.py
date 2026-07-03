@@ -233,6 +233,9 @@ POST_FILE = "last_post.json"
 HORDENBUFF_FILE = "hordenbuff.json"
 HORDENBUFF_CLEANUP_FILE = "hordenbuff_cleanup.json"
 P0_POST_FILE = "p0_posts.json"
+P0_REVIEW_TEST_NAMES = {"ariee", "juksi"}
+P0_REVIEW_LIVE_NAMES = {"kaese", "käse", "blondi", "blondie"}
+P0_REVIEW_TEST_MODE = os.getenv("P0_REVIEW_TEST_MODE", "true").lower() != "false"
 RAID_ANNOUNCEMENT_FILE = "raid_announcements.json"
 HORDENBUFF_CLEANUP_DELAY_MINUTES = 5
 HORDENBUFF_CLEANUP_WINDOW_MINUTES = 45
@@ -271,6 +274,7 @@ TAG_LANG = {
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 
 client = discord.Client(intents=intents)
 
@@ -2942,8 +2946,7 @@ def build_raid_announcement_embed(raid):
 
     embed.add_field(name="Prio-PIN", value=f"`{player_pin}`", inline=True)
     embed.add_field(name="Webansicht", value=LICHTLOOT_URL, inline=True)
-    attachment_name = raid_banner_attachment_name(raid)
-    image_url = f"attachment://{attachment_name}" if attachment_name else raid_image_url(raid)
+    image_url = raid_image_url(raid)
     if image_url:
         embed.set_image(url=image_url)
     embed.set_footer(text="Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein.")
@@ -2955,21 +2958,11 @@ def raid_key_for_image(raid):
 
 
 def raid_banner_attachment_name(raid):
-    raid_key = raid_key_for_image(raid)
-    if raid_key not in {"zg", "aq20", "aq40", "bwl", "mc", "naxx", "ony"}:
-        return ""
-    path = RAID_BANNER_DIR / f"{raid_key}.jpg"
-    return f"{raid_key}-raid-banner.jpg" if path.exists() else ""
+    return ""
 
 
 def raid_banner_file(raid):
-    raid_key = raid_key_for_image(raid)
-    if raid_key not in {"zg", "aq20", "aq40", "bwl", "mc", "naxx", "ony"}:
-        return None
-    path = RAID_BANNER_DIR / f"{raid_key}.jpg"
-    if not path.exists():
-        return None
-    return discord.File(str(path), filename=f"{raid_key}-raid-banner.jpg")
+    return None
 
 
 def raid_image_url(raid):
@@ -4502,11 +4495,15 @@ async def get_raid_event_info_from_source(raid, source):
     raid_message = await get_raid_helper_message(raid, source)
     text = collect_message_text(raid_message)
     raid_date, raid_time = extract_raid_datetime_from_text(text)
+    pin_match = re.search(r"Prio[-\s]*PIN\s*`?([A-Z0-9]{2,8})`?", text, re.IGNORECASE)
+    raid_pin = pin_match.group(1).strip().upper() if pin_match else ""
 
     return {
         "raid": raid,
         "raidDate": raid_date,
         "raidTime": raid_time,
+        "raidPin": raid_pin,
+        "playerPin": raid_pin,
         "discordChannelId": str(source["channel_id"]),
         "raidHelperMessageId": str(source.get("resolved_message_id") or source.get("message_id") or "")
     }
@@ -4557,6 +4554,9 @@ async def get_p0_context(raid, event_info=None):
         params.update({
             "raidDate": event_info.get("raidDate", ""),
             "raidTime": event_info.get("raidTime", ""),
+            "raidPin": event_info.get("raidPin") or event_info.get("playerPin") or "",
+            "prioPin": event_info.get("raidPin") or event_info.get("playerPin") or "",
+            "playerPin": event_info.get("raidPin") or event_info.get("playerPin") or "",
             "discordChannelId": event_info.get("discordChannelId", ""),
             "discordMessageId": event_info.get("raidHelperMessageId", "")
         })
@@ -4568,6 +4568,8 @@ async def save_p0_signup(selection, interaction, char_name, player_pin):
         "action": "lichtbotSaveP0Signup",
         "raidId": selection["raid_id"],
         "raid": selection["raid"],
+        "raidPin": selection.get("raid_pin") or "",
+        "prioPin": selection.get("raid_pin") or "",
         "itemId": selection["item_id"],
         "itemName": selection["item_name"],
         "char": char_name,
@@ -4586,18 +4588,21 @@ def build_p0_post_text(context):
     raid_name = raid.get("raidName") or display_raid_name(raid.get("raid") or context.get("raid"))
     raid_date = raid.get("raidDate") or raid.get("date") or ""
     raid_time = raid.get("raidTime") or raid.get("time") or ""
+    raid_pin = str(raid.get("playerPin") or raid.get("prioPin") or raid.get("raidPin") or "").strip()
     signups = context.get("signups") or []
 
     text = f"⭐ **P0+ Wahl · {raid_name}**\n"
     if raid_date or raid_time:
         text += f"📌 **Raid:** {raid_date} {raid_time}".strip() + "\n"
+    if raid_pin:
+        text += f"🔑 **Prio-PIN:** `{raid_pin}`\n"
     text += "\n✅ **Aktuelle P0+ Wünsche:**\n"
 
     if signups:
         for row in signups:
             player = str(row.get("player") or row.get("char") or "-").strip() or "-"
             item = str(row.get("item") or row.get("itemName") or "-").strip() or "-"
-            text += f"⭐ **{player}** → {item}\n"
+            text += f"⭐ **{player}** → {item}{p0_approval_suffix(row)}\n"
     else:
         text += "-\n"
 
@@ -4649,6 +4654,161 @@ def p0_item_points_text(item):
         return str(points or "0")
 
 
+def p0_approval_suffix(row):
+    status = str(row.get("approvalStatus") or "").strip().lower()
+    if row.get("approved") or status == "approved":
+        return " ✅"
+    if row.get("rejected") or status == "rejected":
+        return " ❌"
+    return " ⏳"
+
+
+def format_p0_item_signup_summary(signups):
+    rows = []
+    for row in signups or []:
+        player = str(row.get("player") or row.get("char") or "-").strip() or "-"
+        status = str(row.get("approvalStatus") or "").strip().lower()
+        if row.get("approved") or status == "approved":
+            label = "gültig"
+        elif row.get("rejected") or status == "rejected":
+            label = "abgelehnt"
+        else:
+            label = "wartet auf Prüfung"
+        rows.append(f"**{player}** ({label})")
+    if not rows:
+        return "Auf diesem Item ist in diesem Raid noch keine weitere P0+ eingetragen."
+    return "Auf diesem Item haben in diesem Raid P0+: " + ", ".join(rows) + "."
+
+
+def normalize_p0_reviewer_name(value):
+    return re.sub(r"[^a-z0-9äöüß]+", "", str(value or "").casefold())
+
+
+def member_matches_p0_reviewer(member, wanted_names):
+    names = {
+        normalize_p0_reviewer_name(getattr(member, "display_name", "")),
+        normalize_p0_reviewer_name(getattr(member, "name", ""))
+    }
+    return bool(names.intersection(wanted_names))
+
+
+async def find_p0_review_members():
+    wanted = P0_REVIEW_TEST_NAMES if P0_REVIEW_TEST_MODE else P0_REVIEW_LIVE_NAMES
+    found = []
+    seen = set()
+    for guild in client.guilds:
+        for member in getattr(guild, "members", []) or []:
+            if member.bot or member.id in seen:
+                continue
+            if member_matches_p0_reviewer(member, wanted):
+                found.append(member)
+                seen.add(member.id)
+        for name in wanted:
+            try:
+                queried = await guild.query_members(query=name, limit=5)
+            except Exception:
+                queried = []
+            for member in queried:
+                if member.bot or member.id in seen:
+                    continue
+                if member_matches_p0_reviewer(member, wanted):
+                    found.append(member)
+                    seen.add(member.id)
+    return found
+
+
+async def review_p0_signup(signup, status, interaction, selection):
+    payload = {
+        "action": "lichtbotReviewP0Signup",
+        "queueToken": LICHTBOT_QUEUE_TOKEN,
+        "signupId": signup.get("id") or "",
+        "status": status,
+        "reviewerDiscordId": str(interaction.user.id),
+        "reviewerDiscordName": str(interaction.user.display_name)
+    }
+    result = await asyncio.to_thread(lichtloot_post, payload)
+    if not result.get("success"):
+        raise RuntimeError(result.get("error") or str(result))
+    await update_p0_post(
+        selection["raid"],
+        selection["origin_channel_id"],
+        selection.get("event_info") or {}
+    )
+    return result
+
+
+class P0ReviewView(discord.ui.View):
+    def __init__(self, signup, selection):
+        super().__init__(timeout=86400)
+        self.signup = signup
+        self.selection = selection
+
+    async def apply_review(self, interaction, status):
+        await interaction.response.defer()
+        try:
+            result = await review_p0_signup(self.signup, status, interaction, self.selection)
+            reviewed = result.get("signup") or self.signup
+            label = "gültig" if status == "approved" else "abgelehnt"
+            await interaction.message.edit(
+                content=(
+                    f"✅ P0+ geprüft: **{reviewed.get('player') or '-'}** → "
+                    f"**{reviewed.get('item') or '-'}** ist **{label}**."
+                ),
+                view=None
+            )
+        except Exception as e:
+            await interaction.followup.send(f"⚠️ Prüfung konnte nicht gespeichert werden: {e}", ephemeral=True)
+
+    @discord.ui.button(label="P0+ gültig", style=discord.ButtonStyle.success)
+    async def approve(self, interaction, button):
+        await self.apply_review(interaction, "approved")
+
+    @discord.ui.button(label="ungültig", style=discord.ButtonStyle.danger)
+    async def reject(self, interaction, button):
+        await self.apply_review(interaction, "rejected")
+
+
+async def send_p0_review_requests(selection, signup):
+    reviewers = await find_p0_review_members()
+    raid_label = selection.get("raid") or ""
+    event_info = selection.get("event_info") or {}
+    raid_date = event_info.get("raidDate") or ""
+    raid_time = event_info.get("raidTime") or ""
+    pin = selection.get("raid_pin") or event_info.get("raidPin") or ""
+    message_text = (
+        "Bitte prüfe diese P0+-Anmeldung:\n"
+        f"**Spieler:** {signup.get('player') or '-'}\n"
+        f"**Item:** {signup.get('item') or selection.get('item_name') or '-'}\n"
+        f"**Raid:** {raid_label} {raid_date} {raid_time}".strip() + "\n"
+        f"**Prio-PIN:** {pin or '-'}"
+    )
+    sent = []
+
+    for member in reviewers:
+        try:
+            view = P0ReviewView(signup, selection)
+            await member.send(message_text, view=view)
+            sent.append(member.display_name)
+        except discord.Forbidden:
+            print(f"P0-Pruefung: DM an {member.display_name} nicht erlaubt.")
+        except Exception as e:
+            print(f"P0-Pruefung: DM an {member.display_name} fehlgeschlagen: {e}")
+
+    if not sent:
+        try:
+            channel_id = int(selection.get("origin_channel_id") or 0)
+            channel = client.get_channel(channel_id) or await client.fetch_channel(channel_id)
+            target_names = "Ariee/Juksi" if P0_REVIEW_TEST_MODE else "Kaese/Blondi"
+            await channel.send(
+                f"🔎 **P0+ Prüfung für {target_names}**\n{message_text}",
+                view=P0ReviewView(signup, selection)
+            )
+            sent.append(f"Channelpost für {target_names}")
+        except Exception as e:
+            print(f"P0-Pruefung: Channel-Fallback fehlgeschlagen: {e}")
+    return sent
+
+
 async def update_p0_post(raid, origin_channel_id, event_info=None):
     context = await get_p0_context(raid, event_info)
     channel = client.get_channel(int(origin_channel_id)) or await client.fetch_channel(int(origin_channel_id))
@@ -4668,17 +4828,16 @@ async def update_p0_post(raid, origin_channel_id, event_info=None):
     )
     text = build_p0_post_text(context)
 
+    old_messages = []
     if message_id:
         try:
-            msg = await channel.fetch_message(int(message_id))
+            old_messages.append(await channel.fetch_message(int(message_id)))
         except discord.NotFound:
-            msg = found_messages[0] if found_messages else await channel.send(text, view=view)
-        await msg.edit(content=text, view=view)
-        await delete_extra_messages([msg] + [message for message in found_messages if message.id != msg.id])
-    else:
-        msg = found_messages[0] if found_messages else await channel.send(text, view=view)
-        await msg.edit(content=text, view=view)
-        await delete_extra_messages([message for message in found_messages if message.id != msg.id])
+            pass
+    old_ids = {message.id for message in old_messages}
+    old_messages.extend(message for message in found_messages if message.id not in old_ids)
+    await delete_extra_messages(old_messages)
+    msg = await channel.send(text, view=view)
 
     state[key] = str(msg.id)
     save_json(p0_post_file(), state)
@@ -4686,6 +4845,12 @@ async def update_p0_post(raid, origin_channel_id, event_info=None):
 
 
 class P0SignupModal(discord.ui.Modal, title="P0+ eintragen"):
+    raid_pin = discord.ui.TextInput(
+        label="Prio-PIN / Raid-PIN",
+        placeholder="z. B. XXX",
+        required=False,
+        max_length=12
+    )
     item_name = discord.ui.TextInput(
         label="Item",
         placeholder="z. B. Donnerzorn, Gesegnete Klinge ...",
@@ -4708,6 +4873,9 @@ class P0SignupModal(discord.ui.Modal, title="P0+ eintragen"):
     def __init__(self, selection):
         super().__init__()
         self.selection = selection
+        default_pin = str(selection.get("raid_pin") or "").strip()
+        if default_pin:
+            self.raid_pin.default = default_pin
 
     async def on_submit(self, interaction):
         await interaction.response.defer(ephemeral=True)
@@ -4736,6 +4904,14 @@ class P0SignupModal(discord.ui.Modal, title="P0+ eintragen"):
                 return
 
             selection = dict(self.selection)
+            entered_raid_pin = str(self.raid_pin.value or "").strip().upper()
+            if entered_raid_pin:
+                selection["raid_pin"] = entered_raid_pin
+                selection["raid_id"] = entered_raid_pin
+                event_info = dict(selection.get("event_info") or {})
+                event_info["raidPin"] = entered_raid_pin
+                event_info["playerPin"] = entered_raid_pin
+                selection["event_info"] = event_info
             selection["item_id"] = str(item.get("id") or "")
             selection["item_name"] = str(item.get("name") or item.get("itemName") or "")
             result = await save_p0_signup(
@@ -4747,16 +4923,23 @@ class P0SignupModal(discord.ui.Modal, title="P0+ eintragen"):
             if not result.get("success"):
                 raise RuntimeError(result.get("error") or str(result))
 
+            signup = result.get("signup") or {}
+            review_targets = await send_p0_review_requests(selection, signup)
             await update_p0_post(
                 selection["raid"],
                 selection["origin_channel_id"],
                 selection.get("event_info") or {}
             )
-            signup = result.get("signup") or {}
-            points_text = p0_item_points_text(item)
+            item_summary = format_p0_item_signup_summary(result.get("itemSignups") or [signup])
+            review_text = (
+                f"Prüfung wurde an **{', '.join(review_targets)}** geschickt."
+                if review_targets
+                else "Prüf-Nachricht konnte noch an keinen Tester geschickt werden."
+            )
             await interaction.followup.send(
                 f"✅ Gespeichert: **{signup.get('player') or self.char_name.value}** → **{signup.get('item') or selection['item_name']}**.\n"
-                f"Auf diesem Item liegen aktuell **{points_text} P0+ Punkte**.\n"
+                f"{item_summary}\n"
+                f"{review_text}\n"
                 "Deine Prioliste wurde in Lichtloot aktualisiert.",
                 ephemeral=True
             )
@@ -4784,6 +4967,7 @@ class P0ItemEntryView(discord.ui.View):
         selection = {
             "raid": self.raid,
             "raid_id": self.raid_id,
+            "raid_pin": str((self.context.get("raid") or {}).get("playerPin") or (self.context.get("raid") or {}).get("prioPin") or self.event_info.get("raidPin") or ""),
             "origin_channel_id": self.origin_channel_id,
             "origin_message_id": self.origin_message_id,
             "event_info": self.event_info,
@@ -4807,11 +4991,11 @@ async def open_p0_signup_flow(message, raid):
         await send_temp(message.channel, f"⚠️ Für {raid} wurden keine Lichtloot-Items gefunden.")
         return
 
-    await update_p0_post(raid, message.channel.id, event_info)
     await message.channel.send(
         f"✅ {message.author.mention}, der P0+ Anmeldebutton steht im Channelpost. Gib dort Item und Char ein.",
         delete_after=20
     )
+    await update_p0_post(raid, message.channel.id, event_info)
 
 
 # Kompatibilität für alte Debug-Befehle/Funktionsnamen
