@@ -4603,19 +4603,50 @@ def build_p0_post_text(context):
 
     text += "\n━━━━━━━━━━━━━━━\n"
     text += "📋 **Anmelden oder ändern:** `!p0`\n"
-    text += "Wähle unten dein Item aus. Beim ersten Mal brauchst du im Formular deinen Mein-Lichtloot Login/PIN."
-    return text
-
-
-def build_p0_channel_text(context, page=0, page_count=1):
-    text = build_p0_post_text(context)
-    text += f"\n\n🔽 **Item-Auswahl:** Seite {int(page) + 1}/{max(1, int(page_count or 1))}"
+    text += "Klicke unten auf **P0+ eintragen** und gib Item + Char ein. Beim ersten Mal brauchst du deinen Mein-Lichtloot Login/PIN."
     return text
 
 
 def is_p0_overview_message(message):
     text = str(getattr(message, "content", "") or "")
     return "⭐ **P0+ Wahl" in text and "Aktuelle P0+ Wünsche" in text
+
+
+def p0_item_search_key(value):
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
+
+
+def find_p0_item(items, item_text):
+    wanted = p0_item_search_key(item_text)
+    if not wanted:
+        return None, []
+
+    exact = [
+        item for item in items
+        if p0_item_search_key(item.get("name") or item.get("itemName")) == wanted
+    ]
+    if exact:
+        return exact[0], exact
+
+    wanted_words = [word for word in wanted.split() if len(word) >= 3]
+    matches = []
+    for item in items:
+        name = item.get("name") or item.get("itemName") or ""
+        key = p0_item_search_key(name)
+        if wanted in key or (wanted_words and all(word in key for word in wanted_words)):
+            matches.append(item)
+
+    if len(matches) == 1:
+        return matches[0], matches
+    return None, matches[:10]
+
+
+def p0_item_points_text(item):
+    points = item.get("p0PlusPoints", 0)
+    try:
+        return f"{float(points):g}"
+    except Exception:
+        return str(points or "0")
 
 
 async def update_p0_post(raid, origin_channel_id, event_info=None):
@@ -4626,7 +4657,7 @@ async def update_p0_post(raid, origin_channel_id, event_info=None):
     message_id = state.get(key)
     found_messages = await find_recent_own_messages(channel, is_p0_overview_message, limit=100)
     raid_data = context.get("raid") or {}
-    view = P0ItemSelectView(
+    view = P0ItemEntryView(
         raid,
         context.get("raidId") or raid_data.get("raidId") or raid_data.get("id") or "",
         context.get("items") or [],
@@ -4635,7 +4666,7 @@ async def update_p0_post(raid, origin_channel_id, event_info=None):
         event_info or {},
         context=context
     )
-    text = build_p0_channel_text(context, view.page, view.page_count())
+    text = build_p0_post_text(context)
 
     if message_id:
         try:
@@ -4655,6 +4686,12 @@ async def update_p0_post(raid, origin_channel_id, event_info=None):
 
 
 class P0SignupModal(discord.ui.Modal, title="P0+ eintragen"):
+    item_name = discord.ui.TextInput(
+        label="Item",
+        placeholder="z. B. Donnerzorn, Gesegnete Klinge ...",
+        required=True,
+        max_length=100
+    )
     char_name = discord.ui.TextInput(
         label="Charakter",
         placeholder="z. B. Ariee",
@@ -4675,8 +4712,34 @@ class P0SignupModal(discord.ui.Modal, title="P0+ eintragen"):
     async def on_submit(self, interaction):
         await interaction.response.defer(ephemeral=True)
         try:
+            item, matches = find_p0_item(
+                self.selection.get("items") or [],
+                str(self.item_name.value).strip()
+            )
+            if not item:
+                if matches:
+                    suggestions = "\n".join(
+                        f"- {match.get('name') or match.get('itemName')} ({p0_item_points_text(match)} P0+)"
+                        for match in matches[:10]
+                    )
+                    await interaction.followup.send(
+                        "⚠️ Ich habe mehrere passende Items gefunden. Bitte gib den Namen genauer ein:\n"
+                        f"{suggestions}",
+                        ephemeral=True
+                    )
+                    return
+                await interaction.followup.send(
+                    "⚠️ Dieses Item habe ich in der Lichtloot-Liste für diesen Raid nicht gefunden. "
+                    "Bitte prüfe die Schreibweise.",
+                    ephemeral=True
+                )
+                return
+
+            selection = dict(self.selection)
+            selection["item_id"] = str(item.get("id") or "")
+            selection["item_name"] = str(item.get("name") or item.get("itemName") or "")
             result = await save_p0_signup(
-                self.selection,
+                selection,
                 interaction,
                 str(self.char_name.value).strip(),
                 str(self.player_pin.value).strip()
@@ -4685,13 +4748,15 @@ class P0SignupModal(discord.ui.Modal, title="P0+ eintragen"):
                 raise RuntimeError(result.get("error") or str(result))
 
             await update_p0_post(
-                self.selection["raid"],
-                self.selection["origin_channel_id"],
-                self.selection.get("event_info") or {}
+                selection["raid"],
+                selection["origin_channel_id"],
+                selection.get("event_info") or {}
             )
             signup = result.get("signup") or {}
+            points_text = p0_item_points_text(item)
             await interaction.followup.send(
-                f"✅ Gespeichert: **{signup.get('player') or self.char_name.value}** → **{signup.get('item') or self.selection['item_name']}**. "
+                f"✅ Gespeichert: **{signup.get('player') or self.char_name.value}** → **{signup.get('item') or selection['item_name']}**.\n"
+                f"Auf diesem Item liegen aktuell **{points_text} P0+ Punkte**.\n"
                 "Deine Prioliste wurde in Lichtloot aktualisiert.",
                 ephemeral=True
             )
@@ -4703,41 +4768,8 @@ class P0SignupModal(discord.ui.Modal, title="P0+ eintragen"):
             )
 
 
-class P0ItemSelect(discord.ui.Select):
-    def __init__(self, view):
-        self.p0_view = view
-        options = []
-        for index, item in enumerate(view.page_items(), start=view.page_start()):
-            options.append(discord.SelectOption(
-                label=p0_item_label(item),
-                value=str(index),
-                description=str(item.get("slot") or item.get("boss") or item.get("type") or "")[:100]
-            ))
-        super().__init__(
-            placeholder="P0+ Item auswählen",
-            min_values=1,
-            max_values=1,
-            options=options
-        )
-
-    async def callback(self, interaction):
-        item = self.p0_view.items[int(self.values[0])]
-        selection = {
-            "raid": self.p0_view.raid,
-            "raid_id": self.p0_view.raid_id,
-            "item_id": str(item.get("id") or ""),
-            "item_name": str(item.get("name") or item.get("itemName") or ""),
-            "origin_channel_id": self.p0_view.origin_channel_id,
-            "origin_message_id": self.p0_view.origin_message_id,
-            "event_info": self.p0_view.event_info
-        }
-        await interaction.response.send_modal(P0SignupModal(selection))
-
-
-class P0ItemSelectView(discord.ui.View):
-    PAGE_SIZE = 25
-
-    def __init__(self, raid, raid_id, items, origin_channel_id, origin_message_id="", event_info=None, page=0, context=None):
+class P0ItemEntryView(discord.ui.View):
+    def __init__(self, raid, raid_id, items, origin_channel_id, origin_message_id="", event_info=None, context=None):
         super().__init__(timeout=900)
         self.raid = normalize_raid_name(raid)
         self.raid_id = raid_id
@@ -4746,44 +4778,18 @@ class P0ItemSelectView(discord.ui.View):
         self.origin_message_id = str(origin_message_id or "")
         self.event_info = event_info or {}
         self.context = context or {"raid": {"raid": self.raid}, "items": self.items, "signups": []}
-        self.page = max(0, int(page or 0))
-        if self.items:
-            self.add_item(P0ItemSelect(self))
 
-    def page_start(self):
-        return self.page * self.PAGE_SIZE
-
-    def page_items(self):
-        return self.items[self.page_start():self.page_start() + self.PAGE_SIZE]
-
-    def page_count(self):
-        return max(1, (len(self.items) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
-
-    async def refresh_page(self, interaction):
-        view = P0ItemSelectView(
-            self.raid,
-            self.raid_id,
-            self.items,
-            self.origin_channel_id,
-            self.origin_message_id,
-            self.event_info,
-            self.page,
-            self.context
-        )
-        await interaction.response.edit_message(
-            content=build_p0_channel_text(self.context, view.page, view.page_count()),
-            view=view
-        )
-
-    @discord.ui.button(label="Zurück", style=discord.ButtonStyle.secondary)
-    async def previous_page(self, interaction, button):
-        self.page = max(0, self.page - 1)
-        await self.refresh_page(interaction)
-
-    @discord.ui.button(label="Weiter", style=discord.ButtonStyle.secondary)
-    async def next_page(self, interaction, button):
-        self.page = min(self.page_count() - 1, self.page + 1)
-        await self.refresh_page(interaction)
+    @discord.ui.button(label="P0+ eintragen", style=discord.ButtonStyle.success)
+    async def open_signup(self, interaction, button):
+        selection = {
+            "raid": self.raid,
+            "raid_id": self.raid_id,
+            "origin_channel_id": self.origin_channel_id,
+            "origin_message_id": self.origin_message_id,
+            "event_info": self.event_info,
+            "items": self.items
+        }
+        await interaction.response.send_modal(P0SignupModal(selection))
 
 
 async def open_p0_signup_flow(message, raid):
@@ -4803,7 +4809,7 @@ async def open_p0_signup_flow(message, raid):
 
     await update_p0_post(raid, message.channel.id, event_info)
     await message.channel.send(
-        f"✅ {message.author.mention}, die P0+ Auswahl steht im Channelpost. Wähle dort dein Item aus.",
+        f"✅ {message.author.mention}, der P0+ Anmeldebutton steht im Channelpost. Gib dort Item und Char ein.",
         delete_after=20
     )
 
