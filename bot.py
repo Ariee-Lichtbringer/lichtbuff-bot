@@ -4603,7 +4603,13 @@ def build_p0_post_text(context):
 
     text += "\n━━━━━━━━━━━━━━━\n"
     text += "📋 **Anmelden oder ändern:** `!p0`\n"
-    text += "Der Bot schickt dir die Item-Auswahl per DM. Beim ersten Mal brauchst du deinen Mein-Lichtloot Login/PIN."
+    text += "Wähle unten dein Item aus. Beim ersten Mal brauchst du im Formular deinen Mein-Lichtloot Login/PIN."
+    return text
+
+
+def build_p0_channel_text(context, page=0, page_count=1):
+    text = build_p0_post_text(context)
+    text += f"\n\n🔽 **Item-Auswahl:** Seite {int(page) + 1}/{max(1, int(page_count or 1))}"
     return text
 
 
@@ -4615,22 +4621,32 @@ def is_p0_overview_message(message):
 async def update_p0_post(raid, origin_channel_id, event_info=None):
     context = await get_p0_context(raid, event_info)
     channel = client.get_channel(int(origin_channel_id)) or await client.fetch_channel(int(origin_channel_id))
-    text = build_p0_post_text(context)
     state = load_json(p0_post_file(), {})
     key = p0_post_state_key(raid, origin_channel_id)
     message_id = state.get(key)
     found_messages = await find_recent_own_messages(channel, is_p0_overview_message, limit=100)
+    raid_data = context.get("raid") or {}
+    view = P0ItemSelectView(
+        raid,
+        context.get("raidId") or raid_data.get("raidId") or raid_data.get("id") or "",
+        context.get("items") or [],
+        origin_channel_id,
+        "",
+        event_info or {},
+        context=context
+    )
+    text = build_p0_channel_text(context, view.page, view.page_count())
 
     if message_id:
         try:
             msg = await channel.fetch_message(int(message_id))
         except discord.NotFound:
-            msg = found_messages[0] if found_messages else await channel.send(text)
-        await msg.edit(content=text)
+            msg = found_messages[0] if found_messages else await channel.send(text, view=view)
+        await msg.edit(content=text, view=view)
         await delete_extra_messages([msg] + [message for message in found_messages if message.id != msg.id])
     else:
-        msg = found_messages[0] if found_messages else await channel.send(text)
-        await msg.edit(content=text)
+        msg = found_messages[0] if found_messages else await channel.send(text, view=view)
+        await msg.edit(content=text, view=view)
         await delete_extra_messages([message for message in found_messages if message.id != msg.id])
 
     state[key] = str(msg.id)
@@ -4721,7 +4737,7 @@ class P0ItemSelect(discord.ui.Select):
 class P0ItemSelectView(discord.ui.View):
     PAGE_SIZE = 25
 
-    def __init__(self, raid, raid_id, items, origin_channel_id, origin_message_id="", event_info=None, page=0):
+    def __init__(self, raid, raid_id, items, origin_channel_id, origin_message_id="", event_info=None, page=0, context=None):
         super().__init__(timeout=900)
         self.raid = normalize_raid_name(raid)
         self.raid_id = raid_id
@@ -4729,6 +4745,7 @@ class P0ItemSelectView(discord.ui.View):
         self.origin_channel_id = str(origin_channel_id)
         self.origin_message_id = str(origin_message_id or "")
         self.event_info = event_info or {}
+        self.context = context or {"raid": {"raid": self.raid}, "items": self.items, "signups": []}
         self.page = max(0, int(page or 0))
         if self.items:
             self.add_item(P0ItemSelect(self))
@@ -4750,10 +4767,11 @@ class P0ItemSelectView(discord.ui.View):
             self.origin_channel_id,
             self.origin_message_id,
             self.event_info,
-            self.page
+            self.page,
+            self.context
         )
         await interaction.response.edit_message(
-            content=f"⭐ **P0+ Auswahl {self.raid}** · Seite {view.page + 1}/{view.page_count()}",
+            content=build_p0_channel_text(self.context, view.page, view.page_count()),
             view=view
         )
 
@@ -4783,29 +4801,11 @@ async def open_p0_signup_flow(message, raid):
         await send_temp(message.channel, f"⚠️ Für {raid} wurden keine Lichtloot-Items gefunden.")
         return
 
-    raid_data = context.get("raid") or {}
-    view = P0ItemSelectView(
-        raid,
-        context.get("raidId") or raid_data.get("raidId") or raid_data.get("id") or "",
-        items,
-        message.channel.id,
-        "",
-        event_info
+    await update_p0_post(raid, message.channel.id, event_info)
+    await message.channel.send(
+        f"✅ {message.author.mention}, die P0+ Auswahl steht im Channelpost. Wähle dort dein Item aus.",
+        delete_after=20
     )
-
-    try:
-        await message.author.send(
-            f"⭐ **P0+ Auswahl {raid}** · Seite 1/{view.page_count()}\n"
-            "Wähle dein Item aus. Danach trägst du deinen Char ein; den Mein-Lichtloot Login/PIN brauchst du nur beim ersten Verknüpfen.",
-            view=view
-        )
-        await message.channel.send(
-            f"✅ {message.author.mention}, ich habe dir die P0+ Auswahl per DM geschickt.",
-            delete_after=20
-        )
-        await update_p0_post(raid, message.channel.id, event_info)
-    except discord.Forbidden:
-        await send_temp(message.channel, f"⚠️ {message.author.mention}, ich kann dir keine DM schicken. Bitte DMs für den Server erlauben.")
 
 
 # Kompatibilität für alte Debug-Befehle/Funktionsnamen
