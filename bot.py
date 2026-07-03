@@ -232,6 +232,7 @@ DELETED_WORLDBUFF_FILE = "deleted_worldbuffs.json"
 POST_FILE = "last_post.json"
 HORDENBUFF_FILE = "hordenbuff.json"
 HORDENBUFF_CLEANUP_FILE = "hordenbuff_cleanup.json"
+P0_POST_FILE = "p0_posts.json"
 RAID_ANNOUNCEMENT_FILE = "raid_announcements.json"
 HORDENBUFF_CLEANUP_DELAY_MINUTES = 5
 HORDENBUFF_CLEANUP_WINDOW_MINUTES = 45
@@ -298,6 +299,10 @@ def guild_scoped_file(filename):
 
 def hordenbuff_file():
     return guild_scoped_file(HORDENBUFF_FILE)
+
+
+def p0_post_file():
+    return guild_scoped_file(P0_POST_FILE)
 
 
 def hordenbuff_cleanup_file():
@@ -4507,6 +4512,302 @@ async def get_raid_event_info_from_source(raid, source):
     }
 
 
+def p0_supported_raids_for_channel(channel_id):
+    wanted = int(channel_id)
+    raids = []
+    for raid in ["MC", "BWL", "AQ40", "NAXX"]:
+        for source in DISCORD_RAIDHELPER_SOURCES.get(raid, []):
+            if int(source.get("channel_id")) == wanted:
+                raids.append(raid)
+                break
+    return raids
+
+
+def p0_post_state_key(raid, channel_id):
+    return f"{normalize_raid_name(raid)}:{int(channel_id)}"
+
+
+def display_raid_name(raid):
+    names = {
+        "MC": "Molten Core",
+        "BWL": "Blackwing Lair",
+        "AQ40": "Ahn'Qiraj 40",
+        "NAXX": "Naxxramas"
+    }
+    return names.get(normalize_raid_name(raid), normalize_raid_name(raid))
+
+
+def p0_item_label(item):
+    name = str(item.get("name") or item.get("itemName") or "-").strip() or "-"
+    points = item.get("p0PlusPoints", 0)
+    try:
+        points_text = f"{float(points):g}"
+    except Exception:
+        points_text = str(points or "0")
+    label = f"{name} · {points_text} P0+"
+    return label[:100]
+
+
+async def get_p0_context(raid, event_info=None):
+    params = {
+        "action": "lichtbotGetP0SignupContext",
+        "raid": normalize_raid_name(raid)
+    }
+    if event_info:
+        params.update({
+            "raidDate": event_info.get("raidDate", ""),
+            "raidTime": event_info.get("raidTime", ""),
+            "discordChannelId": event_info.get("discordChannelId", ""),
+            "discordMessageId": event_info.get("raidHelperMessageId", "")
+        })
+    return await asyncio.to_thread(lichtloot_get, params)
+
+
+async def save_p0_signup(selection, interaction, char_name, player_pin):
+    payload = {
+        "action": "lichtbotSaveP0Signup",
+        "raidId": selection["raid_id"],
+        "raid": selection["raid"],
+        "itemId": selection["item_id"],
+        "itemName": selection["item_name"],
+        "char": char_name,
+        "server": "Everlook",
+        "playerPin": player_pin,
+        "discordUserId": str(interaction.user.id),
+        "discordName": str(interaction.user.display_name),
+        "discordChannelId": str(selection.get("origin_channel_id") or ""),
+        "discordMessageId": str(selection.get("origin_message_id") or "")
+    }
+    return await asyncio.to_thread(lichtloot_post, payload)
+
+
+def build_p0_post_text(context):
+    raid = context.get("raid") or {}
+    raid_name = raid.get("raidName") or display_raid_name(raid.get("raid") or context.get("raid"))
+    raid_date = raid.get("raidDate") or raid.get("date") or ""
+    raid_time = raid.get("raidTime") or raid.get("time") or ""
+    signups = context.get("signups") or []
+
+    text = f"⭐ **P0+ Wahl · {raid_name}**\n"
+    if raid_date or raid_time:
+        text += f"📌 **Raid:** {raid_date} {raid_time}".strip() + "\n"
+    text += "\n✅ **Aktuelle P0+ Wünsche:**\n"
+
+    if signups:
+        for row in signups:
+            player = str(row.get("player") or row.get("char") or "-").strip() or "-"
+            item = str(row.get("item") or row.get("itemName") or "-").strip() or "-"
+            text += f"⭐ **{player}** → {item}\n"
+    else:
+        text += "-\n"
+
+    text += "\n━━━━━━━━━━━━━━━\n"
+    text += "📋 **Anmelden oder ändern:** `!p0`\n"
+    text += "Der Bot schickt dir die Item-Auswahl per DM. Beim ersten Mal brauchst du deinen Mein-Lichtloot Login/PIN."
+    return text
+
+
+def is_p0_overview_message(message):
+    text = str(getattr(message, "content", "") or "")
+    return "⭐ **P0+ Wahl" in text and "Aktuelle P0+ Wünsche" in text
+
+
+async def update_p0_post(raid, origin_channel_id, event_info=None):
+    context = await get_p0_context(raid, event_info)
+    channel = client.get_channel(int(origin_channel_id)) or await client.fetch_channel(int(origin_channel_id))
+    text = build_p0_post_text(context)
+    state = load_json(p0_post_file(), {})
+    key = p0_post_state_key(raid, origin_channel_id)
+    message_id = state.get(key)
+    found_messages = await find_recent_own_messages(channel, is_p0_overview_message, limit=100)
+
+    if message_id:
+        try:
+            msg = await channel.fetch_message(int(message_id))
+        except discord.NotFound:
+            msg = found_messages[0] if found_messages else await channel.send(text)
+        await msg.edit(content=text)
+        await delete_extra_messages([msg] + [message for message in found_messages if message.id != msg.id])
+    else:
+        msg = found_messages[0] if found_messages else await channel.send(text)
+        await msg.edit(content=text)
+        await delete_extra_messages([message for message in found_messages if message.id != msg.id])
+
+    state[key] = str(msg.id)
+    save_json(p0_post_file(), state)
+    return context
+
+
+class P0SignupModal(discord.ui.Modal, title="P0+ eintragen"):
+    char_name = discord.ui.TextInput(
+        label="Charakter",
+        placeholder="z. B. Ariee",
+        required=True,
+        max_length=32
+    )
+    player_pin = discord.ui.TextInput(
+        label="Mein-Lichtloot Login/PIN",
+        placeholder="Nur beim ersten Mal für diesen Char nötig",
+        required=False,
+        max_length=32
+    )
+
+    def __init__(self, selection):
+        super().__init__()
+        self.selection = selection
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            result = await save_p0_signup(
+                self.selection,
+                interaction,
+                str(self.char_name.value).strip(),
+                str(self.player_pin.value).strip()
+            )
+            if not result.get("success"):
+                raise RuntimeError(result.get("error") or str(result))
+
+            await update_p0_post(
+                self.selection["raid"],
+                self.selection["origin_channel_id"],
+                self.selection.get("event_info") or {}
+            )
+            signup = result.get("signup") or {}
+            await interaction.followup.send(
+                f"✅ Gespeichert: **{signup.get('player') or self.char_name.value}** → **{signup.get('item') or self.selection['item_name']}**. "
+                "Deine Prioliste wurde in Lichtloot aktualisiert.",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.followup.send(
+                "⚠️ P0+ konnte nicht gespeichert werden: "
+                f"{e}\n\nFalls das dein erster Eintrag ist, trage bitte einmal deinen Mein-Lichtloot Login/PIN mit ein.",
+                ephemeral=True
+            )
+
+
+class P0ItemSelect(discord.ui.Select):
+    def __init__(self, view):
+        self.p0_view = view
+        options = []
+        for index, item in enumerate(view.page_items(), start=view.page_start()):
+            options.append(discord.SelectOption(
+                label=p0_item_label(item),
+                value=str(index),
+                description=str(item.get("slot") or item.get("boss") or item.get("type") or "")[:100]
+            ))
+        super().__init__(
+            placeholder="P0+ Item auswählen",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+
+    async def callback(self, interaction):
+        item = self.p0_view.items[int(self.values[0])]
+        selection = {
+            "raid": self.p0_view.raid,
+            "raid_id": self.p0_view.raid_id,
+            "item_id": str(item.get("id") or ""),
+            "item_name": str(item.get("name") or item.get("itemName") or ""),
+            "origin_channel_id": self.p0_view.origin_channel_id,
+            "origin_message_id": self.p0_view.origin_message_id,
+            "event_info": self.p0_view.event_info
+        }
+        await interaction.response.send_modal(P0SignupModal(selection))
+
+
+class P0ItemSelectView(discord.ui.View):
+    PAGE_SIZE = 25
+
+    def __init__(self, raid, raid_id, items, origin_channel_id, origin_message_id="", event_info=None, page=0):
+        super().__init__(timeout=900)
+        self.raid = normalize_raid_name(raid)
+        self.raid_id = raid_id
+        self.items = items or []
+        self.origin_channel_id = str(origin_channel_id)
+        self.origin_message_id = str(origin_message_id or "")
+        self.event_info = event_info or {}
+        self.page = max(0, int(page or 0))
+        if self.items:
+            self.add_item(P0ItemSelect(self))
+
+    def page_start(self):
+        return self.page * self.PAGE_SIZE
+
+    def page_items(self):
+        return self.items[self.page_start():self.page_start() + self.PAGE_SIZE]
+
+    def page_count(self):
+        return max(1, (len(self.items) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+
+    async def refresh_page(self, interaction):
+        view = P0ItemSelectView(
+            self.raid,
+            self.raid_id,
+            self.items,
+            self.origin_channel_id,
+            self.origin_message_id,
+            self.event_info,
+            self.page
+        )
+        await interaction.response.edit_message(
+            content=f"⭐ **P0+ Auswahl {self.raid}** · Seite {view.page + 1}/{view.page_count()}",
+            view=view
+        )
+
+    @discord.ui.button(label="Zurück", style=discord.ButtonStyle.secondary)
+    async def previous_page(self, interaction, button):
+        self.page = max(0, self.page - 1)
+        await self.refresh_page(interaction)
+
+    @discord.ui.button(label="Weiter", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction, button):
+        self.page = min(self.page_count() - 1, self.page + 1)
+        await self.refresh_page(interaction)
+
+
+async def open_p0_signup_flow(message, raid):
+    source = (DISCORD_RAIDHELPER_SOURCES.get(raid) or [{}])[0]
+    event_info = {}
+    if source.get("channel_id"):
+        try:
+            event_info = await get_raid_event_info_from_source(raid, source)
+        except Exception as e:
+            print(f"P0 RaidHelper-Datum konnte nicht gelesen werden ({raid}): {e}")
+
+    context = await get_p0_context(raid, event_info)
+    items = context.get("items") or []
+    if not items:
+        await send_temp(message.channel, f"⚠️ Für {raid} wurden keine Lichtloot-Items gefunden.")
+        return
+
+    raid_data = context.get("raid") or {}
+    view = P0ItemSelectView(
+        raid,
+        context.get("raidId") or raid_data.get("raidId") or raid_data.get("id") or "",
+        items,
+        message.channel.id,
+        "",
+        event_info
+    )
+
+    try:
+        await message.author.send(
+            f"⭐ **P0+ Auswahl {raid}** · Seite 1/{view.page_count()}\n"
+            "Wähle dein Item aus. Danach trägst du deinen Char ein; den Mein-Lichtloot Login/PIN brauchst du nur beim ersten Verknüpfen.",
+            view=view
+        )
+        await message.channel.send(
+            f"✅ {message.author.mention}, ich habe dir die P0+ Auswahl per DM geschickt.",
+            delete_after=20
+        )
+        await update_p0_post(raid, message.channel.id, event_info)
+    except discord.Forbidden:
+        await send_temp(message.channel, f"⚠️ {message.author.mention}, ich kann dir keine DM schicken. Bitte DMs für den Server erlauben.")
+
+
 # Kompatibilität für alte Debug-Befehle/Funktionsnamen
 async def get_aq40_raid_helper_message():
     return await get_raid_helper_message("AQ40", DISCORD_RAIDHELPER_SOURCES["AQ40"][0])
@@ -6179,6 +6480,26 @@ async def on_message(message):
     if lower == "!wb":
         await update_worldbuff_post()
         await update_hordenbuff_post(force=True)
+        await delete_command_message(message)
+        return
+
+    if lower in ["!p0", "!p0+", "!po", "!po+"] or lower.startswith(("!p0 ", "!p0+ ", "!po ", "!po+ ")):
+        parts = content.split()
+        if len(parts) > 1:
+            raid = normalize_raid_name(parts[1])
+        else:
+            channel_raids = p0_supported_raids_for_channel(message.channel.id)
+            raid = channel_raids[0] if channel_raids else ""
+
+        if raid not in {"MC", "BWL", "AQ40", "NAXX"}:
+            await send_temp(
+                message.channel,
+                "Bitte nutze `!p0` im MC/BWL/AQ40/Naxx-Raidchannel oder gib den Raid an: `!p0 mc`, `!p0 bwl`, `!p0 aq40`, `!p0 naxx`."
+            )
+            await delete_command_message(message)
+            return
+
+        await open_p0_signup_flow(message, raid)
         await delete_command_message(message)
         return
 
