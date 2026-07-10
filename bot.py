@@ -1282,6 +1282,7 @@ def parse_ticker_message(text):
     for line in text.splitlines():
         line = line.strip()
         line = line.replace("**", "")
+        line = re.sub(r"\s+", " ", line)
 
         match = None
         matched_pattern_index = -1
@@ -1302,7 +1303,7 @@ def parse_ticker_message(text):
                 "datum": datum,
                 "tag": make_tag_from_date(datum),
                 "uhrzeit": uhrzeit,
-                "gilde": gilde.strip()
+                "gilde": re.sub(r"^(?:Mo|Di|Mi|Do|Fr|Sa|So|Montag|Dienstag|Mittwoch|Donnerstag|Freitag|Samstag|Sonntag)\s+", "", gilde.strip(), flags=re.IGNORECASE)
             })
 
     return buffs
@@ -1424,18 +1425,55 @@ def merge_buffs_into_data(data, new_buffs):
         make_buff_key(b)
         for b in data
     }
+    existing_identity = {
+        make_overview_dedupe_key(b): index
+        for index, b in enumerate(data)
+    }
 
     added = 0
 
     for buff in new_buffs:
         key = make_buff_key(buff)
+        identity_key = make_overview_dedupe_key(buff)
 
         if key not in existing_keys:
+            old_index = existing_identity.get(identity_key)
+            if old_index is not None:
+                old_key = make_buff_key(data[old_index])
+                data[old_index] = buff
+                existing_keys.discard(old_key)
+                existing_keys.add(key)
+                continue
             data.append(buff)
             existing_keys.add(key)
+            existing_identity[identity_key] = len(data) - 1
             added += 1
 
     return added
+
+
+def discord_message_search_text(message):
+    parts = [message.content or ""]
+
+    for embed in getattr(message, "embeds", []) or []:
+        for value in [
+            getattr(embed, "title", ""),
+            getattr(embed, "description", "")
+        ]:
+            if value:
+                parts.append(str(value))
+
+        for field in getattr(embed, "fields", []) or []:
+            if getattr(field, "name", ""):
+                parts.append(str(field.name))
+            if getattr(field, "value", ""):
+                parts.append(str(field.value))
+
+        footer = getattr(embed, "footer", None)
+        if footer and getattr(footer, "text", ""):
+            parts.append(str(footer.text))
+
+    return "\n".join(part for part in parts if part)
 
 
 def build_overview():
@@ -1667,7 +1705,7 @@ async def sync_recent_ticker_messages(limit=500):
 
         try:
             async for msg in channel.history(limit=limit):
-                found_buffs.extend(parse_ticker_message(msg.content or ""))
+                found_buffs.extend(parse_ticker_message(discord_message_search_text(msg)))
         except Exception as e:
             print(f"Ticker-Historie {channel_id} konnte nicht gelesen werden:", e)
             continue
@@ -6222,13 +6260,15 @@ async def on_message_edit(before, after):
     if after.author == client.user:
         return
 
-    CURRENT_GUILD_SLUG.set(guild_slug_for_channel(after.channel.id))
+    token = CURRENT_GUILD_SLUG.set(guild_slug_for_channel(after.channel.id))
+    try:
+        #for raid in get_raid_names_for_channel(after.channel.id):
+        #  schedule_prio_check_update(raid, f"Nachricht im {raid}-Channel bearbeitet")
 
-    #for raid in get_raid_names_for_channel(after.channel.id):
-    #  schedule_prio_check_update(raid, f"Nachricht im {raid}-Channel bearbeitet")
-
-    await handle_log_analysis_message(after)
-    await handle_ticker_update(after)
+        await handle_log_analysis_message(after)
+        await handle_ticker_update(after)
+    finally:
+        CURRENT_GUILD_SLUG.reset(token)
 
 
 @client.event
