@@ -5020,27 +5020,64 @@ async def update_p0_post(raid, origin_channel_id, event_info=None):
     message_id = state.get(key)
     found_messages = await find_recent_own_messages(channel, is_p0_overview_message, limit=100)
     raid_data = context.get("raid") or {}
+    text = build_p0_post_text(context)
+
+    candidates = []
+    if message_id:
+        try:
+            candidates.append(await channel.fetch_message(int(message_id)))
+        except discord.NotFound:
+            pass
+        except Exception as e:
+            print(f"P0+-Post {message_id} konnte nicht geladen werden:", e)
+
+    candidate_ids = {message.id for message in candidates}
+    candidates.extend(message for message in found_messages if message.id not in candidate_ids)
+    target_message = candidates[0] if candidates else None
+
     view = P0ItemEntryView(
         raid,
         context.get("raidId") or raid_data.get("raidId") or raid_data.get("id") or "",
         context.get("items") or [],
         origin_channel_id,
-        "",
+        str(getattr(target_message, "id", "") or ""),
         event_info or {},
         context=context
     )
-    text = build_p0_post_text(context)
 
-    old_messages = []
-    if message_id:
+    msg = None
+    if target_message:
         try:
-            old_messages.append(await channel.fetch_message(int(message_id)))
-        except discord.NotFound:
+            await target_message.edit(content=text, view=view)
+            msg = target_message
+        except Exception as e:
+            print(f"P0+-Post {target_message.id} konnte nicht bearbeitet werden:", e)
+            try:
+                await target_message.delete()
+            except Exception:
+                pass
+            msg = None
+
+    for message in candidates:
+        if msg and message.id == msg.id:
+            continue
+        try:
+            await message.delete()
+            await asyncio.sleep(0.4)
+        except Exception:
             pass
-    old_ids = {message.id for message in old_messages}
-    old_messages.extend(message for message in found_messages if message.id not in old_ids)
-    await delete_extra_messages(old_messages)
-    msg = await channel.send(text, view=view)
+
+    if not msg:
+        view = P0ItemEntryView(
+            raid,
+            context.get("raidId") or raid_data.get("raidId") or raid_data.get("id") or "",
+            context.get("items") or [],
+            origin_channel_id,
+            "",
+            event_info or {},
+            context=context
+        )
+        msg = await channel.send(text, view=view)
 
     state[key] = str(msg.id)
     save_json(p0_post_file(), state)
