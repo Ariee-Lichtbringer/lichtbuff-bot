@@ -6197,8 +6197,8 @@ def build_po_channel_post_text(payload, entries, full_text):
         lines.append(f"Quelle: <#{source_channel_id}>")
     if review_recipient:
         lines.append(f"Freigabe per DM an: **{review_recipient}**")
-    lines.append(f"Gefunden: **{len(entries or [])}** Eintrag/Einträge")
     if len(full_text) > 1800:
+        lines.append(f"Gefunden: **{len(entries or [])}** Eintrag/Einträge")
         lines.append("Vollständige Liste ist als Datei angehängt.")
     else:
         lines.append("")
@@ -6448,6 +6448,20 @@ async def post_standalone_po_list(payload):
     target_channel = client.get_channel(target_channel_id) or await client.fetch_channel(target_channel_id)
     text = build_standalone_po_entries_text(entries)
     msg, changed = await upsert_standalone_po_post(target_channel, payload, entries, text)
+    try:
+        await asyncio.to_thread(lichtloot_post, {
+            "action": "lichtbotSavePoPostEntries",
+            "queueToken": LICHTBOT_QUEUE_TOKEN,
+            "postKey": payload.get("postKey") or payload.get("poPostKey") or "",
+            "sourceChannelId": str(source_channel_id),
+            "targetChannelId": str(target_channel_id),
+            "raid": payload.get("raid") or "",
+            "title": payload.get("title") or "PO Liste",
+            "messageId": str(getattr(msg, "id", "") or ""),
+            "entries": json.dumps(entries or [], ensure_ascii=False)
+        })
+    except Exception as e:
+        print(f"PO-Post-Eintraege konnten nicht an LichtLoot gespeichert werden: {e}")
 
     review_target = await send_po_review_dm(payload, entries) if changed else ""
 
