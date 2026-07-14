@@ -31,6 +31,11 @@ POST_CHANNEL_ID = 1281152286772695071
 HORDENBUFF_CHANNEL_ID = 1510764309062615220
 PANEM_HORDENBUFF_CHANNEL_ID = 1518153802983669810
 LOG_ANALYSIS_CHANNEL_ID = 1279032487628242995
+WORLDBUFF_POSTER_MESSAGE_IDS = {
+    value.strip()
+    for value in os.getenv("WORLDBUFF_POSTER_MESSAGE_IDS", "1526256966027055114").split(",")
+    if value.strip()
+}
 
 TICKER_CHANNEL_IDS = {
     TICKER_CHANNEL_ID,
@@ -343,6 +348,10 @@ def can_post_worldbuff_overview():
 
 def is_ticker_channel(channel_id):
     return int(channel_id) in TICKER_CHANNEL_IDS
+
+
+def is_worldbuff_poster_source_message(message):
+    return str(getattr(message, "id", "") or "") in WORLDBUFF_POSTER_MESSAGE_IDS
 
 
 def get_hordenbuff_message_id(data, channel_id):
@@ -1705,6 +1714,15 @@ async def sync_recent_ticker_messages(limit=500):
             continue
 
         try:
+            for message_id in WORLDBUFF_POSTER_MESSAGE_IDS:
+                try:
+                    source_msg = await channel.fetch_message(int(message_id))
+                    found_buffs.extend(parse_ticker_message(discord_message_search_text(source_msg)))
+                except discord.NotFound:
+                    pass
+                except Exception as e:
+                    print(f"Worldbuff-Poster-Message {message_id} in Channel {channel_id} konnte nicht gelesen werden:", e)
+
             async for msg in channel.history(limit=limit):
                 found_buffs.extend(parse_ticker_message(discord_message_search_text(msg)))
         except Exception as e:
@@ -6339,7 +6357,7 @@ async def handle_ticker_update(message):
     if any(normalize_buff(b["buff"]) == "Rend" for b in new_buffs):
         await update_hordenbuff_post(force=True)
 
-    if not is_own_discord_message(message):
+    if not is_own_discord_message(message) and not is_worldbuff_poster_source_message(message):
         try:
             await message.delete()
             print(f"Worldbuff-Poster-Nachricht {message.id} aus Channel {message.channel.id} gelöscht.")
