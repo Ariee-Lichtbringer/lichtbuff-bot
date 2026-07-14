@@ -34,6 +34,7 @@ LOG_ANALYSIS_CHANNEL_ID = 1279032487628242995
 
 TICKER_CHANNEL_IDS = {
     TICKER_CHANNEL_ID,
+    POST_CHANNEL_ID,
     PANEM_TICKER_CHANNEL_ID
 }
 
@@ -333,7 +334,7 @@ def hordenbuff_channel_ids_for_current_guild():
 def ticker_channel_ids_for_current_guild():
     if current_guild_slug() == PANEM_GUILD_SLUG:
         return {PANEM_TICKER_CHANNEL_ID}
-    return {TICKER_CHANNEL_ID}
+    return {TICKER_CHANNEL_ID, POST_CHANNEL_ID}
 
 
 def can_post_worldbuff_overview():
