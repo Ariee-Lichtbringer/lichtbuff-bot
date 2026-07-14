@@ -4,6 +4,7 @@ import json
 import csv
 import urllib.request
 import urllib.parse
+import urllib.error
 import os
 import asyncio
 import time
@@ -4841,6 +4842,29 @@ def normalize_p0_reviewer_name(value):
     return re.sub(r"[^a-z0-9äöüß]+", "", str(value or "").casefold())
 
 
+def split_discord_name_list(value):
+    names = []
+    seen = set()
+    for part in re.split(r"[,;\n]+", str(value or "")):
+        name = part.strip()
+        if not name:
+            continue
+        key = normalize_p0_reviewer_name(name)
+        if key and key not in seen:
+            names.append(name)
+            seen.add(key)
+    return names
+
+
+def p0_review_requested_names(selection):
+    return split_discord_name_list(
+        selection.get("reviewer_names")
+        or selection.get("reviewerName")
+        or selection.get("reviewer_name")
+        or ""
+    )
+
+
 def member_matches_p0_reviewer(member, wanted_names):
     names = {
         normalize_p0_reviewer_name(getattr(member, "display_name", "")),
@@ -4926,7 +4950,23 @@ class P0ReviewView(discord.ui.View):
 
 
 async def send_p0_review_requests(selection, signup):
-    reviewers = await find_p0_review_members()
+    requested_names = p0_review_requested_names(selection)
+    reviewers = []
+    missing = []
+    blocked = []
+    seen_reviewers = set()
+
+    if requested_names:
+        for name in requested_names:
+            member = await find_discord_member_or_user(name)
+            if member and not getattr(member, "bot", False) and getattr(member, "id", None) not in seen_reviewers:
+                reviewers.append(member)
+                seen_reviewers.add(member.id)
+            else:
+                missing.append(name)
+    else:
+        reviewers = await find_p0_review_members()
+
     raid_label = selection.get("raid") or ""
     event_info = selection.get("event_info") or {}
     raid_date = event_info.get("raidDate") or ""
@@ -4948,10 +4988,12 @@ async def send_p0_review_requests(selection, signup):
             sent.append(member.display_name)
         except discord.Forbidden:
             print(f"P0-Pruefung: DM an {member.display_name} nicht erlaubt.")
+            blocked.append(member.display_name)
         except Exception as e:
             print(f"P0-Pruefung: DM an {member.display_name} fehlgeschlagen: {e}")
+            blocked.append(member.display_name)
 
-    if not sent:
+    if not sent and not requested_names:
         try:
             channel_id = int(selection.get("origin_channel_id") or 0)
             channel = client.get_channel(channel_id) or await client.fetch_channel(channel_id)
@@ -4963,7 +5005,11 @@ async def send_p0_review_requests(selection, signup):
             sent.append(f"Channelpost für {target_names}")
         except Exception as e:
             print(f"P0-Pruefung: Channel-Fallback fehlgeschlagen: {e}")
-    return sent
+    return {
+        "sent": sent,
+        "missing": missing,
+        "blocked": blocked
+    }
 
 
 async def update_p0_post(raid, origin_channel_id, event_info=None):
@@ -5026,6 +5072,12 @@ class P0SignupModal(discord.ui.Modal, title="P0+ eintragen"):
         required=False,
         max_length=32
     )
+    reviewer_names = discord.ui.TextInput(
+        label="Freigabe an (DC-Namen)",
+        placeholder="z. B. Schepperle, Ariee",
+        required=False,
+        max_length=120
+    )
 
     def __init__(self, selection):
         super().__init__()
@@ -5071,6 +5123,9 @@ class P0SignupModal(discord.ui.Modal, title="P0+ eintragen"):
                 selection["event_info"] = event_info
             selection["item_id"] = str(item.get("id") or "")
             selection["item_name"] = str(item.get("name") or item.get("itemName") or "")
+            entered_reviewers = ", ".join(split_discord_name_list(self.reviewer_names.value))
+            if entered_reviewers:
+                selection["reviewer_names"] = entered_reviewers
             result = await save_p0_signup(
                 selection,
                 interaction,
@@ -5081,18 +5136,26 @@ class P0SignupModal(discord.ui.Modal, title="P0+ eintragen"):
                 raise RuntimeError(result.get("error") or str(result))
 
             signup = result.get("signup") or {}
-            review_targets = await send_p0_review_requests(selection, signup)
+            review_result = await send_p0_review_requests(selection, signup)
             await update_p0_post(
                 selection["raid"],
                 selection["origin_channel_id"],
                 selection.get("event_info") or {}
             )
             item_summary = format_p0_item_signup_summary(result.get("itemSignups") or [signup])
-            review_text = (
-                f"Prüfung wurde an **{', '.join(review_targets)}** geschickt."
-                if review_targets
-                else "Prüf-Nachricht konnte noch an keinen Tester geschickt werden."
-            )
+            sent_reviewers = review_result.get("sent") or []
+            missing_reviewers = review_result.get("missing") or []
+            blocked_reviewers = review_result.get("blocked") or []
+            review_text_parts = []
+            if sent_reviewers:
+                review_text_parts.append(f"Prüfung wurde an **{', '.join(sent_reviewers)}** geschickt.")
+            else:
+                review_text_parts.append("Prüf-Nachricht konnte noch an keinen Tester geschickt werden.")
+            if missing_reviewers:
+                review_text_parts.append(f"Nicht gefunden: **{', '.join(missing_reviewers)}**.")
+            if blocked_reviewers:
+                review_text_parts.append(f"DM nicht möglich bei: **{', '.join(blocked_reviewers)}**.")
+            review_text = "\n".join(review_text_parts)
             await interaction.followup.send(
                 f"✅ Gespeichert: **{signup.get('player') or self.char_name.value}** → **{signup.get('item') or selection['item_name']}**.\n"
                 f"{item_summary}\n"
@@ -5207,8 +5270,13 @@ def lichtloot_post(payload):
         method="POST"
     )
 
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return parse_json_api_response(response, "LichtLoot POST", LICHTLOOT_API_URL)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return parse_json_api_response(response, "LichtLoot POST", LICHTLOOT_API_URL)
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+        snippet = re.sub(r"\s+", " ", body[:400]).strip()
+        raise RuntimeError(f"LichtLoot POST HTTP {error.code}: {snippet or error.reason}")
 
 
 def parse_json_api_response(response, label, url):
@@ -5990,23 +6058,56 @@ async def find_discord_member_or_user(identifier):
         except Exception:
             pass
 
-    wanted = raw.lower().lstrip("@").strip()
+    wanted = raw.casefold().lstrip("@").strip()
+    wanted_key = normalize_p0_reviewer_name(wanted)
     for guild in client.guilds:
         for member in getattr(guild, "members", []) or []:
-            candidates = {
-                str(getattr(member, "display_name", "") or "").lower(),
-                str(getattr(member, "name", "") or "").lower(),
-                str(member).lower()
-            }
-            if wanted in candidates:
+            candidates = [
+                str(getattr(member, "display_name", "") or ""),
+                str(getattr(member, "global_name", "") or ""),
+                str(getattr(member, "nick", "") or ""),
+                str(getattr(member, "name", "") or ""),
+                str(member)
+            ]
+            candidate_keys = {normalize_p0_reviewer_name(candidate) for candidate in candidates}
+            if wanted_key in candidate_keys:
                 return member
+        partial_matches = []
+        for member in getattr(guild, "members", []) or []:
+            if getattr(member, "bot", False):
+                continue
+            candidates = [
+                str(getattr(member, "display_name", "") or ""),
+                str(getattr(member, "global_name", "") or ""),
+                str(getattr(member, "nick", "") or ""),
+                str(getattr(member, "name", "") or "")
+            ]
+            if any(wanted_key and wanted_key in normalize_p0_reviewer_name(candidate) for candidate in candidates):
+                partial_matches.append(member)
+        if len(partial_matches) == 1:
+            return partial_matches[0]
         try:
             queried = await guild.query_members(query=raw, limit=10)
         except Exception:
             queried = []
+        exact_queried = []
         for member in queried:
-            if not member.bot:
-                return member
+            if getattr(member, "bot", False):
+                continue
+            candidates = [
+                str(getattr(member, "display_name", "") or ""),
+                str(getattr(member, "global_name", "") or ""),
+                str(getattr(member, "nick", "") or ""),
+                str(getattr(member, "name", "") or ""),
+                str(member)
+            ]
+            candidate_keys = {normalize_p0_reviewer_name(candidate) for candidate in candidates}
+            if wanted_key in candidate_keys:
+                exact_queried.append(member)
+        if exact_queried:
+            return exact_queried[0]
+        if len(queried) == 1 and not getattr(queried[0], "bot", False):
+            return queried[0]
     return None
 
 
