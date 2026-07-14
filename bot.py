@@ -2,6 +2,7 @@ import discord
 import re
 import json
 import csv
+import hashlib
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -6153,6 +6154,9 @@ async def send_long_discord_text(channel, text):
 
 
 def po_post_state_key(payload):
+    post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
+    if post_key:
+        return "post:" + normalize_p0_reviewer_name(post_key)
     source = str(payload.get("sourceChannelId") or payload.get("channelId") or "").strip()
     target = str(payload.get("targetChannelId") or payload.get("discordChannelId") or source or "").strip()
     title = str(payload.get("title") or "PO Liste").strip().casefold()
@@ -6161,6 +6165,9 @@ def po_post_state_key(payload):
 
 def is_standalone_po_message(message, payload):
     text = str(getattr(message, "content", "") or "")
+    post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
+    if post_key and f"Post-ID: `{post_key}`" in text:
+        return True
     title = str(payload.get("title") or "PO Liste").strip() or "PO Liste"
     source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or "").strip()
     if f"📋 **{title}**" not in text:
@@ -6175,7 +6182,10 @@ def build_po_channel_post_text(payload, entries, full_text):
     raid = normalize_raid_name(payload.get("raid") or "")
     source_channel_id = str(payload.get("sourceChannelId") or "").strip()
     review_recipient = str(payload.get("reviewRecipient") or "").strip()
+    post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
     lines = [f"📋 **{title}**", "PO-Post"]
+    if post_key:
+        lines.append(f"Post-ID: `{post_key}`")
     if raid:
         lines.append(f"Raid: **{display_raid_name(raid)}**")
     if source_channel_id:
@@ -6196,12 +6206,40 @@ def po_list_file(text):
     return discord.File(BytesIO(data), filename="po-liste.txt")
 
 
+def po_post_fingerprint(payload, entries, text):
+    post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
+    source = str(payload.get("sourceChannelId") or payload.get("channelId") or "").strip()
+    target = str(payload.get("targetChannelId") or payload.get("discordChannelId") or source or "").strip()
+    title = str(payload.get("title") or "PO Liste").strip()
+    payload_text = json.dumps(
+        {
+            "postKey": post_key,
+            "source": source,
+            "target": target,
+            "title": title,
+            "entries": entries or [],
+            "text": text or ""
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+        default=str
+    )
+    return hashlib.sha256(payload_text.encode("utf-8")).hexdigest()
+
+
 async def upsert_standalone_po_post(channel, payload, entries, text):
     key = po_post_state_key(payload)
     lock = PO_POST_LOCKS.setdefault(key, asyncio.Lock())
     async with lock:
         state = load_json(po_post_file(), {})
-        message_id = state.get(key)
+        state_entry = state.get(key)
+        if isinstance(state_entry, dict):
+            message_id = state_entry.get("messageId")
+            previous_hash = state_entry.get("hash")
+        else:
+            message_id = state_entry
+            previous_hash = ""
+        current_hash = po_post_fingerprint(payload, entries, text)
         candidates = []
         if message_id:
             try:
@@ -6221,6 +6259,20 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
         target_message = candidates[0] if candidates else None
         post_text = build_po_channel_post_text(payload, entries, text)
         make_files = lambda: [po_list_file(text)] if len(text) > 1800 else None
+
+        if target_message and previous_hash == current_hash:
+            keep = target_message
+            for message in candidates:
+                if message.id == keep.id:
+                    continue
+                try:
+                    await message.delete()
+                    await asyncio.sleep(0.4)
+                except Exception:
+                    pass
+            state[key] = {"messageId": str(keep.id), "hash": current_hash}
+            save_json(po_post_file(), state)
+            return keep, False
 
         msg = None
         if target_message:
@@ -6266,9 +6318,9 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
             except Exception:
                 pass
 
-        state[key] = str(keep.id)
+        state[key] = {"messageId": str(keep.id), "hash": current_hash}
         save_json(po_post_file(), state)
-        return keep
+        return keep, True
 
 
 async def find_discord_member_or_user(identifier):
@@ -6369,14 +6421,15 @@ async def post_standalone_po_list(payload):
     _, entries = await get_po_entries_from_channel(source_channel_id, limit=limit)
     target_channel = client.get_channel(target_channel_id) or await client.fetch_channel(target_channel_id)
     text = build_standalone_po_post_text(payload, entries)
-    msg = await upsert_standalone_po_post(target_channel, payload, entries, text)
+    msg, changed = await upsert_standalone_po_post(target_channel, payload, entries, text)
 
-    review_target = await send_po_review_dm(payload, entries)
+    review_target = await send_po_review_dm(payload, entries) if changed else ""
 
     return {
         "entries": len(entries),
         "targetChannelId": str(target_channel_id),
         "messageId": str(getattr(msg, "id", "") or ""),
+        "changed": changed,
         "reviewTarget": review_target
     }
 
