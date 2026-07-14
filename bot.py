@@ -4776,6 +4776,47 @@ def is_p0_overview_message(message):
     return "⭐ **P0+ Wahl" in text and "Aktuelle P0+ Wünsche" in text
 
 
+async def keep_latest_p0_overview_message(channel, preferred_message=None):
+    messages = await find_recent_own_messages(channel, is_p0_overview_message, limit=100)
+    if preferred_message and all(message.id != preferred_message.id for message in messages):
+        messages.append(preferred_message)
+    if not messages:
+        return preferred_message
+
+    keep = max(messages, key=lambda message: int(message.id))
+    for message in messages:
+        if message.id == keep.id:
+            continue
+        try:
+            await message.delete()
+            await asyncio.sleep(0.4)
+        except Exception:
+            pass
+    return keep
+
+
+async def cleanup_p0_overview_duplicates_for_known_channels():
+    await client.wait_until_ready()
+    await asyncio.sleep(10)
+    channel_ids = set()
+    for raid in ["MC", "BWL", "AQ40", "NAXX"]:
+        for source in DISCORD_RAIDHELPER_SOURCES.get(raid, []):
+            if source.get("channel_id"):
+                channel_ids.add(int(source["channel_id"]))
+
+    for delay in [0, 60]:
+        if delay:
+            await asyncio.sleep(delay)
+        for channel_id in sorted(channel_ids):
+            try:
+                channel = client.get_channel(channel_id) or await client.fetch_channel(channel_id)
+                kept = await keep_latest_p0_overview_message(channel)
+                if kept:
+                    print(f"P0+-Doppelposts in Channel {channel_id} bereinigt, behalten: {kept.id}")
+            except Exception as e:
+                print(f"P0+-Doppelposts in Channel {channel_id} konnten nicht bereinigt werden: {e}")
+
+
 def p0_item_search_key(value):
     return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
 
@@ -5081,6 +5122,9 @@ async def update_p0_post_locked(raid, origin_channel_id, event_info=None):
             context=context
         )
         msg = await channel.send(text, view=view)
+
+    await asyncio.sleep(2)
+    msg = await keep_latest_p0_overview_message(channel, msg) or msg
 
     state[key] = str(msg.id)
     save_json(p0_post_file(), state)
@@ -6643,6 +6687,10 @@ async def on_ready():
     if not hasattr(client, "worldbuff_startup_task_started"):
         client.worldbuff_startup_task_started = True
         client.loop.create_task(update_worldbuff_overview_from_all_guilds())
+
+    if not hasattr(client, "p0_duplicate_cleanup_started"):
+        client.p0_duplicate_cleanup_started = True
+        client.loop.create_task(cleanup_p0_overview_duplicates_for_known_channels())
 
     if not hasattr(client, "log_analysis_history_sync_started"):
         client.log_analysis_history_sync_started = True
