@@ -6106,27 +6106,15 @@ async def get_po_entries_for_source(source, limit=800):
     return await get_po_entries_from_channel(source["channel_id"], limit=limit)
 
 
-def build_standalone_po_post_text(payload, entries):
-    title = str(payload.get("title") or "PO Liste").strip() or "PO Liste"
-    raid = normalize_raid_name(payload.get("raid") or "")
-    source_channel_id = str(payload.get("sourceChannelId") or "").strip()
-    review_recipient = str(payload.get("reviewRecipient") or "").strip()
+def build_standalone_po_entries_text(entries):
     sorted_entries = sorted(
         entries or [],
         key=lambda item: (str(item.get("player") or "").lower(), str(item.get("item") or "").lower())
     )
-    lines = [f"📋 **{title}**"]
-    if raid:
-        lines.append(f"Raid: **{display_raid_name(raid)}**")
-    if source_channel_id:
-        lines.append(f"Quelle: <#{source_channel_id}>")
-    if review_recipient:
-        lines.append(f"Freigabe per DM an: **{review_recipient}**")
-    lines.append("")
     if not sorted_entries:
-        lines.append("Keine PO-Einträge gefunden. Nutzt im Quellchannel z. B. `PO Itemname` oder `P0 Itemname`.")
-        return "\n".join(lines)
+        return "Keine PO-Einträge gefunden. Nutzt im Quellchannel z. B. `PO Itemname` oder `P0 Itemname`."
 
+    lines = []
     lines.append(f"Gefunden: **{len(sorted_entries)}** Eintrag/Einträge")
     lines.append("")
     for idx, entry in enumerate(sorted_entries, start=1):
@@ -6270,7 +6258,7 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
                     await asyncio.sleep(0.4)
                 except Exception:
                     pass
-            state[key] = {"messageId": str(keep.id), "hash": current_hash}
+            state[key] = {"messageId": str(keep.id), "hash": current_hash, "payload": payload}
             save_json(po_post_file(), state)
             return keep, False
 
@@ -6318,9 +6306,30 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
             except Exception:
                 pass
 
-        state[key] = {"messageId": str(keep.id), "hash": current_hash}
+        state[key] = {"messageId": str(keep.id), "hash": current_hash, "payload": payload}
         save_json(po_post_file(), state)
         return keep, True
+
+
+async def refresh_saved_po_posts_for_source(source_channel_id):
+    state = load_json(po_post_file(), {})
+    source_text = str(source_channel_id or "").strip()
+    refreshed = []
+    for key, state_entry in list(state.items()):
+        if not isinstance(state_entry, dict):
+            continue
+        payload = state_entry.get("payload") or {}
+        if not isinstance(payload, dict):
+            continue
+        saved_source = str(payload.get("sourceChannelId") or payload.get("channelId") or "").strip()
+        if saved_source != source_text:
+            continue
+        try:
+            result = await post_standalone_po_list(payload)
+            refreshed.append({**result, "key": key})
+        except Exception as e:
+            print(f"Automatische PO-Post-Aktualisierung fehlgeschlagen ({key}): {e}")
+    return refreshed
 
 
 async def find_discord_member_or_user(identifier):
@@ -6420,7 +6429,7 @@ async def post_standalone_po_list(payload):
     limit = max(50, min(2000, int(payload.get("limit") or 800)))
     _, entries = await get_po_entries_from_channel(source_channel_id, limit=limit)
     target_channel = client.get_channel(target_channel_id) or await client.fetch_channel(target_channel_id)
-    text = build_standalone_po_post_text(payload, entries)
+    text = build_standalone_po_entries_text(entries)
     msg, changed = await upsert_standalone_po_post(target_channel, payload, entries, text)
 
     review_target = await send_po_review_dm(payload, entries) if changed else ""
@@ -6921,6 +6930,12 @@ async def on_message_edit(before, after):
 
         await handle_log_analysis_message(after)
         await handle_ticker_update(after)
+        message_text = collect_message_text(after)
+        if any(extract_po_from_line(line) for line in message_text.splitlines()):
+            await asyncio.sleep(1)
+            refreshed = await refresh_saved_po_posts_for_source(after.channel.id)
+            if refreshed:
+                print(f"PO-Post nach Bearbeitung automatisch aktualisiert: {refreshed}")
     finally:
         CURRENT_GUILD_SLUG.reset(token)
 
@@ -6936,6 +6951,13 @@ async def on_message(message):
 
     content = message.content.strip()
     lower = content.lower()
+
+    message_text = collect_message_text(message)
+    if any(extract_po_from_line(line) for line in message_text.splitlines()):
+        await asyncio.sleep(1)
+        refreshed = await refresh_saved_po_posts_for_source(message.channel.id)
+        if refreshed:
+            print(f"PO-Post nach neuer PO-Nachricht automatisch aktualisiert: {refreshed}")
 
     if lower.startswith("!syncchannels") or lower.startswith("!channel-sync"):
         try:
