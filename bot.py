@@ -7294,5 +7294,22 @@ async def on_message(message):
     await handle_ticker_update(message)
 
 
+async def run_discord_bot_with_backoff():
+    while True:
+        try:
+            await client.start(TOKEN, reconnect=True)
+        except discord.HTTPException as error:
+            text = str(error)
+            if getattr(error, "status", None) == 429 or "Too Many Requests" in text or "Access denied" in text:
+                print("Discord blockt den Login kurzzeitig wegen zu vieler Neustarts. Warte 30 Minuten und versuche es erneut.")
+                await asyncio.sleep(30 * 60)
+                continue
+            print(f"Discord-Login fehlgeschlagen: {error}. Neuer Versuch in 5 Minuten.")
+            await asyncio.sleep(5 * 60)
+        except Exception as error:
+            print(f"Bot ist beim Starten abgestürzt: {error}. Neuer Versuch in 5 Minuten.")
+            await asyncio.sleep(5 * 60)
+
+
 start_public_api_server()
-client.run(TOKEN)
+asyncio.run(run_discord_bot_with_backoff())
