@@ -11,7 +11,7 @@ import time
 import threading
 import contextvars
 import sys
-from io import StringIO
+from io import StringIO, BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -241,6 +241,10 @@ HORDENBUFF_FILE = "hordenbuff.json"
 HORDENBUFF_CLEANUP_FILE = "hordenbuff_cleanup.json"
 P0_POST_FILE = "p0_posts.json"
 P0_POST_UPDATE_LOCKS = {}
+PO_POST_FILE = "po_posts.json"
+PO_POST_LOCKS = {}
+LICHTLOOT_QUEUE_IN_PROGRESS = set()
+LICHTLOOT_QUEUE_RECENTLY_DONE = {}
 P0_REVIEW_TEST_NAMES = {"ariee", "juksi"}
 P0_REVIEW_LIVE_NAMES = {"kaese", "käse", "blondi", "blondie"}
 P0_REVIEW_TEST_MODE = os.getenv("P0_REVIEW_TEST_MODE", "true").lower() != "false"
@@ -314,6 +318,10 @@ def hordenbuff_file():
 
 def p0_post_file():
     return guild_scoped_file(P0_POST_FILE)
+
+
+def po_post_file():
+    return guild_scoped_file(PO_POST_FILE)
 
 
 def hordenbuff_cleanup_file():
@@ -5741,6 +5749,19 @@ def hordenbuff_sheet_delete(rend, name):
 async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
     update_type = str(item.get("type") or "").strip()
     row_number = item.get("rowNumber")
+    queue_payload_key = item.get("payload") if isinstance(item.get("payload"), str) else json.dumps(item.get("payload") or {}, sort_keys=True, default=str)
+    queue_key = f"{update_type}:{row_number or item.get('id') or queue_payload_key}"
+    now = time.time()
+    for old_key, old_time in list(LICHTLOOT_QUEUE_RECENTLY_DONE.items()):
+        if now - old_time > 300:
+            LICHTLOOT_QUEUE_RECENTLY_DONE.pop(old_key, None)
+    if queue_key in LICHTLOOT_QUEUE_IN_PROGRESS:
+        print(f"LichtLoot-Queue-Eintrag bereits in Arbeit, uebersprungen: {queue_key}")
+        return
+    if queue_key in LICHTLOOT_QUEUE_RECENTLY_DONE:
+        print(f"LichtLoot-Queue-Eintrag wurde gerade verarbeitet, uebersprungen: {queue_key}")
+        return
+    LICHTLOOT_QUEUE_IN_PROGRESS.add(queue_key)
     payload = {}
 
     try:
@@ -5749,52 +5770,56 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
     except Exception:
         payload = {}
 
-    if update_type == "worldbuff_update" and payload.get("deleted"):
-        removed = await asyncio.to_thread(remove_deleted_worldbuff_from_all_caches, payload)
-        print(f"Worldbuff-Loeschung aus Queue verarbeitet, {removed} Cache-Eintraege entfernt.")
+    try:
+        if update_type == "worldbuff_update" and payload.get("deleted"):
+            removed = await asyncio.to_thread(remove_deleted_worldbuff_from_all_caches, payload)
+            print(f"Worldbuff-Loeschung aus Queue verarbeitet, {removed} Cache-Eintraege entfernt.")
 
-    if update_type == "raid_announcement":
-        posted = await post_raid_announcement_by_id(
-            payload.get("raidId") or payload.get("id"),
-            payload.get("channelId") or payload.get("discordChannelId")
-        )
-        if posted == "stale":
-            print(f"Veraltete Raid-Ankuendigung aus Queue uebersprungen: {payload}")
-            posted = True
-        if not posted:
-            raise RuntimeError(f"Raid-Ankuendigung konnte nicht gepostet werden: {payload}")
-    elif update_type == "raid_announcement_refresh":
-        refreshed = await refresh_raid_signup_message_by_id(
-            payload.get("raidId") or payload.get("id"),
-            payload.get("channelId") or payload.get("discordChannelId"),
-            payload.get("messageId") or payload.get("discordMessageId") or payload.get("raidHelperMessageId")
-        )
-        if refreshed == "missing_message":
-            print(f"Raid-Anmelder-Refresh ohne gespeicherte Discord-Nachricht uebersprungen: {payload}")
-            refreshed = True
-        if not refreshed:
-            raise RuntimeError(f"Raid-Anmelder konnte nicht aktualisiert werden: {payload}")
-    elif update_type == "raid_signup_notice":
-        await send_raid_signup_notice(payload)
-    elif update_type == "po_post":
-        result = await post_standalone_po_list(payload)
-        print(f"PO Post erstellt: {result}")
-    elif update_type == "log_analysis_post":
-        await post_log_analysis_from_queue(payload)
-    elif update_type == "worldbuff_update":
-        await update_worldbuff_overview_from_all_guilds()
-    elif update_type == "hordenbuff_update":
-        await update_hordenbuff_post(force=True)
-    else:
-        await update_worldbuff_overview_from_all_guilds()
-        await update_hordenbuff_post(force=True)
+        if update_type == "raid_announcement":
+            posted = await post_raid_announcement_by_id(
+                payload.get("raidId") or payload.get("id"),
+                payload.get("channelId") or payload.get("discordChannelId")
+            )
+            if posted == "stale":
+                print(f"Veraltete Raid-Ankuendigung aus Queue uebersprungen: {payload}")
+                posted = True
+            if not posted:
+                raise RuntimeError(f"Raid-Ankuendigung konnte nicht gepostet werden: {payload}")
+        elif update_type == "raid_announcement_refresh":
+            refreshed = await refresh_raid_signup_message_by_id(
+                payload.get("raidId") or payload.get("id"),
+                payload.get("channelId") or payload.get("discordChannelId"),
+                payload.get("messageId") or payload.get("discordMessageId") or payload.get("raidHelperMessageId")
+            )
+            if refreshed == "missing_message":
+                print(f"Raid-Anmelder-Refresh ohne gespeicherte Discord-Nachricht uebersprungen: {payload}")
+                refreshed = True
+            if not refreshed:
+                raise RuntimeError(f"Raid-Anmelder konnte nicht aktualisiert werden: {payload}")
+        elif update_type == "raid_signup_notice":
+            await send_raid_signup_notice(payload)
+        elif update_type == "po_post":
+            result = await post_standalone_po_list(payload)
+            print(f"PO Post erstellt/aktualisiert: {result}")
+        elif update_type == "log_analysis_post":
+            await post_log_analysis_from_queue(payload)
+        elif update_type == "worldbuff_update":
+            await update_worldbuff_overview_from_all_guilds()
+        elif update_type == "hordenbuff_update":
+            await update_hordenbuff_post(force=True)
+        else:
+            await update_worldbuff_overview_from_all_guilds()
+            await update_hordenbuff_post(force=True)
 
-    if resolve_old_queue and row_number:
-        await asyncio.to_thread(lichtloot_post, {
-            "action": "lichtbotResolveQueue",
-            "queueToken": LICHTBOT_QUEUE_TOKEN,
-            "rowNumber": row_number
-        })
+        if resolve_old_queue and row_number:
+            await asyncio.to_thread(lichtloot_post, {
+                "action": "lichtbotResolveQueue",
+                "queueToken": LICHTBOT_QUEUE_TOKEN,
+                "rowNumber": row_number
+            })
+        LICHTLOOT_QUEUE_RECENTLY_DONE[queue_key] = time.time()
+    finally:
+        LICHTLOOT_QUEUE_IN_PROGRESS.discard(queue_key)
 
 
 async def lichtloot_queue_loop():
@@ -6127,6 +6152,125 @@ async def send_long_discord_text(channel, text):
         await channel.send(chunk)
 
 
+def po_post_state_key(payload):
+    source = str(payload.get("sourceChannelId") or payload.get("channelId") or "").strip()
+    target = str(payload.get("targetChannelId") or payload.get("discordChannelId") or source or "").strip()
+    title = str(payload.get("title") or "PO Liste").strip().casefold()
+    return f"{target}:{source}:{title}"
+
+
+def is_standalone_po_message(message, payload):
+    text = str(getattr(message, "content", "") or "")
+    title = str(payload.get("title") or "PO Liste").strip() or "PO Liste"
+    source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or "").strip()
+    if f"📋 **{title}**" not in text:
+        return False
+    if source_channel_id and f"Quelle: <#{source_channel_id}>" not in text:
+        return False
+    return "PO-Post" in text or "PO-Einträge" in text or "Vollständige Liste" in text
+
+
+def build_po_channel_post_text(payload, entries, full_text):
+    title = str(payload.get("title") or "PO Liste").strip() or "PO Liste"
+    raid = normalize_raid_name(payload.get("raid") or "")
+    source_channel_id = str(payload.get("sourceChannelId") or "").strip()
+    review_recipient = str(payload.get("reviewRecipient") or "").strip()
+    lines = [f"📋 **{title}**", "PO-Post"]
+    if raid:
+        lines.append(f"Raid: **{display_raid_name(raid)}**")
+    if source_channel_id:
+        lines.append(f"Quelle: <#{source_channel_id}>")
+    if review_recipient:
+        lines.append(f"Freigabe per DM an: **{review_recipient}**")
+    lines.append(f"Gefunden: **{len(entries or [])}** Eintrag/Einträge")
+    if len(full_text) > 1800:
+        lines.append("Vollständige Liste ist als Datei angehängt.")
+    else:
+        lines.append("")
+        lines.append(full_text)
+    return "\n".join(lines)[:1900]
+
+
+def po_list_file(text):
+    data = str(text or "-").encode("utf-8")
+    return discord.File(BytesIO(data), filename="po-liste.txt")
+
+
+async def upsert_standalone_po_post(channel, payload, entries, text):
+    key = po_post_state_key(payload)
+    lock = PO_POST_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        state = load_json(po_post_file(), {})
+        message_id = state.get(key)
+        candidates = []
+        if message_id:
+            try:
+                candidates.append(await channel.fetch_message(int(message_id)))
+            except discord.NotFound:
+                pass
+            except Exception as e:
+                print(f"PO-Post {message_id} konnte nicht geladen werden:", e)
+
+        found_messages = await find_recent_own_messages(
+            channel,
+            lambda message: is_standalone_po_message(message, payload),
+            limit=100
+        )
+        candidate_ids = {message.id for message in candidates}
+        candidates.extend(message for message in found_messages if message.id not in candidate_ids)
+        target_message = candidates[0] if candidates else None
+        post_text = build_po_channel_post_text(payload, entries, text)
+        make_files = lambda: [po_list_file(text)] if len(text) > 1800 else None
+
+        msg = None
+        if target_message:
+            try:
+                await target_message.edit(content=post_text, attachments=[], files=make_files())
+                msg = target_message
+            except Exception as e:
+                print(f"PO-Post {target_message.id} konnte nicht bearbeitet werden:", e)
+                try:
+                    await target_message.delete()
+                except Exception:
+                    pass
+
+        for message in candidates:
+            if msg and message.id == msg.id:
+                continue
+            try:
+                await message.delete()
+                await asyncio.sleep(0.4)
+            except Exception:
+                pass
+
+        if not msg:
+            files = make_files()
+            if files:
+                msg = await channel.send(post_text, files=files)
+            else:
+                msg = await channel.send(post_text)
+
+        await asyncio.sleep(2)
+        cleanup_messages = await find_recent_own_messages(
+            channel,
+            lambda message: is_standalone_po_message(message, payload),
+            limit=100
+        )
+        keep = max(cleanup_messages or [msg], key=lambda message: int(message.id))
+        for message in cleanup_messages:
+            if message.id == keep.id:
+                continue
+            try:
+                await message.delete()
+                await asyncio.sleep(0.4)
+            except Exception:
+                pass
+
+        state[key] = str(keep.id)
+        save_json(po_post_file(), state)
+        return keep
+
+
 async def find_discord_member_or_user(identifier):
     raw = str(identifier or "").strip()
     if not raw:
@@ -6225,11 +6369,16 @@ async def post_standalone_po_list(payload):
     _, entries = await get_po_entries_from_channel(source_channel_id, limit=limit)
     target_channel = client.get_channel(target_channel_id) or await client.fetch_channel(target_channel_id)
     text = build_standalone_po_post_text(payload, entries)
-    await send_long_discord_text(target_channel, text)
+    msg = await upsert_standalone_po_post(target_channel, payload, entries, text)
 
     review_target = await send_po_review_dm(payload, entries)
 
-    return {"entries": len(entries), "targetChannelId": str(target_channel_id), "reviewTarget": review_target}
+    return {
+        "entries": len(entries),
+        "targetChannelId": str(target_channel_id),
+        "messageId": str(getattr(msg, "id", "") or ""),
+        "reviewTarget": review_target
+    }
 
 
 async def get_aq40_po_entries(limit=800):
