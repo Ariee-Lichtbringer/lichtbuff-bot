@@ -240,6 +240,7 @@ POST_FILE = "last_post.json"
 HORDENBUFF_FILE = "hordenbuff.json"
 HORDENBUFF_CLEANUP_FILE = "hordenbuff_cleanup.json"
 P0_POST_FILE = "p0_posts.json"
+P0_POST_UPDATE_LOCKS = {}
 P0_REVIEW_TEST_NAMES = {"ariee", "juksi"}
 P0_REVIEW_LIVE_NAMES = {"kaese", "käse", "blondi", "blondie"}
 P0_REVIEW_TEST_MODE = os.getenv("P0_REVIEW_TEST_MODE", "true").lower() != "false"
@@ -4910,11 +4911,6 @@ async def review_p0_signup(signup, status, interaction, selection):
     result = await asyncio.to_thread(lichtloot_post, payload)
     if not result.get("success"):
         raise RuntimeError(result.get("error") or str(result))
-    await update_p0_post(
-        selection["raid"],
-        selection["origin_channel_id"],
-        selection.get("event_info") or {}
-    )
     return result
 
 
@@ -5013,6 +5009,13 @@ async def send_p0_review_requests(selection, signup):
 
 
 async def update_p0_post(raid, origin_channel_id, event_info=None):
+    key = p0_post_state_key(raid, origin_channel_id)
+    lock = P0_POST_UPDATE_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        return await update_p0_post_locked(raid, origin_channel_id, event_info)
+
+
+async def update_p0_post_locked(raid, origin_channel_id, event_info=None):
     context = await get_p0_context(raid, event_info)
     channel = client.get_channel(int(origin_channel_id)) or await client.fetch_channel(int(origin_channel_id))
     state = load_json(p0_post_file(), {})
@@ -5258,10 +5261,10 @@ async def open_p0_signup_flow(message, raid):
         return
 
     await message.channel.send(
-        f"✅ {message.author.mention}, der P0+ Anmeldebutton steht im Channelpost. Gib dort Item und Char ein.",
+        f"✅ {message.author.mention}, nutze bitte den vorhandenen P0+ Channelpost. "
+        "Die Liste wird erst aktualisiert, wenn eine neue P0+ eingetragen wurde.",
         delete_after=20
     )
-    await update_p0_post(raid, message.channel.id, event_info)
 
 
 # Kompatibilität für alte Debug-Befehle/Funktionsnamen
