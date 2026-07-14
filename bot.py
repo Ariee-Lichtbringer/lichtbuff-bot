@@ -1288,11 +1288,21 @@ def parse_ticker_message(text):
         re.compile(prefix + r"\**" + buff_words + r"\**\s+" + date_words + r"\s+" + time_words + suffix, re.IGNORECASE),
         re.compile(prefix + date_words + r"\s+" + time_words + r"\s+\**" + buff_words + r"\**" + suffix, re.IGNORECASE),
     ]
+    table_patterns = [
+        re.compile(r"^" + buff_words + r"\s+" + date_words + r"\s+" + day_words + r"\s+" + time_words + suffix, re.IGNORECASE),
+        re.compile(r"^" + buff_words + r"\s+" + date_words + r"\s+" + time_words + suffix, re.IGNORECASE),
+    ]
 
     for line in text.splitlines():
         line = line.strip()
-        line = line.replace("**", "")
+        line = line.replace("**", "").replace("`", "")
+        line = line.strip("| ")
+        line = re.sub(r"\s*\|\s*", " ", line)
         line = re.sub(r"\s+", " ", line)
+        if not line or re.match(r"^[\\/|_\-= ]+$", line):
+            continue
+        if re.search(r"\bbuff\b.*\bdatum\b.*\buhrzeit\b.*\bgilde\b", line, re.IGNORECASE):
+            continue
 
         match = None
         matched_pattern_index = -1
@@ -1301,6 +1311,12 @@ def parse_ticker_message(text):
             if match:
                 matched_pattern_index = index
                 break
+        if not match:
+            for pattern in table_patterns:
+                match = pattern.match(line)
+                if match:
+                    matched_pattern_index = 0
+                    break
 
         if match:
             groups = match.groups()
