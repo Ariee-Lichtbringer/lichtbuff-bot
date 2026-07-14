@@ -1505,6 +1505,12 @@ def discord_message_search_text(message):
 def build_overview():
     sheet_buffs = import_buffs_aus_sheet()
     data = list(sheet_buffs)
+    local_ticker_buffs = [
+        buff for buff in load_json(worldbuff_file(), [])
+        if isinstance(buff, dict) and not is_deleted_worldbuff(buff)
+    ]
+    if local_ticker_buffs:
+        merge_buffs_into_data(data, local_ticker_buffs)
 
     werfer = import_werfer_aus_sheet()
 
