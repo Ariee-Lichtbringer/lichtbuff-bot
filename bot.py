@@ -5802,6 +5802,23 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
         elif update_type == "po_post":
             result = await post_standalone_po_list(payload)
             print(f"PO Post erstellt/aktualisiert: {result}")
+        elif update_type == "p0_post_refresh":
+            channel_id = payload.get("channelId") or payload.get("discordChannelId")
+            raid = payload.get("raid") or payload.get("raidName")
+            if not channel_id or not raid:
+                raise RuntimeError(f"P0-Post-Refresh unvollstaendig: {payload}")
+            context = await update_p0_post(
+                raid,
+                channel_id,
+                {
+                    "raidDate": payload.get("raidDate", ""),
+                    "raidTime": payload.get("raidTime", ""),
+                    "raidPin": payload.get("raidPin") or payload.get("prioPin") or payload.get("playerPin") or "",
+                    "discordChannelId": channel_id,
+                    "raidHelperMessageId": payload.get("messageId") or payload.get("discordMessageId") or ""
+                }
+            )
+            print(f"P0+-Post nach Freigabe aktualisiert: {context.get('raidId') or raid}")
         elif update_type == "log_analysis_post":
             await post_log_analysis_from_queue(payload)
         elif update_type == "worldbuff_update":
