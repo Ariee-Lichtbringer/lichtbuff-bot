@@ -5022,7 +5022,16 @@ async def open_p0_signup_flow(message, raid):
         except Exception as e:
             print(f"P0 RaidHelper-Datum konnte nicht gelesen werden ({raid}): {e}")
 
-    context = await get_p0_context(raid, event_info)
+    try:
+        context = await get_p0_context(raid, event_info)
+    except Exception as e:
+        if event_info:
+            print(f"P0 Kontext mit Discord-Termin fehlgeschlagen ({raid}), Fallback ohne Termin: {e}")
+            event_info = {}
+            context = await get_p0_context(raid)
+        else:
+            raise
+
     items = context.get("items") or []
     if not items:
         await send_temp(message.channel, f"⚠️ Für {raid} wurden keine Lichtloot-Items gefunden.")
@@ -5495,6 +5504,9 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             raise RuntimeError(f"Raid-Anmelder konnte nicht aktualisiert werden: {payload}")
     elif update_type == "raid_signup_notice":
         await send_raid_signup_notice(payload)
+    elif update_type == "po_post":
+        result = await post_standalone_po_list(payload)
+        print(f"PO Post erstellt: {result}")
     elif update_type == "log_analysis_post":
         await post_log_analysis_from_queue(payload)
     elif update_type == "worldbuff_update":
@@ -5794,6 +5806,125 @@ async def get_po_entries_from_channel(channel_id, limit=800):
 
 async def get_po_entries_for_source(source, limit=800):
     return await get_po_entries_from_channel(source["channel_id"], limit=limit)
+
+
+def build_standalone_po_post_text(payload, entries):
+    title = str(payload.get("title") or "PO Liste").strip() or "PO Liste"
+    raid = normalize_raid_name(payload.get("raid") or "")
+    source_channel_id = str(payload.get("sourceChannelId") or "").strip()
+    review_recipient = str(payload.get("reviewRecipient") or "").strip()
+    sorted_entries = sorted(
+        entries or [],
+        key=lambda item: (str(item.get("player") or "").lower(), str(item.get("item") or "").lower())
+    )
+    lines = [f"📋 **{title}**"]
+    if raid:
+        lines.append(f"Raid: **{display_raid_name(raid)}**")
+    if source_channel_id:
+        lines.append(f"Quelle: <#{source_channel_id}>")
+    if review_recipient:
+        lines.append(f"Freigabe per DM an: **{review_recipient}**")
+    lines.append("")
+    if not sorted_entries:
+        lines.append("Keine PO-Einträge gefunden. Nutzt im Quellchannel z. B. `PO Itemname` oder `P0 Itemname`.")
+        return "\n".join(lines)
+
+    lines.append(f"Gefunden: **{len(sorted_entries)}** Eintrag/Einträge")
+    lines.append("")
+    for idx, entry in enumerate(sorted_entries, start=1):
+        player = str(entry.get("player") or "-").strip()
+        item = str(entry.get("item") or "-").strip()
+        lines.append(f"{idx}. **{player}** → {item}")
+    return "\n".join(lines)
+
+
+async def send_long_discord_text(channel, text):
+    chunks = []
+    current = ""
+    for line in str(text or "").splitlines():
+        candidate = (current + "\n" + line).strip() if current else line
+        if len(candidate) > 1900:
+            if current:
+                chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    for chunk in chunks or ["-"]:
+        await channel.send(chunk)
+
+
+async def find_discord_member_or_user(identifier):
+    raw = str(identifier or "").strip()
+    if not raw:
+        return None
+    id_match = re.search(r"\d{15,25}", raw)
+    if id_match:
+        user_id = int(id_match.group(0))
+        user = client.get_user(user_id)
+        if user:
+            return user
+        try:
+            return await client.fetch_user(user_id)
+        except Exception:
+            pass
+
+    wanted = raw.lower().lstrip("@").strip()
+    for guild in client.guilds:
+        for member in getattr(guild, "members", []) or []:
+            candidates = {
+                str(getattr(member, "display_name", "") or "").lower(),
+                str(getattr(member, "name", "") or "").lower(),
+                str(member).lower()
+            }
+            if wanted in candidates:
+                return member
+        try:
+            queried = await guild.query_members(query=raw, limit=10)
+        except Exception:
+            queried = []
+        for member in queried:
+            if not member.bot:
+                return member
+    return None
+
+
+async def send_po_review_dm(payload, entries):
+    recipient = str(payload.get("reviewRecipient") or "").strip()
+    if not recipient:
+        return ""
+    target = await find_discord_member_or_user(recipient)
+    if not target:
+        raise RuntimeError(f"Freigabe-Empfänger nicht gefunden: {recipient}")
+    source_channel_id = str(payload.get("sourceChannelId") or "").strip()
+    target_channel_id = str(payload.get("targetChannelId") or payload.get("discordChannelId") or "").strip()
+    title = str(payload.get("title") or "PO Liste").strip() or "PO Liste"
+    await target.send(
+        "🔎 **PO-Freigabe**\n"
+        f"Liste: **{title}**\n"
+        f"Quelle: <#{source_channel_id}>\n"
+        f"PO-Post: <#{target_channel_id}>\n"
+        f"Einträge: **{len(entries or [])}**"
+    )
+    return getattr(target, "display_name", None) or getattr(target, "name", None) or str(target)
+
+
+async def post_standalone_po_list(payload):
+    source_channel_id = int(str(payload.get("sourceChannelId") or payload.get("channelId") or "0").strip() or "0")
+    target_channel_id = int(str(payload.get("targetChannelId") or payload.get("discordChannelId") or source_channel_id or "0").strip() or "0")
+    if not source_channel_id or not target_channel_id:
+        raise RuntimeError("PO Post: Quelle oder Ziel-Channel fehlt.")
+
+    limit = max(50, min(2000, int(payload.get("limit") or 800)))
+    _, entries = await get_po_entries_from_channel(source_channel_id, limit=limit)
+    target_channel = client.get_channel(target_channel_id) or await client.fetch_channel(target_channel_id)
+    text = build_standalone_po_post_text(payload, entries)
+    await send_long_discord_text(target_channel, text)
+
+    review_target = await send_po_review_dm(payload, entries)
+
+    return {"entries": len(entries), "targetChannelId": str(target_channel_id), "reviewTarget": review_target}
 
 
 async def get_aq40_po_entries(limit=800):
@@ -6187,24 +6318,36 @@ async def handle_ticker_update(message):
     if not is_ticker_channel(message.channel.id):
         return
 
-    new_buffs = [buff for buff in parse_ticker_message(message.content) if not is_deleted_worldbuff(buff)]
+    message_text = discord_message_search_text(message)
+    new_buffs = [buff for buff in parse_ticker_message(message_text) if not is_deleted_worldbuff(buff)]
 
     if not new_buffs:
         return
 
     old_data = load_json(worldbuff_file(), [])
 
-    merge_buffs_into_data(old_data, new_buffs)
+    added = merge_buffs_into_data(old_data, new_buffs)
 
     save_json(worldbuff_file(), old_data)
     await asyncio.to_thread(sync_worldbuff_ticker_cache_to_sheet, old_data)
 
-    print(f"{len(new_buffs)} Worldbuffs aus Ticker übernommen oder geprüft.")
+    print(f"{len(new_buffs)} Worldbuffs aus Ticker übernommen oder geprüft, {added} neu gespeichert.")
 
     await update_worldbuff_overview_from_all_guilds()
 
     if any(normalize_buff(b["buff"]) == "Rend" for b in new_buffs):
         await update_hordenbuff_post(force=True)
+
+    if not is_own_discord_message(message):
+        try:
+            await message.delete()
+            print(f"Worldbuff-Poster-Nachricht {message.id} aus Channel {message.channel.id} gelöscht.")
+        except discord.Forbidden:
+            print(f"Worldbuff-Poster-Nachricht {message.id} konnte nicht gelöscht werden: Bot-Rechte fehlen.")
+        except discord.NotFound:
+            pass
+        except Exception as e:
+            print(f"Worldbuff-Poster-Nachricht {message.id} konnte nicht gelöscht werden: {e}")
 
 
 @client.event
