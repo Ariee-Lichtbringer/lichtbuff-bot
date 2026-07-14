@@ -6258,7 +6258,8 @@ async def load_po_post_approvals(payload):
     return approvals
 
 
-def apply_po_post_approvals(entries, approvals):
+def apply_po_post_approvals(entries, approvals, raid=""):
+    raid_key = normalize_raid_name(raid)
     updated = []
     for entry in entries or []:
         copy = dict(entry)
@@ -6266,6 +6267,8 @@ def apply_po_post_approvals(entries, approvals):
         player = str(copy.get("player") or "").strip().lower()
         item = str(copy.get("item") or "").strip().lower()
         status = approvals.get(message_id) or approvals.get(f"{player}|{item}") or ""
+        if not status and has_p0_release(copy.get("player") or "", raid_key):
+            status = "approved"
         if status:
             copy["approvalStatus"] = status
         updated.append(copy)
@@ -6489,7 +6492,7 @@ async def post_standalone_po_list(payload):
         **payload,
         "sourceChannelId": str(source_channel_id),
         "targetChannelId": str(target_channel_id)
-    }))
+    }), payload.get("raid") or "")
     target_channel = client.get_channel(target_channel_id) or await client.fetch_channel(target_channel_id)
     text = build_standalone_po_entries_text(entries)
     msg, changed = await upsert_standalone_po_post(target_channel, payload, entries, text)
