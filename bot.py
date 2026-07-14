@@ -1613,6 +1613,78 @@ def build_overview():
     return text
 
 
+def current_worldbuff_announcement_block(max_lines=8):
+    sheet_buffs = import_buffs_aus_sheet()
+    data = list(sheet_buffs)
+    local_ticker_buffs = [
+        buff for buff in load_json(worldbuff_file(), [])
+        if isinstance(buff, dict) and not is_deleted_worldbuff(buff)
+    ]
+    if local_ticker_buffs:
+        merge_buffs_into_data(data, local_ticker_buffs)
+
+    if not data:
+        return ""
+
+    werfer = import_werfer_aus_sheet()
+    today = datetime.now(BERLIN_TZ).date()
+    max_date = today + timedelta(days=7)
+    rows = []
+    seen = set()
+
+    for buff in data:
+        try:
+            buff_date = datetime.strptime(buff.get("datum", ""), "%d.%m.%Y").date()
+        except Exception:
+            continue
+        if not (today <= buff_date <= max_date):
+            continue
+        key = make_overview_dedupe_key(buff)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(buff)
+
+    rows.sort(key=lambda item: (datetime.strptime(item["datum"], "%d.%m.%Y"), item.get("uhrzeit", "")))
+    if not rows:
+        return ""
+
+    lines = [
+        "**VEM zuletzt** (falls mal ein anderer Käfer gewünscht wird, gerne für nächste Woche aufzeigen)",
+        "",
+        "Wir spielen wie immer mit WB's! Jeder kennt die Regeln! Sollten dennoch einige Spieler meinen ihre WB's nicht zu nutzen, ohne dies vorher abzusprechen, behalten wir uns weiter Maßnahmen vor!",
+        ""
+    ]
+    current_date = ""
+    added = 0
+
+    for buff in rows:
+        if added >= max_lines:
+            remaining = len(rows) - added
+            if remaining > 0:
+                lines.append(f"... und {remaining} weitere Worldbuff-Termine im Worldbuff-Post.")
+            break
+
+        datum = buff.get("datum", "")
+        tag_kurz = buff.get("tag") or make_tag_from_date(datum)
+        tag_lang = TAG_LANG.get(tag_kurz, tag_kurz)
+        if datum != current_date:
+            lines.append(f"**{tag_lang}, {datum}**")
+            current_date = datum
+
+        buff_name = normalize_buff(buff.get("buff", ""))
+        gilde = buff.get("gilde", "")
+        key = make_buff_key(buff)
+        info = werfer.get(key)
+        charakter = buff.get("charakter") or (info and info.get("charakter")) or ""
+        werfer_text = f" - {'🔵' if is_lichtbringer(gilde) else '⚔️'} {charakter}" if charakter else ""
+        emoji = BUFF_EMOJIS.get(buff_name, "⚪")
+        lines.append(f"{emoji} **{buff_name}** {buff.get('uhrzeit', '')} - {gilde}{werfer_text}")
+        added += 1
+
+    return "\n".join(lines).strip()
+
+
 def build_worldbuff_guide_embed():
     if not WORLDBUFF_GUIDE_IMAGE_URL:
         return None
@@ -2974,6 +3046,10 @@ def build_raid_announcement_text(raid):
         "Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein."
     ])
 
+    worldbuff_block = current_worldbuff_announcement_block()
+    if worldbuff_block:
+        lines.extend(["", "", worldbuff_block])
+
     text = "\n".join(lines)
 
     return text[:1900]
@@ -3024,6 +3100,9 @@ def build_raid_announcement_embed(raid):
 
     embed.add_field(name="Prio-PIN", value=f"`{player_pin}`", inline=True)
     embed.add_field(name="Webansicht", value=LICHTLOOT_URL, inline=True)
+    worldbuff_block = current_worldbuff_announcement_block()
+    if worldbuff_block:
+        embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
     image_url = raid_image_url(raid)
     if image_url:
         embed.set_image(url=image_url)
