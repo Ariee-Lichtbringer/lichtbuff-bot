@@ -6137,7 +6137,8 @@ def build_standalone_po_entries_text(entries):
     for idx, entry in enumerate(sorted_entries, start=1):
         player = str(entry.get("player") or "-").strip()
         item = str(entry.get("item") or "-").strip()
-        lines.append(f"{idx}. **{player}** → {item}")
+        suffix = " ✅" if str(entry.get("approvalStatus") or "").lower() == "approved" else ""
+        lines.append(f"{idx}. **{player}** → {item}{suffix}")
     return "\n".join(lines)
 
 
@@ -6230,6 +6231,45 @@ def po_post_fingerprint(payload, entries, text):
         default=str
     )
     return hashlib.sha256(payload_text.encode("utf-8")).hexdigest()
+
+
+async def load_po_post_approvals(payload):
+    try:
+        result = await asyncio.to_thread(lichtloot_get, {
+            "action": "lichtbotGetPoPostApprovals",
+            "queueToken": LICHTBOT_QUEUE_TOKEN,
+            "postKey": payload.get("postKey") or payload.get("poPostKey") or "",
+            "sourceChannelId": str(payload.get("sourceChannelId") or payload.get("channelId") or ""),
+            "targetChannelId": str(payload.get("targetChannelId") or payload.get("discordChannelId") or "")
+        })
+    except Exception as e:
+        print(f"PO-Freigaben konnten nicht geladen werden: {e}")
+        return {}
+    approvals = {}
+    for row in result.get("entries") or []:
+        status = str(row.get("approvalStatus") or "").lower()
+        message_id = str(row.get("messageId") or "").strip()
+        player = str(row.get("player") or "").strip().lower()
+        item = str(row.get("item") or "").strip().lower()
+        if message_id:
+            approvals[message_id] = status
+        if player or item:
+            approvals[f"{player}|{item}"] = status
+    return approvals
+
+
+def apply_po_post_approvals(entries, approvals):
+    updated = []
+    for entry in entries or []:
+        copy = dict(entry)
+        message_id = str(copy.get("messageId") or "").strip()
+        player = str(copy.get("player") or "").strip().lower()
+        item = str(copy.get("item") or "").strip().lower()
+        status = approvals.get(message_id) or approvals.get(f"{player}|{item}") or ""
+        if status:
+            copy["approvalStatus"] = status
+        updated.append(copy)
+    return updated
 
 
 async def upsert_standalone_po_post(channel, payload, entries, text):
@@ -6445,6 +6485,11 @@ async def post_standalone_po_list(payload):
 
     limit = max(50, min(2000, int(payload.get("limit") or 800)))
     _, entries = await get_po_entries_from_channel(source_channel_id, limit=limit)
+    entries = apply_po_post_approvals(entries, await load_po_post_approvals({
+        **payload,
+        "sourceChannelId": str(source_channel_id),
+        "targetChannelId": str(target_channel_id)
+    }))
     target_channel = client.get_channel(target_channel_id) or await client.fetch_channel(target_channel_id)
     text = build_standalone_po_entries_text(entries)
     msg, changed = await upsert_standalone_po_post(target_channel, payload, entries, text)
