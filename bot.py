@@ -6100,12 +6100,30 @@ async def get_po_entries_from_channel(channel_id, limit=800):
         entries.append({
             "player": main_player,
             "aliases": aliases,
+            "discordUserId": str(getattr(msg.author, "id", "") or ""),
+            "discordName": display_name,
             "item": item,
             "messageId": str(msg.id),
             "createdAt": msg.created_at.isoformat()
         })
 
     return names, entries
+
+
+async def resolve_po_post_players(entries):
+    if not entries:
+        return entries
+    try:
+        result = await asyncio.to_thread(lichtloot_post, {
+            "action": "lichtbotResolvePoPostPlayers",
+            "queueToken": LICHTBOT_QUEUE_TOKEN,
+            "entries": json.dumps(entries or [], ensure_ascii=False)
+        })
+        resolved = result.get("entries") or []
+        return resolved if isinstance(resolved, list) else entries
+    except Exception as e:
+        print(f"PO-Post-Spielernamen konnten nicht aufgeloest werden: {e}")
+        return entries
 
 
 async def get_po_entries_for_source(source, limit=800):
@@ -6477,6 +6495,7 @@ async def post_standalone_po_list(payload):
 
     limit = max(50, min(2000, int(payload.get("limit") or 800)))
     _, entries = await get_po_entries_from_channel(source_channel_id, limit=limit)
+    entries = await resolve_po_post_players(entries)
     entries = apply_po_post_approvals(entries, await load_po_post_approvals({
         **payload,
         "sourceChannelId": str(source_channel_id),
