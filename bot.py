@@ -1930,64 +1930,53 @@ async def update_worldbuff_overview_from_all_guilds():
         CURRENT_GUILD_SLUG.reset(token)
 
 
+def get_upcoming_horden_rend_entries(limit=None):
+    rows = iter_hordenbuff_sheet_rows()
+    now = datetime.now(BERLIN_TZ).replace(tzinfo=None)
+    rend_termine = []
+
+    for row in rows:
+        if normalize_buff(row.get("buff", "Rend")) != "Rend":
+            continue
+
+        try:
+            dt = datetime.strptime(
+                f"{row['datum']} {row['uhrzeit']}",
+                "%d.%m.%Y %H:%M"
+            )
+
+            if dt >= now:
+                rend_termine.append((dt, {
+                    "buff": "Rend",
+                    "datum": row.get("datum", ""),
+                    "tag": row.get("tag", "") or make_tag_from_date(row.get("datum", "")),
+                    "uhrzeit": row.get("uhrzeit", ""),
+                    "gilde": row.get("gilde", "") or "Horde",
+                    "charakter": row.get("charakter", ""),
+                    "uebernehmer": row.get("uebernehmer", ""),
+                    "status": row.get("status", ""),
+                    "notiz": row.get("notiz", "")
+                }))
+
+        except:
+            continue
+
+    rend_termine.sort(key=lambda x: x[0])
+    entries = [buff for _, buff in rend_termine]
+
+    if limit is None:
+        return entries
+
+    return entries[:limit]
+
+
 def get_next_horden_rend():
-    buffs = import_buffs_aus_sheet()
-    now = datetime.now(BERLIN_TZ).replace(tzinfo=None)
-
-    rend_termine = []
-
-    for b in buffs:
-        if normalize_buff(b["buff"]) != "Rend":
-            continue
-
-        try:
-            dt = datetime.strptime(
-                f"{b['datum']} {b['uhrzeit']}",
-                "%d.%m.%Y %H:%M"
-            )
-
-            if dt >= now:
-                rend_termine.append((dt, b))
-
-        except:
-            continue
-
-    rend_termine.sort(key=lambda x: x[0])
-
-    if not rend_termine:
-        return None
-
-    return rend_termine[0][1]
+    upcoming = get_upcoming_horden_rend_entries(limit=1)
+    return upcoming[0] if upcoming else None
 
 
-def get_upcoming_horden_rends(limit=5):
-    buffs = import_buffs_aus_sheet()
-    now = datetime.now(BERLIN_TZ).replace(tzinfo=None)
-
-    rend_termine = []
-
-    for b in buffs:
-        if normalize_buff(b["buff"]) != "Rend":
-            continue
-
-        try:
-            dt = datetime.strptime(
-                f"{b['datum']} {b['uhrzeit']}",
-                "%d.%m.%Y %H:%M"
-            )
-
-            if dt >= now:
-                rend_termine.append((dt, b))
-
-        except:
-            continue
-
-    rend_termine.sort(key=lambda x: x[0])
-
-    return [
-        buff
-        for _, buff in rend_termine[:limit]
-    ]
+def get_upcoming_horden_rends(limit=4):
+    return get_upcoming_horden_rend_entries(limit=limit)
 
 
 
@@ -2319,7 +2308,7 @@ def build_hordenbuff_text(rend, data):
     text = "🪓 **Horde-Rend Koordination**\n\n"
     text += f"📌 **Aktiv verwalteter Termin:** {tag_lang}, {rend['datum']} um {rend['uhrzeit']}\n\n"
 
-    upcoming = get_upcoming_horden_rends(limit=5)
+    upcoming = get_upcoming_horden_rends(limit=4)
 
     text += "📅 **Kommende Rend-Termine laut Lichtbuff:**\n"
 
