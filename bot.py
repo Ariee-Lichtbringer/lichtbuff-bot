@@ -6068,7 +6068,9 @@ async def sync_discord_signup_rows(raid):
 PO_ITEM_ALIASES = {
     "brust4werte": "Formel: Brust - Große Werte",
     "gressil": "Gressil, Vorbote des Untergangs",
-    "thc": "Zehrende Kälte"
+    "thc": "Die zehrende Kälte",
+    "zehrendekalte": "Die zehrende Kälte",
+    "diezehrendekalte": "Die zehrende Kälte"
 }
 
 
@@ -6351,24 +6353,28 @@ def build_po_channel_post_text(payload, entries, full_text):
     raid = normalize_raid_name(payload.get("raid") or "")
     source_channel_id = str(payload.get("sourceChannelId") or "").strip()
     review_recipient = str(payload.get("reviewRecipient") or "").strip()
+    raidlead_note = str(payload.get("note") or payload.get("message") or payload.get("raidleadMessage") or payload.get("extraMessage") or "").strip()
     post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
     lines = [f"📋 **{title}**", "PO-Post"]
     if post_key:
         lines.append(f"Post-ID: `{post_key}`")
-    lines.append(f"Aktualisiert: **{datetime.now(BERLIN_TZ).strftime('%d.%m.%Y %H:%M')} Uhr**")
     if raid:
         lines.append(f"Raid: **{display_raid_name(raid)}**")
     if source_channel_id:
         lines.append(f"Quelle: <#{source_channel_id}>")
     if review_recipient:
         lines.append(f"Freigabe per DM an: **{review_recipient}**")
+    if raidlead_note:
+        lines.append("")
+        lines.append("**Nachricht der Raidleitung:**")
+        lines.append(raidlead_note[:700])
     command_lines = [
         "",
         "━━━━━━━━━━━━━━━",
         "**Befehle**",
         "`!popost` = Post aktualisieren",
-        "`!po naxx` = PO-Item für Naxx eintragen",
-        "`!po aq40` = PO-Item für AQ40 eintragen",
+        "`!p0 naxx` = PO-Item für Naxx eintragen",
+        "`!p0 aq40` = PO-Item für AQ40 eintragen",
         "`!podel` = eigenes PO-Item ändern oder löschen"
     ]
     command_text = "\n".join(command_lines)
@@ -6935,7 +6941,7 @@ class PoSignupModal(discord.ui.Modal):
         )
         self.player_pin = discord.ui.TextInput(
             label="LichtLoot Spielerlogin",
-            placeholder="dein 4-stelliger Login/PIN",
+            placeholder="dein LichtLoot Spielerlogin",
             required=True,
             max_length=20
         )
@@ -7701,11 +7707,11 @@ async def on_message(message):
             await message.channel.send(f"⚠️ **PO-Post Fehler:**\n```{err}```", delete_after=45)
         return
 
-    if lower.startswith("!po "):
+    if lower.startswith("!po ") or lower.startswith("!p0 "):
         parts = content.split()
         raid = normalize_raid_name(parts[1] if len(parts) > 1 else "")
         if raid not in {"AQ40", "NAXX", "BWL", "MC"}:
-            await message.channel.send("⚠️ Bitte Raid angeben: `!po aq40`, `!po naxx`, `!po bwl` oder `!po mc`.", delete_after=25)
+            await message.channel.send("⚠️ Bitte Raid angeben: `!p0 aq40`, `!p0 naxx`, `!p0 bwl` oder `!p0 mc`.", delete_after=25)
             await delete_command_message(message)
             return
         post_key = parts[2].strip() if len(parts) > 2 else ""
