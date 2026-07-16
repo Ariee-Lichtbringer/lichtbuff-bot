@@ -401,6 +401,16 @@ async def send_temp(channel, text, seconds=10):
         pass
 
 
+async def delete_message_later(message, seconds=15):
+    if not message:
+        return
+    try:
+        await asyncio.sleep(seconds)
+        await message.delete()
+    except:
+        pass
+
+
 def is_open_worldbuff_status(status):
     clean = str(status or "").lower()
     clean = clean.replace("🟡", "").replace("🟢", "").replace("✅", "").strip()
@@ -6802,6 +6812,10 @@ class PoDeleteButton(discord.ui.Button):
             self.default_post_key,
             self.default_player or infer_worldbuff_char_from_discord_name(interaction.user.display_name)
         ))
+        try:
+            await interaction.message.delete()
+        except:
+            pass
 
 
 class PoDeleteView(discord.ui.View):
@@ -6906,6 +6920,10 @@ class PoSignupButton(discord.ui.Button):
     async def callback(self, interaction):
         default_char = infer_worldbuff_char_from_discord_name(interaction.user.display_name)
         await interaction.response.send_modal(PoSignupModal(self.payload, default_char))
+        try:
+            await interaction.message.delete()
+        except:
+            pass
 
 
 class PoSignupView(discord.ui.View):
@@ -7607,6 +7625,7 @@ async def on_message(message):
             if not refreshed:
                 detail = f" mit Post-ID `{post_key}`" if post_key else ""
                 await result_message.edit(content=f"⚠️ Kein gespeicherter PO-Post für diesen Channel{detail} gefunden.")
+                client.loop.create_task(delete_message_later(result_message, 25))
                 await delete_command_message(message)
                 return
             total_entries = sum(int(item.get("entries") or 0) for item in refreshed)
@@ -7619,12 +7638,13 @@ async def on_message(message):
                     f"neu aus Channel: **{new_entries}** | gelöscht: **{deleted}**"
                 )
             )
+            client.loop.create_task(delete_message_later(result_message, 25))
             await delete_command_message(message)
         except Exception as e:
             err = str(e)
             if len(err) > 1500:
                 err = err[:1500] + " …"
-            await message.channel.send(f"⚠️ **PO-Post Fehler:**\n```{err}```")
+            await message.channel.send(f"⚠️ **PO-Post Fehler:**\n```{err}```", delete_after=45)
         return
 
     if lower.startswith("!po "):
