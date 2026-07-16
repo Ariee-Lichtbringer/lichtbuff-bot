@@ -6119,6 +6119,32 @@ def is_plain_po_source_message(message):
     return any(extract_po_from_line(line) for line in content.splitlines())
 
 
+async def po_message_author_display_name(message):
+    author = getattr(message, "author", None)
+    guild = getattr(message, "guild", None) or getattr(getattr(message, "channel", None), "guild", None)
+    member = None
+    author_id = getattr(author, "id", None)
+    if guild and author_id:
+        member = guild.get_member(author_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(author_id)
+            except Exception:
+                member = None
+    for candidate in [
+        getattr(member, "display_name", "") if member else "",
+        getattr(member, "nick", "") if member else "",
+        getattr(author, "display_name", ""),
+        getattr(author, "global_name", ""),
+        getattr(author, "name", ""),
+        str(author or "")
+    ]:
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return ""
+
+
 async def get_po_entries_from_channel(channel_id, limit=800):
     channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
     entries = []
@@ -6140,7 +6166,7 @@ async def get_po_entries_from_channel(channel_id, limit=800):
         if not item:
             continue
 
-        display_name = getattr(msg.author, "display_name", "") or str(msg.author)
+        display_name = await po_message_author_display_name(msg)
         aliases = split_prio_aliases(display_name)
 
         if not aliases:
@@ -6162,6 +6188,7 @@ async def get_po_entries_from_channel(channel_id, limit=800):
             "aliases": aliases,
             "discordUserId": str(getattr(msg.author, "id", "") or ""),
             "discordName": display_name,
+            "preservePlayerName": True,
             "item": item,
             "messageId": str(msg.id),
             "createdAt": msg.created_at.isoformat()
@@ -6253,9 +6280,17 @@ async def load_po_item_points(raid=""):
             points = 0
         if points <= 0:
             continue
+        point_date = format_po_point_date(
+            row.get("createdAt")
+            or row.get("created_at")
+            or row.get("updatedAt")
+            or row.get("updated_at")
+            or ""
+        )
         points_by_item.setdefault(item_key, []).append({
             "player": player,
-            "points": points
+            "points": points,
+            "date": point_date
         })
     return points_by_item
 
@@ -6282,11 +6317,28 @@ def po_points_suffix(entry):
             points = f"{float(holder.get('points') or 0):g}"
         except Exception:
             points = str(holder.get("points") or "0")
-        parts.append(f"{holder.get('player')} {points}")
+        date = str(holder.get("date") or "").strip()
+        date_suffix = f" ({date})" if date else ""
+        parts.append(f"{holder.get('player')} {points}{date_suffix}")
     suffix = "PO+: " + ", ".join(parts)
     if len(holders) > 6:
         suffix += f", +{len(holders) - 6}"
     return f" ({suffix})"
+
+
+def format_po_point_date(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo:
+            dt = dt.astimezone(BERLIN_TZ)
+        return dt.strftime("%d.%m.%Y")
+    except Exception:
+        if re.match(r"^\d{4}-\d{2}-\d{2}", raw):
+            return f"{raw[8:10]}.{raw[5:7]}.{raw[0:4]}"
+        return raw
 
 
 def po_entry_time_suffix(entry):
