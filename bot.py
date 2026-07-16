@@ -6064,6 +6064,7 @@ async def get_po_entries_from_channel(channel_id, limit=800):
     channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
     entries = []
     names = {}
+    messages_by_id = {}
 
     async for msg in channel.history(limit=limit):
         if msg.author == client.user:
@@ -6106,8 +6107,9 @@ async def get_po_entries_from_channel(channel_id, limit=800):
             "messageId": str(msg.id),
             "createdAt": msg.created_at.isoformat()
         })
+        messages_by_id[str(msg.id)] = msg
 
-    return names, entries
+    return names, entries, messages_by_id
 
 
 async def resolve_po_post_players(entries):
@@ -6127,7 +6129,110 @@ async def resolve_po_post_players(entries):
 
 
 async def get_po_entries_for_source(source, limit=800):
-    return await get_po_entries_from_channel(source["channel_id"], limit=limit)
+    names, entries, _ = await get_po_entries_from_channel(source["channel_id"], limit=limit)
+    return names, entries
+
+
+def po_entry_key(entry):
+    message_id = str(entry.get("messageId") or "").strip()
+    if message_id:
+        return f"msg:{message_id}"
+    player = prio_key(entry.get("player") or "")
+    item = prio_key(entry.get("item") or "")
+    return f"entry:{player}:{item}"
+
+
+def merge_po_entries(saved_entries, fresh_entries):
+    merged = {}
+    for entry in saved_entries or []:
+        key = po_entry_key(entry)
+        if key:
+            merged[key] = dict(entry)
+    for entry in fresh_entries or []:
+        key = po_entry_key(entry)
+        if key:
+            merged[key] = {**merged.get(key, {}), **dict(entry)}
+    return list(merged.values())
+
+
+async def load_saved_po_post_entries(payload, source_channel_id, target_channel_id):
+    try:
+        result = await asyncio.to_thread(lichtloot_get, {
+            "action": "lichtbotGetPoPostEntries",
+            "queueToken": LICHTBOT_QUEUE_TOKEN,
+            "postKey": payload.get("postKey") or payload.get("poPostKey") or "",
+            "sourceChannelId": str(source_channel_id or ""),
+            "targetChannelId": str(target_channel_id or ""),
+            "raid": payload.get("raid") or ""
+        })
+    except Exception as e:
+        print(f"Gespeicherte PO-Post-Eintraege konnten nicht geladen werden: {e}")
+        return []
+    entries = result.get("entries") or []
+    return entries if isinstance(entries, list) else []
+
+
+async def load_po_item_points(raid=""):
+    try:
+        result = await asyncio.to_thread(lichtloot_get, {"action": "getP0Plus"})
+    except Exception as e:
+        print(f"PO+-Punkte konnten nicht geladen werden: {e}")
+        return {}
+    wanted_raid = normalize_raid_name(raid)
+    points_by_item = {}
+    for row in result.get("entries") or []:
+        row_raid = normalize_raid_name(row.get("raid") or "")
+        if wanted_raid and row_raid and row_raid != wanted_raid:
+            continue
+        item_key = prio_key(row.get("item") or "")
+        player = str(row.get("player") or "").strip()
+        if not item_key or not player:
+            continue
+        try:
+            points = float(row.get("count") or row.get("points") or 0)
+        except Exception:
+            points = 0
+        if points <= 0:
+            continue
+        points_by_item.setdefault(item_key, []).append({
+            "player": player,
+            "points": points
+        })
+    return points_by_item
+
+
+def annotate_po_entries_with_points(entries, points_by_item):
+    annotated = []
+    for entry in entries or []:
+        copy = dict(entry)
+        item_key = prio_key(copy.get("item") or "")
+        player_key = prio_key(copy.get("player") or "")
+        others = []
+        for holder in points_by_item.get(item_key, []):
+            if prio_key(holder.get("player") or "") == player_key:
+                continue
+            others.append(holder)
+        others.sort(key=lambda row: (str(row.get("player") or "").lower(), float(row.get("points") or 0)))
+        copy["otherP0PlusPoints"] = others
+        annotated.append(copy)
+    return annotated
+
+
+def po_points_suffix(entry):
+    holders = entry.get("otherP0PlusPoints") or []
+    if not holders:
+        return ""
+    parts = []
+    for holder in holders[:6]:
+        try:
+            points = f"{float(holder.get('points') or 0):g}"
+        except Exception:
+            points = str(holder.get("points") or "0")
+        parts.append(f"{holder.get('player')}: {points}")
+    suffix = ", ".join(parts)
+    if len(holders) > 6:
+        suffix += f", +{len(holders) - 6}"
+    return f" · PO+: {suffix}"
 
 
 def build_standalone_po_entries_text(entries):
@@ -6145,7 +6250,7 @@ def build_standalone_po_entries_text(entries):
         player = str(entry.get("player") or "-").strip()
         item = str(entry.get("item") or "-").strip()
         suffix = " ✅" if str(entry.get("approvalStatus") or "").lower() == "approved" else ""
-        lines.append(f"{idx}. **{player}** → {item}{suffix}")
+        lines.append(f"{idx}. **{player}** → {item}{po_points_suffix(entry)}{suffix}")
     return "\n".join(lines)
 
 
@@ -6378,9 +6483,10 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
         return keep, True
 
 
-async def refresh_saved_po_posts_for_source(source_channel_id):
+async def refresh_saved_po_posts_for_source(source_channel_id, cleanup_source=False, post_key_filter=""):
     state = load_json(po_post_file(), {})
     source_text = str(source_channel_id or "").strip()
+    wanted_post_key = str(post_key_filter or "").strip()
     refreshed = []
     for key, state_entry in list(state.items()):
         if not isinstance(state_entry, dict):
@@ -6391,8 +6497,12 @@ async def refresh_saved_po_posts_for_source(source_channel_id):
         saved_source = str(payload.get("sourceChannelId") or payload.get("channelId") or "").strip()
         if saved_source != source_text:
             continue
+        saved_post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
+        if wanted_post_key and saved_post_key != wanted_post_key:
+            continue
         try:
-            result = await post_standalone_po_list(payload)
+            run_payload = {**payload, "cleanupSource": cleanup_source}
+            result = await post_standalone_po_list(run_payload)
             refreshed.append({**result, "key": key})
         except Exception as e:
             print(f"Automatische PO-Post-Aktualisierung fehlgeschlagen ({key}): {e}")
@@ -6494,13 +6604,17 @@ async def post_standalone_po_list(payload):
         raise RuntimeError("PO Post: Quelle oder Ziel-Channel fehlt.")
 
     limit = max(50, min(2000, int(payload.get("limit") or 800)))
-    _, entries = await get_po_entries_from_channel(source_channel_id, limit=limit)
+    cleanup_source = str(payload.get("cleanupSource") or payload.get("cleanup") or "").strip().lower() in {"1", "true", "yes", "ja"}
+    _, fresh_entries, source_messages = await get_po_entries_from_channel(source_channel_id, limit=limit)
+    saved_entries = await load_saved_po_post_entries(payload, source_channel_id, target_channel_id)
+    entries = merge_po_entries(saved_entries, fresh_entries)
     entries = await resolve_po_post_players(entries)
     entries = apply_po_post_approvals(entries, await load_po_post_approvals({
         **payload,
         "sourceChannelId": str(source_channel_id),
         "targetChannelId": str(target_channel_id)
     }), payload.get("raid") or "")
+    entries = annotate_po_entries_with_points(entries, await load_po_item_points(payload.get("raid") or ""))
     target_channel = client.get_channel(target_channel_id) or await client.fetch_channel(target_channel_id)
     text = build_standalone_po_entries_text(entries)
     msg, changed = await upsert_standalone_po_post(target_channel, payload, entries, text)
@@ -6519,10 +6633,30 @@ async def post_standalone_po_list(payload):
     except Exception as e:
         print(f"PO-Post-Eintraege konnten nicht an LichtLoot gespeichert werden: {e}")
 
+    deleted_source_messages = 0
+    if cleanup_source:
+        fresh_message_ids = {str(entry.get("messageId") or "").strip() for entry in fresh_entries or []}
+        for message_id in sorted(fresh_message_ids):
+            msg_to_delete = source_messages.get(message_id)
+            if not msg_to_delete:
+                continue
+            try:
+                await msg_to_delete.delete()
+                deleted_source_messages += 1
+                await asyncio.sleep(0.25)
+            except discord.Forbidden:
+                print(f"PO-Quellnachricht {message_id} konnte nicht geloescht werden: Bot-Rechte fehlen.")
+            except discord.NotFound:
+                pass
+            except Exception as e:
+                print(f"PO-Quellnachricht {message_id} konnte nicht geloescht werden: {e}")
+
     review_target = await send_po_review_dm(payload, entries) if changed else ""
 
     return {
         "entries": len(entries),
+        "newEntries": len(fresh_entries or []),
+        "deletedSourceMessages": deleted_source_messages,
         "targetChannelId": str(target_channel_id),
         "messageId": str(getattr(msg, "id", "") or ""),
         "changed": changed,
@@ -7053,6 +7187,39 @@ async def on_message(message):
             await message.channel.send(f"✅ Discord-Channel neu synchronisiert: **{saved}** Channel gespeichert.", delete_after=30)
         except Exception as e:
             await message.channel.send(f"⚠️ Channel-Sync fehlgeschlagen: `{e}`", delete_after=30)
+        return
+
+    if lower.startswith("!popost") or lower.startswith("!po-post") or lower.startswith("!poliste"):
+        parts = content.split()
+        post_key = parts[1].strip() if len(parts) > 1 else ""
+        try:
+            result_message = await message.channel.send("🔄 **PO-Post wird aktualisiert und Quellnachrichten werden aufgeräumt...**")
+            refreshed = await refresh_saved_po_posts_for_source(
+                message.channel.id,
+                cleanup_source=True,
+                post_key_filter=post_key
+            )
+            if not refreshed:
+                detail = f" mit Post-ID `{post_key}`" if post_key else ""
+                await result_message.edit(content=f"⚠️ Kein gespeicherter PO-Post für diesen Channel{detail} gefunden.")
+                await delete_command_message(message)
+                return
+            total_entries = sum(int(item.get("entries") or 0) for item in refreshed)
+            new_entries = sum(int(item.get("newEntries") or 0) for item in refreshed)
+            deleted = sum(int(item.get("deletedSourceMessages") or 0) for item in refreshed)
+            await result_message.edit(
+                content=(
+                    "✅ **PO-Post aktualisiert.**\n"
+                    f"Posts: **{len(refreshed)}** | Einträge: **{total_entries}** | "
+                    f"neu aus Channel: **{new_entries}** | gelöscht: **{deleted}**"
+                )
+            )
+            await delete_command_message(message)
+        except Exception as e:
+            err = str(e)
+            if len(err) > 1500:
+                err = err[:1500] + " …"
+            await message.channel.send(f"⚠️ **PO-Post Fehler:**\n```{err}```")
         return
 
     if is_logsync_command(content):
