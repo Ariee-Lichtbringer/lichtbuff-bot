@@ -6085,8 +6085,8 @@ def extract_po_from_line(line):
     if not raw:
         return None
 
-    # Erkennt: "PO Item", "P0 Item", "Prio: PO Item".
-    match = re.search(r"\b(P0|PO)\b\s*[:\-–—]?\s*(.+)$", raw, re.IGNORECASE)
+    # Erkennt nur echte Einzelmeldungen: "PO Item" oder "P0 Item".
+    match = re.match(r"^\s*(P0|PO)\b\s*[:\-–—]?\s*(.+)$", raw, re.IGNORECASE)
     if not match:
         return None
 
@@ -6100,6 +6100,21 @@ def extract_po_from_line(line):
     return normalize_po_item_name(item)
 
 
+def is_plain_po_source_message(message):
+    if getattr(getattr(message, "author", None), "bot", False):
+        return False
+    if getattr(message, "embeds", None):
+        return False
+    if getattr(message, "components", None):
+        return False
+    if getattr(message, "attachments", None):
+        return False
+    content = str(getattr(message, "content", "") or "")
+    if not content.strip():
+        return False
+    return any(extract_po_from_line(line) for line in content.splitlines())
+
+
 async def get_po_entries_from_channel(channel_id, limit=800):
     channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
     entries = []
@@ -6107,10 +6122,10 @@ async def get_po_entries_from_channel(channel_id, limit=800):
     messages_by_id = {}
 
     async for msg in channel.history(limit=limit):
-        if msg.author == client.user:
+        if msg.author == client.user or not is_plain_po_source_message(msg):
             continue
 
-        message_text = collect_message_text(msg)
+        message_text = str(getattr(msg, "content", "") or "")
         item = None
 
         for line in message_text.splitlines():
@@ -7124,6 +7139,9 @@ async def post_standalone_po_list(payload):
             msg_to_delete = source_messages.get(message_id)
             if not msg_to_delete:
                 continue
+            if not is_plain_po_source_message(msg_to_delete):
+                print(f"PO-Quellnachricht {message_id} wird nicht geloescht: keine einfache PO-Spielernachricht.")
+                continue
             try:
                 await msg_to_delete.delete()
                 deleted_source_messages += 1
@@ -7635,8 +7653,7 @@ async def on_message_edit(before, after):
 
         await handle_log_analysis_message(after)
         await handle_ticker_update(after)
-        message_text = collect_message_text(after)
-        if any(extract_po_from_line(line) for line in message_text.splitlines()):
+        if is_plain_po_source_message(after):
             await asyncio.sleep(1)
             refreshed = await refresh_saved_po_posts_for_source(after.channel.id, cleanup_source=True)
             if refreshed:
@@ -7657,8 +7674,7 @@ async def on_message(message):
     content = message.content.strip()
     lower = content.lower()
 
-    message_text = collect_message_text(message)
-    if any(extract_po_from_line(line) for line in message_text.splitlines()):
+    if is_plain_po_source_message(message):
         await asyncio.sleep(1)
         refreshed = await refresh_saved_po_posts_for_source(message.channel.id, cleanup_source=True)
         if refreshed:
