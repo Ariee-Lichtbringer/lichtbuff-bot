@@ -6509,6 +6509,254 @@ async def refresh_saved_po_posts_for_source(source_channel_id, cleanup_source=Fa
     return refreshed
 
 
+def saved_po_post_payloads_for_source(source_channel_id, post_key_filter=""):
+    state = load_json(po_post_file(), {})
+    source_text = str(source_channel_id or "").strip()
+    wanted_post_key = str(post_key_filter or "").strip()
+    payloads = []
+    for key, state_entry in list(state.items()):
+        if not isinstance(state_entry, dict):
+            continue
+        payload = state_entry.get("payload") or {}
+        if not isinstance(payload, dict):
+            continue
+        saved_source = str(payload.get("sourceChannelId") or payload.get("channelId") or "").strip()
+        if saved_source != source_text:
+            continue
+        saved_post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
+        if wanted_post_key and saved_post_key != wanted_post_key:
+            continue
+        payloads.append(payload)
+    return payloads
+
+
+async def delete_po_post_entry_for_user(channel, user, item_text, post_key_filter=""):
+    item_text = str(item_text or "").strip()
+    if not item_text:
+        raise RuntimeError("Bitte Itemnamen angeben, z. B. `!podel THC`.")
+
+    payloads = saved_po_post_payloads_for_source(channel.id, post_key_filter)
+    if not payloads:
+        detail = f" mit Post-ID `{post_key_filter}`" if post_key_filter else ""
+        raise RuntimeError(f"Kein gespeicherter PO-Post für diesen Channel{detail} gefunden.")
+
+    deleted_total = 0
+    deleted_messages = 0
+    touched_post_keys = []
+    for payload in payloads:
+        source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or channel.id)
+        target_channel_id = str(payload.get("targetChannelId") or payload.get("discordChannelId") or source_channel_id)
+        post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
+        result = await asyncio.to_thread(lichtloot_post, {
+            "action": "lichtbotDeletePoPostEntry",
+            "queueToken": LICHTBOT_QUEUE_TOKEN,
+            "postKey": post_key,
+            "sourceChannelId": source_channel_id,
+            "targetChannelId": target_channel_id,
+            "discordUserId": str(getattr(user, "id", "") or ""),
+            "item": item_text
+        })
+        deleted = int(result.get("deleted") or 0)
+        if deleted <= 0:
+            continue
+        deleted_total += deleted
+        touched_post_keys.append(post_key or "-")
+        for entry in result.get("entries") or []:
+            message_id = str(entry.get("messageId") or "").strip()
+            if not message_id:
+                continue
+            try:
+                source_message = await channel.fetch_message(int(message_id))
+                await source_message.delete()
+                deleted_messages += 1
+                await asyncio.sleep(0.25)
+            except discord.NotFound:
+                pass
+            except discord.Forbidden:
+                print(f"PO-Loeschung: Quellnachricht {message_id} konnte nicht geloescht werden, Rechte fehlen.")
+            except Exception as e:
+                print(f"PO-Loeschung: Quellnachricht {message_id} konnte nicht geloescht werden: {e}")
+        await post_standalone_po_list(payload)
+
+    return {
+        "deleted": deleted_total,
+        "deletedMessages": deleted_messages,
+        "postKeys": touched_post_keys
+    }
+
+
+class PoDeleteModal(discord.ui.Modal):
+    def __init__(self, channel_id, default_item="", default_post_key=""):
+        self.channel_id = str(channel_id)
+        super().__init__(title="PO-Eintrag löschen")
+        self.item_name = discord.ui.TextInput(
+            label="Item",
+            placeholder="z. B. THC",
+            default=str(default_item or "")[:100],
+            required=True,
+            max_length=120
+        )
+        self.post_key = discord.ui.TextInput(
+            label="Post-ID optional",
+            placeholder="z. B. po-liste-mir1ao",
+            default=str(default_post_key or "")[:80],
+            required=False,
+            max_length=80
+        )
+        self.add_item(self.item_name)
+        self.add_item(self.post_key)
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        channel = client.get_channel(int(self.channel_id)) or await client.fetch_channel(int(self.channel_id))
+        result = await delete_po_post_entry_for_user(
+            channel,
+            interaction.user,
+            str(self.item_name.value or ""),
+            str(self.post_key.value or "")
+        )
+        deleted = int(result.get("deleted") or 0)
+        if deleted <= 0:
+            await interaction.followup.send(
+                "⚠️ Kein eigener PO-Eintrag mit diesem Item gefunden.",
+                ephemeral=True
+            )
+            return
+        post_keys = ", ".join(sorted(set(result.get("postKeys") or []))) or "-"
+        await interaction.followup.send(
+            f"✅ Dein PO-Eintrag wurde gelöscht.\nPost: `{post_keys}`",
+            ephemeral=True
+        )
+
+
+class PoDeleteButton(discord.ui.Button):
+    def __init__(self, channel_id, default_item="", default_post_key=""):
+        super().__init__(
+            label="PO-Eintrag löschen",
+            style=discord.ButtonStyle.danger
+        )
+        self.channel_id = str(channel_id)
+        self.default_item = default_item
+        self.default_post_key = default_post_key
+
+    async def callback(self, interaction):
+        await interaction.response.send_modal(PoDeleteModal(
+            self.channel_id,
+            self.default_item,
+            self.default_post_key
+        ))
+
+
+class PoDeleteView(discord.ui.View):
+    def __init__(self, channel_id, default_item="", default_post_key=""):
+        super().__init__(timeout=180)
+        self.add_item(PoDeleteButton(channel_id, default_item, default_post_key))
+
+
+def find_po_post_payload_for_signup(channel_id, raid="", post_key_filter=""):
+    raid_key = normalize_raid_name(raid)
+    payloads = saved_po_post_payloads_for_source(channel_id, post_key_filter)
+    if raid_key:
+        raid_matches = [
+            payload for payload in payloads
+            if normalize_raid_name(payload.get("raid") or "") == raid_key
+        ]
+        if raid_matches:
+            return raid_matches[0]
+    return payloads[0] if payloads else None
+
+
+async def save_po_signup_from_modal(payload, user, item_name, char_name, player_pin):
+    source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or "")
+    target_channel_id = str(payload.get("targetChannelId") or payload.get("discordChannelId") or source_channel_id)
+    result = await asyncio.to_thread(lichtloot_post, {
+        "action": "lichtbotSavePoPostEntry",
+        "queueToken": LICHTBOT_QUEUE_TOKEN,
+        "postKey": payload.get("postKey") or payload.get("poPostKey") or "",
+        "sourceChannelId": source_channel_id,
+        "targetChannelId": target_channel_id,
+        "raid": payload.get("raid") or "",
+        "title": payload.get("title") or "PO Liste",
+        "player": char_name,
+        "server": "Everlook",
+        "playerPin": player_pin,
+        "item": item_name,
+        "discordUserId": str(getattr(user, "id", "") or ""),
+        "discordName": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user)
+    })
+    if not result.get("success"):
+        raise RuntimeError(result.get("error") or "PO-Eintrag konnte nicht gespeichert werden.")
+    await post_standalone_po_list(payload)
+    return result
+
+
+class PoSignupModal(discord.ui.Modal):
+    def __init__(self, payload, default_char=""):
+        self.payload = payload
+        raid = display_raid_name(payload.get("raid") or "")
+        super().__init__(title=f"PO eintragen {raid}"[:45])
+        self.item_name = discord.ui.TextInput(
+            label="Itemname",
+            placeholder="z. B. THC",
+            required=True,
+            max_length=120
+        )
+        self.char_name = discord.ui.TextInput(
+            label="Charaktername",
+            placeholder="z. B. Glover",
+            default=str(default_char or "")[:50],
+            required=True,
+            max_length=50
+        )
+        self.player_pin = discord.ui.TextInput(
+            label="LichtLoot Spielerlogin",
+            placeholder="dein 4-stelliger Login/PIN",
+            required=True,
+            max_length=20
+        )
+        self.add_item(self.item_name)
+        self.add_item(self.char_name)
+        self.add_item(self.player_pin)
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            result = await save_po_signup_from_modal(
+                self.payload,
+                interaction.user,
+                str(self.item_name.value or ""),
+                str(self.char_name.value or ""),
+                str(self.player_pin.value or "")
+            )
+            entry = result.get("entry") or {}
+            await interaction.followup.send(
+                f"✅ PO gespeichert: **{entry.get('player') or self.char_name.value}** → **{entry.get('item') or self.item_name.value}**",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.followup.send(f"⚠️ PO konnte nicht gespeichert werden: `{e}`", ephemeral=True)
+
+
+class PoSignupButton(discord.ui.Button):
+    def __init__(self, payload):
+        raid = display_raid_name(payload.get("raid") or "")
+        super().__init__(
+            label=f"PO eintragen {raid}"[:80],
+            style=discord.ButtonStyle.primary
+        )
+        self.payload = payload
+
+    async def callback(self, interaction):
+        default_char = infer_worldbuff_char_from_discord_name(interaction.user.display_name)
+        await interaction.response.send_modal(PoSignupModal(self.payload, default_char))
+
+
+class PoSignupView(discord.ui.View):
+    def __init__(self, payload):
+        super().__init__(timeout=180)
+        self.add_item(PoSignupButton(payload))
+
+
 async def find_discord_member_or_user(identifier):
     raw = str(identifier or "").strip()
     if not raw:
@@ -7220,6 +7468,47 @@ async def on_message(message):
             if len(err) > 1500:
                 err = err[:1500] + " …"
             await message.channel.send(f"⚠️ **PO-Post Fehler:**\n```{err}```")
+        return
+
+    if lower.startswith("!po "):
+        parts = content.split()
+        raid = normalize_raid_name(parts[1] if len(parts) > 1 else "")
+        if raid not in {"AQ40", "NAXX", "BWL", "MC"}:
+            await message.channel.send("⚠️ Bitte Raid angeben: `!po aq40`, `!po naxx`, `!po bwl` oder `!po mc`.", delete_after=25)
+            await delete_command_message(message)
+            return
+        post_key = parts[2].strip() if len(parts) > 2 else ""
+        payload = find_po_post_payload_for_signup(message.channel.id, raid, post_key)
+        if not payload:
+            detail = f" und Post-ID `{post_key}`" if post_key else ""
+            await message.channel.send(f"⚠️ Kein gespeicherter PO-Post für **{raid}** in diesem Channel{detail} gefunden.", delete_after=30)
+            await delete_command_message(message)
+            return
+        await message.channel.send(
+            f"🧾 **{display_raid_name(raid)} PO eintragen**",
+            view=PoSignupView(payload),
+            delete_after=180
+        )
+        await delete_command_message(message)
+        return
+
+    if lower.startswith("!podel") or lower.startswith("!podelete") or lower.startswith("!poloeschen") or lower.startswith("!polöschen"):
+        parts = content.split()
+        default_post_key = ""
+        default_item = ""
+        if len(parts) > 1:
+            rest = parts[1:]
+            if rest and rest[0].lower().startswith("po-liste-"):
+                default_post_key = rest[0]
+                default_item = " ".join(rest[1:]).strip()
+            else:
+                default_item = " ".join(rest).strip()
+        await message.channel.send(
+            "🧾 **Eigenen PO-Eintrag löschen**",
+            view=PoDeleteView(message.channel.id, default_item, default_post_key),
+            delete_after=180
+        )
+        await delete_command_message(message)
         return
 
     if is_logsync_command(content):
