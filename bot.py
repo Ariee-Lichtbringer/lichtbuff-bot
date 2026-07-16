@@ -6096,6 +6096,10 @@ def extract_po_from_line(line):
 
     if not item or len(item) < 3:
         return None
+    if item.startswith("!"):
+        return None
+    if normalize_raid_name(item) in {"MC", "BWL", "AQ40", "NAXX", "ZG", "AQ20", "ONY"}:
+        return None
 
     return normalize_po_item_name(item)
 
