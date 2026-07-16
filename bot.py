@@ -60,6 +60,7 @@ LOG_ANALYSIS_CHANNEL_IDS = {
 LOG_ANALYSIS_BOOTSTRAP_COUNT = int(os.getenv("LOG_ANALYSIS_BOOTSTRAP_COUNT", "10"))
 LOG_ANALYSIS_HISTORY_LIMIT = int(os.getenv("LOG_ANALYSIS_HISTORY_LIMIT", "300"))
 RAID_BANNER_DIR = Path(__file__).resolve().parent / "raid-banners"
+PO_GUIDE_IMAGE_PATH = Path(__file__).resolve().parent / "po-anleitung.jpeg"
 RAID_SIGNUP_DM_CACHE = {}
 
 # LichtLoot / Prio-Check AQ40
@@ -6387,6 +6388,15 @@ def po_list_file(text):
     return discord.File(BytesIO(data), filename="po-liste.txt")
 
 
+def po_guide_file():
+    try:
+        if PO_GUIDE_IMAGE_PATH.exists():
+            return discord.File(str(PO_GUIDE_IMAGE_PATH), filename="po-anleitung.jpeg")
+    except Exception as e:
+        print(f"PO-Anleitung konnte nicht angehaengt werden: {e}")
+    return None
+
+
 def stable_po_entry_for_fingerprint(entry):
     return {
         "player": str(entry.get("player") or "").strip(),
@@ -6507,15 +6517,32 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
         candidates.extend(message for message in found_messages if message.id not in candidate_ids)
         target_message = candidates[0] if candidates else None
         post_text = build_po_channel_post_text(payload, entries, text)
-        make_files = lambda: [po_list_file(text)] if len(text) > 1800 else None
+        def make_files():
+            files = []
+            if len(text) > 1800:
+                files.append(po_list_file(text))
+            guide = po_guide_file()
+            if guide:
+                files.append(guide)
+            return files or None
+
+        target_has_guide = bool(
+            target_message
+            and any(
+                str(getattr(attachment, "filename", "") or "").lower() == "po-anleitung.jpeg"
+                for attachment in getattr(target_message, "attachments", []) or []
+            )
+        )
+        guide_expected = PO_GUIDE_IMAGE_PATH.exists()
 
         target_text_matches = (
             target_message
-            and not make_files()
+            and len(text) <= 1800
+            and (not guide_expected or target_has_guide)
             and normalize_po_post_text_for_compare(getattr(target_message, "content", "") or "")
                 == normalize_po_post_text_for_compare(post_text)
         )
-        target_file_post = bool(target_message and make_files())
+        target_file_post = bool(target_message and len(text) > 1800 and (not guide_expected or target_has_guide))
 
         if target_message and previous_hash == current_hash and (target_text_matches or target_file_post):
             keep = target_message
