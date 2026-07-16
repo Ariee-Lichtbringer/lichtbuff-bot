@@ -6244,6 +6244,24 @@ def po_points_suffix(entry):
     return f" ({suffix})"
 
 
+def po_entry_time_suffix(entry):
+    raw = str(
+        entry.get("createdAt")
+        or entry.get("poCreatedAt")
+        or entry.get("po_created_at")
+        or ""
+    ).strip()
+    if not raw:
+        return ""
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo:
+            dt = dt.astimezone(BERLIN_TZ)
+        return f" · {dt.strftime('%d.%m.%Y %H:%M')} Uhr"
+    except Exception:
+        return f" · {raw}"
+
+
 def build_standalone_po_entries_text(entries):
     sorted_entries = sorted(
         entries or [],
@@ -6259,7 +6277,7 @@ def build_standalone_po_entries_text(entries):
         player = str(entry.get("player") or "-").strip()
         item = str(entry.get("item") or "-").strip()
         suffix = " ✅" if str(entry.get("approvalStatus") or "").lower() == "approved" else ""
-        lines.append(f"{idx}. **{player}** → {item}{po_points_suffix(entry)}{suffix}")
+        lines.append(f"{idx}. **{player}** → {item}{po_points_suffix(entry)}{po_entry_time_suffix(entry)}{suffix}")
     return "\n".join(lines)
 
 
@@ -6345,8 +6363,7 @@ def po_post_fingerprint(payload, entries, text):
             "source": source,
             "target": target,
             "title": title,
-            "entries": entries or [],
-            "text": text or ""
+            "entries": entries or []
         },
         sort_keys=True,
         ensure_ascii=False,
