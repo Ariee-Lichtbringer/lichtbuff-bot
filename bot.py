@@ -5802,6 +5802,9 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
         elif update_type == "po_post":
             result = await post_standalone_po_list(payload)
             print(f"PO Post erstellt/aktualisiert: {result}")
+        elif update_type == "po_post_delete":
+            result = await delete_standalone_po_posts(payload)
+            print(f"PO Post geloescht: {result}")
         elif update_type == "p0_post_refresh":
             channel_id = payload.get("channelId") or payload.get("discordChannelId")
             raid = payload.get("raid") or payload.get("raidName")
@@ -6290,13 +6293,13 @@ def po_post_state_key(payload):
 def is_standalone_po_message(message, payload):
     text = str(getattr(message, "content", "") or "")
     post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
-    if post_key and f"Post-ID: `{post_key}`" in text:
+    if post_key and re.search(rf"Post-ID:\s*`?{re.escape(post_key)}`?", text, re.IGNORECASE):
         return True
     title = str(payload.get("title") or "PO Liste").strip() or "PO Liste"
     source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or "").strip()
-    if f"📋 **{title}**" not in text:
+    if f"📋 **{title}**" not in text and f"**{title}**" not in text:
         return False
-    if source_channel_id and f"Quelle: <#{source_channel_id}>" not in text:
+    if source_channel_id and f"Quelle: <#{source_channel_id}>" not in text and "Post-ID:" not in text:
         return False
     return "PO-Post" in text or "PO-Einträge" in text or "Vollständige Liste" in text
 
@@ -6310,6 +6313,7 @@ def build_po_channel_post_text(payload, entries, full_text):
     lines = [f"📋 **{title}**", "PO-Post"]
     if post_key:
         lines.append(f"Post-ID: `{post_key}`")
+    lines.append(f"Aktualisiert: **{datetime.now(BERLIN_TZ).strftime('%d.%m.%Y %H:%M')} Uhr**")
     if raid:
         lines.append(f"Raid: **{display_raid_name(raid)}**")
     if source_channel_id:
@@ -6418,7 +6422,7 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
         found_messages = await find_recent_own_messages(
             channel,
             lambda message: is_standalone_po_message(message, payload),
-            limit=100
+            limit=500
         )
         candidate_ids = {message.id for message in candidates}
         candidates.extend(message for message in found_messages if message.id not in candidate_ids)
@@ -6472,7 +6476,7 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
         cleanup_messages = await find_recent_own_messages(
             channel,
             lambda message: is_standalone_po_message(message, payload),
-            limit=100
+            limit=500
         )
         keep = max(cleanup_messages or [msg], key=lambda message: int(message.id))
         for message in cleanup_messages:
@@ -6487,6 +6491,59 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
         state[key] = {"messageId": str(keep.id), "hash": current_hash, "payload": payload}
         save_json(po_post_file(), state)
         return keep, True
+
+
+async def delete_standalone_po_posts(payload):
+    channel_ids = []
+    for value in [
+        payload.get("targetChannelId") or payload.get("discordChannelId"),
+        payload.get("sourceChannelId") or payload.get("channelId")
+    ]:
+        text = str(value or "").strip()
+        if text and text not in channel_ids:
+            channel_ids.append(text)
+
+    deleted = 0
+    for channel_id in channel_ids:
+        try:
+            channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+        except Exception as e:
+            print(f"PO-Post-Loeschung: Channel {channel_id} konnte nicht geladen werden: {e}")
+            continue
+
+        message_id = str(payload.get("messageId") or payload.get("discordMessageId") or "").strip()
+        if message_id:
+            try:
+                msg = await channel.fetch_message(int(message_id))
+                if is_own_discord_message(msg):
+                    await msg.delete()
+                    deleted += 1
+                    await asyncio.sleep(0.25)
+            except discord.NotFound:
+                pass
+            except Exception as e:
+                print(f"PO-Post-Loeschung: Nachricht {message_id} konnte nicht geloescht werden: {e}")
+
+        matches = await find_recent_own_messages(
+            channel,
+            lambda message: is_standalone_po_message(message, payload),
+            limit=500
+        )
+        for message in matches:
+            try:
+                await message.delete()
+                deleted += 1
+                await asyncio.sleep(0.25)
+            except discord.NotFound:
+                pass
+            except Exception as e:
+                print(f"PO-Post-Loeschung: Nachricht {message.id} konnte nicht geloescht werden: {e}")
+
+    state = load_json(po_post_file(), {})
+    key = po_post_state_key(payload)
+    state.pop(key, None)
+    save_json(po_post_file(), state)
+    return {"deleted": deleted, "postKey": payload.get("postKey") or payload.get("poPostKey") or ""}
 
 
 async def refresh_saved_po_posts_for_source(source_channel_id, cleanup_source=False, post_key_filter=""):
@@ -7451,7 +7508,7 @@ async def on_message_edit(before, after):
         message_text = collect_message_text(after)
         if any(extract_po_from_line(line) for line in message_text.splitlines()):
             await asyncio.sleep(1)
-            refreshed = await refresh_saved_po_posts_for_source(after.channel.id)
+            refreshed = await refresh_saved_po_posts_for_source(after.channel.id, cleanup_source=True)
             if refreshed:
                 print(f"PO-Post nach Bearbeitung automatisch aktualisiert: {refreshed}")
     finally:
@@ -7473,7 +7530,7 @@ async def on_message(message):
     message_text = collect_message_text(message)
     if any(extract_po_from_line(line) for line in message_text.splitlines()):
         await asyncio.sleep(1)
-        refreshed = await refresh_saved_po_posts_for_source(message.channel.id)
+        refreshed = await refresh_saved_po_posts_for_source(message.channel.id, cleanup_source=True)
         if refreshed:
             print(f"PO-Post nach neuer PO-Nachricht automatisch aktualisiert: {refreshed}")
 
