@@ -6615,10 +6615,9 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
 
 async def delete_standalone_po_posts(payload):
     channel_ids = []
-    for value in [
-        payload.get("targetChannelId") or payload.get("discordChannelId"),
-        payload.get("sourceChannelId") or payload.get("channelId")
-    ]:
+    target_channel_id = payload.get("targetChannelId") or payload.get("discordChannelId")
+    fallback_source_channel_id = payload.get("sourceChannelId") or payload.get("channelId")
+    for value in [target_channel_id or fallback_source_channel_id]:
         text = str(value or "").strip()
         if text and text not in channel_ids:
             channel_ids.append(text)
@@ -6635,10 +6634,12 @@ async def delete_standalone_po_posts(payload):
         if message_id:
             try:
                 msg = await channel.fetch_message(int(message_id))
-                if is_own_discord_message(msg):
+                if is_own_discord_message(msg) and is_standalone_po_message(msg, payload):
                     await msg.delete()
                     deleted += 1
                     await asyncio.sleep(0.25)
+                elif is_own_discord_message(msg):
+                    print(f"PO-Post-Loeschung: Nachricht {message_id} ist kein PO-Sammelpost, wird nicht geloescht.")
             except discord.NotFound:
                 pass
             except Exception as e:
