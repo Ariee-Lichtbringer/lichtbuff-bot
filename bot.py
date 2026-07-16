@@ -6064,6 +6064,19 @@ async def sync_discord_signup_rows(raid):
 
 
 
+PO_ITEM_ALIASES = {
+    "brust4werte": "Formel: Brust - Große Werte",
+    "gressil": "Gressil, Vorbote des Untergangs",
+    "thc": "Zehrende Kälte"
+}
+
+
+def normalize_po_item_name(item_name):
+    raw = str(item_name or "").strip()
+    key = prio_key(raw)
+    return PO_ITEM_ALIASES.get(key, raw)
+
+
 def extract_po_from_line(line):
     raw = str(line or "").strip()
     if not raw:
@@ -6081,7 +6094,7 @@ def extract_po_from_line(line):
     if not item or len(item) < 3:
         return None
 
-    return item
+    return normalize_po_item_name(item)
 
 
 async def get_po_entries_from_channel(channel_id, limit=800):
@@ -6696,7 +6709,7 @@ async def po_post_payloads_for_source(source_channel_id, post_key_filter=""):
 
 
 async def delete_po_post_entry_for_user(channel, user, item_text, post_key_filter="", player_name=""):
-    item_text = str(item_text or "").strip()
+    item_text = normalize_po_item_name(item_text)
     player_name = str(player_name or "").strip()
     if not item_text:
         raise RuntimeError("Bitte Itemnamen angeben, z. B. `!podel THC`.")
@@ -6851,6 +6864,7 @@ async def find_po_post_payload_for_signup(channel_id, raid="", post_key_filter="
 
 
 async def save_po_signup_from_modal(payload, user, item_name, char_name, player_pin):
+    item_name = normalize_po_item_name(item_name)
     source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or "")
     target_channel_id = str(payload.get("targetChannelId") or payload.get("discordChannelId") or source_channel_id)
     result = await asyncio.to_thread(lichtloot_post, {
