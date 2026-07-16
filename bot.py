@@ -6504,7 +6504,7 @@ async def refresh_saved_po_posts_for_source(source_channel_id, cleanup_source=Fa
 
 def saved_po_post_payloads_for_source(source_channel_id, post_key_filter=""):
     state = load_json(po_post_file(), {})
-    source_text = str(source_channel_id or "").strip()
+    channel_text = str(source_channel_id or "").strip()
     wanted_post_key = str(post_key_filter or "").strip()
     payloads = []
     for key, state_entry in list(state.items()):
@@ -6514,7 +6514,8 @@ def saved_po_post_payloads_for_source(source_channel_id, post_key_filter=""):
         if not isinstance(payload, dict):
             continue
         saved_source = str(payload.get("sourceChannelId") or payload.get("channelId") or "").strip()
-        if saved_source != source_text:
+        saved_target = str(payload.get("targetChannelId") or payload.get("discordChannelId") or saved_source).strip()
+        if channel_text not in {saved_source, saved_target}:
             continue
         saved_post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
         if wanted_post_key and saved_post_key != wanted_post_key:
@@ -6524,20 +6525,22 @@ def saved_po_post_payloads_for_source(source_channel_id, post_key_filter=""):
 
 
 async def railway_po_post_payloads_for_source(source_channel_id, post_key_filter=""):
-    source_text = str(source_channel_id or "").strip()
+    channel_text = str(source_channel_id or "").strip()
     wanted_post_key = str(post_key_filter or "").strip()
-    try:
-        result = await asyncio.to_thread(lichtloot_get, {
-            "action": "lichtbotGetPoPostEntries",
-            "queueToken": LICHTBOT_QUEUE_TOKEN,
-            "sourceChannelId": source_text,
-            "postKey": wanted_post_key
-        })
-    except Exception as e:
-        print(f"PO-Post-Konfiguration konnte nicht aus Railway geladen werden: {e}")
-        return []
+    results = []
+    for channel_param in ("sourceChannelId", "targetChannelId"):
+        try:
+            result = await asyncio.to_thread(lichtloot_get, {
+                "action": "lichtbotGetPoPostEntries",
+                "queueToken": LICHTBOT_QUEUE_TOKEN,
+                channel_param: channel_text,
+                "postKey": wanted_post_key
+            })
+            results.extend(result.get("entries") or [])
+        except Exception as e:
+            print(f"PO-Post-Konfiguration konnte nicht aus Railway geladen werden ({channel_param}): {e}")
     by_key = {}
-    for entry in result.get("entries") or []:
+    for entry in results:
         post_key = str(entry.get("postKey") or "").strip()
         if wanted_post_key and post_key != wanted_post_key:
             continue
@@ -6545,8 +6548,8 @@ async def railway_po_post_payloads_for_source(source_channel_id, post_key_filter
             continue
         by_key.setdefault(post_key, {
             "postKey": post_key,
-            "sourceChannelId": str(entry.get("sourceChannelId") or source_text),
-            "targetChannelId": str(entry.get("targetChannelId") or entry.get("sourceChannelId") or source_text),
+            "sourceChannelId": str(entry.get("sourceChannelId") or channel_text),
+            "targetChannelId": str(entry.get("targetChannelId") or entry.get("sourceChannelId") or channel_text),
             "raid": entry.get("raid") or "",
             "title": entry.get("title") or "PO Liste",
             "limit": 800
