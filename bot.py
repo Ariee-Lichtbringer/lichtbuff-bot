@@ -6348,12 +6348,24 @@ def build_po_channel_post_text(payload, entries, full_text):
         lines.append(f"Quelle: <#{source_channel_id}>")
     if review_recipient:
         lines.append(f"Freigabe per DM an: **{review_recipient}**")
-    if len(full_text) > 1800:
+    command_lines = [
+        "",
+        "━━━━━━━━━━━━━━━",
+        "**Befehle**",
+        "`!popost` = Post aktualisieren",
+        "`!po naxx` = PO-Item für Naxx eintragen",
+        "`!po aq40` = PO-Item für AQ40 eintragen",
+        "`!podel` = eigenes PO-Item ändern oder löschen"
+    ]
+    command_text = "\n".join(command_lines)
+    if len(full_text) + len(command_text) > 1750:
         lines.append(f"Gefunden: **{len(entries or [])}** Eintrag/Einträge")
         lines.append("Vollständige Liste ist als Datei angehängt.")
+        lines.extend(command_lines)
     else:
         lines.append("")
         lines.append(full_text)
+        lines.extend(command_lines)
     return "\n".join(lines)[:1900]
 
 
