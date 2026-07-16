@@ -6217,20 +6217,15 @@ def annotate_po_entries_with_points(entries, points_by_item):
     for entry in entries or []:
         copy = dict(entry)
         item_key = prio_key(copy.get("item") or "")
-        player_key = prio_key(copy.get("player") or "")
-        others = []
-        for holder in points_by_item.get(item_key, []):
-            if prio_key(holder.get("player") or "") == player_key:
-                continue
-            others.append(holder)
-        others.sort(key=lambda row: (str(row.get("player") or "").lower(), float(row.get("points") or 0)))
-        copy["otherP0PlusPoints"] = others
+        holders = list(points_by_item.get(item_key, []))
+        holders.sort(key=lambda row: (str(row.get("player") or "").lower(), float(row.get("points") or 0)))
+        copy["itemP0PlusPoints"] = holders
         annotated.append(copy)
     return annotated
 
 
 def po_points_suffix(entry):
-    holders = entry.get("otherP0PlusPoints") or []
+    holders = entry.get("itemP0PlusPoints") or []
     if not holders:
         return ""
     parts = []
@@ -6239,11 +6234,11 @@ def po_points_suffix(entry):
             points = f"{float(holder.get('points') or 0):g}"
         except Exception:
             points = str(holder.get("points") or "0")
-        parts.append(f"{holder.get('player')}: {points}")
-    suffix = ", ".join(parts)
+        parts.append(f"{holder.get('player')} {points}")
+    suffix = "PO+: " + ", ".join(parts)
     if len(holders) > 6:
         suffix += f", +{len(holders) - 6}"
-    return f" · PO+: {suffix}"
+    return f" ({suffix})"
 
 
 def build_standalone_po_entries_text(entries):
@@ -6495,28 +6490,15 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
 
 
 async def refresh_saved_po_posts_for_source(source_channel_id, cleanup_source=False, post_key_filter=""):
-    state = load_json(po_post_file(), {})
-    source_text = str(source_channel_id or "").strip()
-    wanted_post_key = str(post_key_filter or "").strip()
     refreshed = []
-    for key, state_entry in list(state.items()):
-        if not isinstance(state_entry, dict):
-            continue
-        payload = state_entry.get("payload") or {}
-        if not isinstance(payload, dict):
-            continue
-        saved_source = str(payload.get("sourceChannelId") or payload.get("channelId") or "").strip()
-        if saved_source != source_text:
-            continue
-        saved_post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
-        if wanted_post_key and saved_post_key != wanted_post_key:
-            continue
+    payloads = await po_post_payloads_for_source(source_channel_id, post_key_filter)
+    for payload in payloads:
         try:
             run_payload = {**payload, "cleanupSource": cleanup_source}
             result = await post_standalone_po_list(run_payload)
-            refreshed.append({**result, "key": key})
+            refreshed.append({**result, "key": payload.get("postKey") or payload.get("poPostKey") or ""})
         except Exception as e:
-            print(f"Automatische PO-Post-Aktualisierung fehlgeschlagen ({key}): {e}")
+            print(f"Automatische PO-Post-Aktualisierung fehlgeschlagen ({payload.get('postKey') or '-'}): {e}")
     return refreshed
 
 
@@ -6541,12 +6523,53 @@ def saved_po_post_payloads_for_source(source_channel_id, post_key_filter=""):
     return payloads
 
 
-async def delete_po_post_entry_for_user(channel, user, item_text, post_key_filter=""):
+async def railway_po_post_payloads_for_source(source_channel_id, post_key_filter=""):
+    source_text = str(source_channel_id or "").strip()
+    wanted_post_key = str(post_key_filter or "").strip()
+    try:
+        result = await asyncio.to_thread(lichtloot_get, {
+            "action": "lichtbotGetPoPostEntries",
+            "queueToken": LICHTBOT_QUEUE_TOKEN,
+            "sourceChannelId": source_text,
+            "postKey": wanted_post_key
+        })
+    except Exception as e:
+        print(f"PO-Post-Konfiguration konnte nicht aus Railway geladen werden: {e}")
+        return []
+    by_key = {}
+    for entry in result.get("entries") or []:
+        post_key = str(entry.get("postKey") or "").strip()
+        if wanted_post_key and post_key != wanted_post_key:
+            continue
+        if not post_key:
+            continue
+        by_key.setdefault(post_key, {
+            "postKey": post_key,
+            "sourceChannelId": str(entry.get("sourceChannelId") or source_text),
+            "targetChannelId": str(entry.get("targetChannelId") or entry.get("sourceChannelId") or source_text),
+            "raid": entry.get("raid") or "",
+            "title": entry.get("title") or "PO Liste",
+            "limit": 800
+        })
+    return list(by_key.values())
+
+
+async def po_post_payloads_for_source(source_channel_id, post_key_filter=""):
+    payloads = saved_po_post_payloads_for_source(source_channel_id, post_key_filter)
+    if payloads:
+        return payloads
+    return await railway_po_post_payloads_for_source(source_channel_id, post_key_filter)
+
+
+async def delete_po_post_entry_for_user(channel, user, item_text, post_key_filter="", player_name=""):
     item_text = str(item_text or "").strip()
+    player_name = str(player_name or "").strip()
     if not item_text:
         raise RuntimeError("Bitte Itemnamen angeben, z. B. `!podel THC`.")
+    if not player_name:
+        raise RuntimeError("Bitte Spielernamen/Charakter angeben.")
 
-    payloads = saved_po_post_payloads_for_source(channel.id, post_key_filter)
+    payloads = await po_post_payloads_for_source(channel.id, post_key_filter)
     if not payloads:
         detail = f" mit Post-ID `{post_key_filter}`" if post_key_filter else ""
         raise RuntimeError(f"Kein gespeicherter PO-Post für diesen Channel{detail} gefunden.")
@@ -6565,6 +6588,7 @@ async def delete_po_post_entry_for_user(channel, user, item_text, post_key_filte
             "sourceChannelId": source_channel_id,
             "targetChannelId": target_channel_id,
             "discordUserId": str(getattr(user, "id", "") or ""),
+            "player": player_name,
             "item": item_text
         })
         deleted = int(result.get("deleted") or 0)
@@ -6597,9 +6621,16 @@ async def delete_po_post_entry_for_user(channel, user, item_text, post_key_filte
 
 
 class PoDeleteModal(discord.ui.Modal):
-    def __init__(self, channel_id, default_item="", default_post_key=""):
+    def __init__(self, channel_id, default_item="", default_post_key="", default_player=""):
         self.channel_id = str(channel_id)
         super().__init__(title="PO-Eintrag löschen")
+        self.player_name = discord.ui.TextInput(
+            label="Spieler / Charakter",
+            placeholder="z. B. Ariee",
+            default=str(default_player or "")[:50],
+            required=True,
+            max_length=50
+        )
         self.item_name = discord.ui.TextInput(
             label="Item",
             placeholder="z. B. THC",
@@ -6614,6 +6645,7 @@ class PoDeleteModal(discord.ui.Modal):
             required=False,
             max_length=80
         )
+        self.add_item(self.player_name)
         self.add_item(self.item_name)
         self.add_item(self.post_key)
 
@@ -6624,7 +6656,8 @@ class PoDeleteModal(discord.ui.Modal):
             channel,
             interaction.user,
             str(self.item_name.value or ""),
-            str(self.post_key.value or "")
+            str(self.post_key.value or ""),
+            str(self.player_name.value or "")
         )
         deleted = int(result.get("deleted") or 0)
         if deleted <= 0:
@@ -6641,7 +6674,7 @@ class PoDeleteModal(discord.ui.Modal):
 
 
 class PoDeleteButton(discord.ui.Button):
-    def __init__(self, channel_id, default_item="", default_post_key=""):
+    def __init__(self, channel_id, default_item="", default_post_key="", default_player=""):
         super().__init__(
             label="PO-Eintrag löschen",
             style=discord.ButtonStyle.danger
@@ -6649,24 +6682,26 @@ class PoDeleteButton(discord.ui.Button):
         self.channel_id = str(channel_id)
         self.default_item = default_item
         self.default_post_key = default_post_key
+        self.default_player = default_player
 
     async def callback(self, interaction):
         await interaction.response.send_modal(PoDeleteModal(
             self.channel_id,
             self.default_item,
-            self.default_post_key
+            self.default_post_key,
+            self.default_player or infer_worldbuff_char_from_discord_name(interaction.user.display_name)
         ))
 
 
 class PoDeleteView(discord.ui.View):
-    def __init__(self, channel_id, default_item="", default_post_key=""):
+    def __init__(self, channel_id, default_item="", default_post_key="", default_player=""):
         super().__init__(timeout=180)
-        self.add_item(PoDeleteButton(channel_id, default_item, default_post_key))
+        self.add_item(PoDeleteButton(channel_id, default_item, default_post_key, default_player))
 
 
-def find_po_post_payload_for_signup(channel_id, raid="", post_key_filter=""):
+async def find_po_post_payload_for_signup(channel_id, raid="", post_key_filter=""):
     raid_key = normalize_raid_name(raid)
-    payloads = saved_po_post_payloads_for_source(channel_id, post_key_filter)
+    payloads = await po_post_payloads_for_source(channel_id, post_key_filter)
     if raid_key:
         raid_matches = [
             payload for payload in payloads
@@ -7489,7 +7524,7 @@ async def on_message(message):
             await delete_command_message(message)
             return
         post_key = parts[2].strip() if len(parts) > 2 else ""
-        payload = find_po_post_payload_for_signup(message.channel.id, raid, post_key)
+        payload = await find_po_post_payload_for_signup(message.channel.id, raid, post_key)
         if not payload:
             detail = f" und Post-ID `{post_key}`" if post_key else ""
             await message.channel.send(f"⚠️ Kein gespeicherter PO-Post für **{raid}** in diesem Channel{detail} gefunden.", delete_after=30)
@@ -7507,16 +7542,20 @@ async def on_message(message):
         parts = content.split()
         default_post_key = ""
         default_item = ""
+        default_player = infer_worldbuff_char_from_discord_name(message.author.display_name)
         if len(parts) > 1:
             rest = parts[1:]
             if rest and rest[0].lower().startswith("po-liste-"):
                 default_post_key = rest[0]
+                rest = rest[1:]
+            if len(rest) >= 2:
+                default_player = rest[0]
                 default_item = " ".join(rest[1:]).strip()
             else:
                 default_item = " ".join(rest).strip()
         await message.channel.send(
             "🧾 **Eigenen PO-Eintrag löschen**",
-            view=PoDeleteView(message.channel.id, default_item, default_post_key),
+            view=PoDeleteView(message.channel.id, default_item, default_post_key, default_player),
             delete_after=180
         )
         await delete_command_message(message)
