@@ -6490,8 +6490,9 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
             and normalize_po_post_text_for_compare(getattr(target_message, "content", "") or "")
                 == normalize_po_post_text_for_compare(post_text)
         )
+        target_file_post = bool(target_message and make_files())
 
-        if target_message and (previous_hash == current_hash or target_text_matches):
+        if target_message and previous_hash == current_hash and (target_text_matches or target_file_post):
             keep = target_message
             for message in candidates:
                 if message.id == keep.id:
