@@ -6277,7 +6277,7 @@ def build_standalone_po_entries_text(entries):
         player = str(entry.get("player") or "-").strip()
         item = str(entry.get("item") or "-").strip()
         suffix = " ✅" if str(entry.get("approvalStatus") or "").lower() == "approved" else ""
-        lines.append(f"{idx}. **{player}** → {item}{po_points_suffix(entry)}{po_entry_time_suffix(entry)}{suffix}")
+        lines.append(f"{idx}. **{player}** → {item}{po_points_suffix(entry)}{suffix}")
     return "\n".join(lines)
 
 
@@ -6352,6 +6352,32 @@ def po_list_file(text):
     return discord.File(BytesIO(data), filename="po-liste.txt")
 
 
+def stable_po_entry_for_fingerprint(entry):
+    return {
+        "player": str(entry.get("player") or "").strip(),
+        "item": str(entry.get("item") or "").strip(),
+        "messageId": str(entry.get("messageId") or entry.get("discordMessageId") or "").strip(),
+        "createdAt": str(entry.get("createdAt") or entry.get("poCreatedAt") or "").strip(),
+        "approvalStatus": str(entry.get("approvalStatus") or "").strip().lower(),
+        "approvedBy": str(entry.get("approvedBy") or "").strip(),
+        "points": [
+            {
+                "player": str(holder.get("player") or "").strip(),
+                "points": str(holder.get("points") or "").strip()
+            }
+            for holder in entry.get("itemP0PlusPoints") or []
+        ]
+    }
+
+
+def normalize_po_post_text_for_compare(text):
+    return "\n".join(
+        line
+        for line in str(text or "").splitlines()
+        if not re.match(r"^\s*Aktualisiert:\s*", line, re.IGNORECASE)
+    ).strip()
+
+
 def po_post_fingerprint(payload, entries, text):
     post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
     source = str(payload.get("sourceChannelId") or payload.get("channelId") or "").strip()
@@ -6363,7 +6389,8 @@ def po_post_fingerprint(payload, entries, text):
             "source": source,
             "target": target,
             "title": title,
-            "entries": entries or []
+            "entries": [stable_po_entry_for_fingerprint(entry) for entry in entries or []],
+            "text": normalize_po_post_text_for_compare(text)
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -6447,7 +6474,14 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
         post_text = build_po_channel_post_text(payload, entries, text)
         make_files = lambda: [po_list_file(text)] if len(text) > 1800 else None
 
-        if target_message and previous_hash == current_hash:
+        target_text_matches = (
+            target_message
+            and not make_files()
+            and normalize_po_post_text_for_compare(getattr(target_message, "content", "") or "")
+                == normalize_po_post_text_for_compare(post_text)
+        )
+
+        if target_message and (previous_hash == current_hash or target_text_matches):
             keep = target_message
             for message in candidates:
                 if message.id == keep.id:
