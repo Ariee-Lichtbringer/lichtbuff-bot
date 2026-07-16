@@ -1864,13 +1864,13 @@ async def sync_recent_ticker_messages(limit=500):
 async def update_worldbuff_post(sync_ticker=True):
     if not can_post_worldbuff_overview():
         print(f"Worldbuff-Uebersicht fuer {current_guild_slug()} uebersprungen: kein Zielchannel konfiguriert.")
-        return
+        return 0
 
     channel = client.get_channel(POST_CHANNEL_ID)
 
     if channel is None:
         print("Ziel-Channel nicht gefunden.")
-        return
+        return 0
 
     if sync_ticker:
         await sync_recent_ticker_messages()
@@ -1893,6 +1893,7 @@ async def update_worldbuff_post(sync_ticker=True):
         else:
             msg = await channel.send(text, embed=guide_embed)
         save_json(worldbuff_post_file(), {"message_id": msg.id, "message_ids": [msg.id]})
+        return 1
     else:
         chunks = [text[i:i + 1900] for i in range(0, len(text), 1900)]
         last_msg = None
@@ -1914,6 +1915,7 @@ async def update_worldbuff_post(sync_ticker=True):
 
         if last_msg:
             save_json(worldbuff_post_file(), {"message_id": last_msg.id, "message_ids": message_ids})
+        return len(message_ids)
 
 
 async def sync_recent_ticker_messages_for_all_guilds(limit=500):
@@ -2393,22 +2395,23 @@ async def update_hordenbuff_post(force=False):
     if now < hordenbuff_rate_limited_until:
         rest = int(hordenbuff_rate_limited_until - now)
         print(f"Hordenbuff-Update uebersprungen: Discord Rate Limit noch {rest} Sekunden aktiv.")
-        return
+        return 0
 
     async with hordenbuff_update_lock:
         now = time.monotonic()
         if now < hordenbuff_rate_limited_until:
             rest = int(hordenbuff_rate_limited_until - now)
             print(f"Hordenbuff-Update uebersprungen: Discord Rate Limit noch {rest} Sekunden aktiv.")
-            return
+            return 0
 
         if not force and now - hordenbuff_last_update_at < HORDENBUFF_UPDATE_MIN_SECONDS:
             print("Hordenbuff-Update uebersprungen: Aktualisierung wurde gerade erst ausgefuehrt.")
-            return
+            return 0
 
         hordenbuff_last_update_at = now
 
         rend = await asyncio.to_thread(get_next_horden_rend_safe)
+        updated_count = 0
 
         for channel_id in hordenbuff_channel_ids_for_current_guild():
             channel = client.get_channel(channel_id)
@@ -2461,16 +2464,18 @@ async def update_hordenbuff_post(force=False):
                 await delete_extra_messages([msg] + duplicates)
                 set_hordenbuff_message_id(data, channel_id, msg.id)
                 save_json(hordenbuff_file(), data)
+                updated_count += 1
 
             except discord.HTTPException as e:
                 if is_discord_rate_limit(e):
                     block_discord_writes_after_rate_limit(e, "Hordenbuff-Update")
-                    return
+                    return updated_count
 
                 print(f"Hordenbuff-Update Discord-Fehler in {channel_id}: {e}")
 
             except Exception as e:
                 print(f"Hordenbuff-Update Fehler in {channel_id}: {e}")
+        return updated_count
 
 
 async def add_rend_spieler(message, charakter):
@@ -8240,8 +8245,25 @@ async def on_message(message):
         return
 
     if lower == "!wb":
-        await update_worldbuff_post()
-        await update_hordenbuff_post(force=True)
+        status_message = await message.channel.send("🔄 **Worldbuffs und Hordenbuffs werden aktualisiert...**")
+        try:
+            worldbuff_count = await asyncio.wait_for(update_worldbuff_post(sync_ticker=True), timeout=60)
+            hordenbuff_count = await asyncio.wait_for(update_hordenbuff_post(force=True), timeout=45)
+            await status_message.edit(
+                content=(
+                    "✅ **Buff-Posts aktualisiert.**\n"
+                    f"Worldbuff-Post: **{worldbuff_count or 0}** | "
+                    f"Hordenbuff-Post: **{hordenbuff_count or 0}**"
+                )
+            )
+            client.loop.create_task(delete_message_later(status_message, 25))
+        except asyncio.TimeoutError:
+            await status_message.edit(content="⏱️ **Buff-Update dauert zu lange.** Bitte in Railway prüfen, der Bot hängt beim Laden der Buff-Daten.")
+        except Exception as e:
+            err = str(e)
+            if len(err) > 1200:
+                err = err[:1200] + " …"
+            await status_message.edit(content=f"⚠️ **Buff-Update Fehler:**\n```{err}```")
         await delete_command_message(message)
         return
 
@@ -8287,7 +8309,21 @@ async def on_message(message):
         return
 
     if lower in ["!hordenbuff", "!hordebuff", "!horde"]:
-        await update_hordenbuff_post(force=True)
+        status_message = await message.channel.send("🔄 **Hordenbuff-Post wird aktualisiert...**")
+        try:
+            hordenbuff_count = await asyncio.wait_for(update_hordenbuff_post(force=True), timeout=45)
+            if hordenbuff_count:
+                await status_message.edit(content=f"✅ **Hordenbuff-Post aktualisiert.** Posts: **{hordenbuff_count}**")
+            else:
+                await status_message.edit(content="⚠️ **Hordenbuff wurde nicht aktualisiert.** Kein Zielpost oder kein kommender Rend-Termin gefunden.")
+            client.loop.create_task(delete_message_later(status_message, 25))
+        except asyncio.TimeoutError:
+            await status_message.edit(content="⏱️ **Hordenbuff-Update dauert zu lange.** Bitte Railway-Logs prüfen.")
+        except Exception as e:
+            err = str(e)
+            if len(err) > 1200:
+                err = err[:1200] + " …"
+            await status_message.edit(content=f"⚠️ **Hordenbuff-Update Fehler:**\n```{err}```")
         await delete_command_message(message)
         return
 
@@ -8464,20 +8500,39 @@ async def on_message(message):
 
 
 async def run_discord_bot_with_backoff():
+    login_backoff_seconds = 30 * 60
     while True:
         try:
             await client.start(TOKEN, reconnect=True)
+            login_backoff_seconds = 30 * 60
         except discord.HTTPException as error:
             text = str(error)
             if getattr(error, "status", None) == 429 or "Too Many Requests" in text or "Access denied" in text:
-                print("Discord blockt den Login kurzzeitig wegen zu vieler Neustarts. Warte 30 Minuten und versuche es erneut.")
-                await asyncio.sleep(30 * 60)
+                wait_seconds = max(login_backoff_seconds, 65 * 60)
+                print(f"Discord blockt den Login wegen zu vieler Neustarts. Warte {int(wait_seconds / 60)} Minuten und versuche es erneut.")
+                await close_discord_client_after_failed_start()
+                await asyncio.sleep(wait_seconds)
+                login_backoff_seconds = min(wait_seconds * 2, 4 * 60 * 60)
                 continue
             print(f"Discord-Login fehlgeschlagen: {error}. Neuer Versuch in 5 Minuten.")
+            await close_discord_client_after_failed_start()
             await asyncio.sleep(5 * 60)
         except Exception as error:
             print(f"Bot ist beim Starten abgestürzt: {error}. Neuer Versuch in 5 Minuten.")
+            await close_discord_client_after_failed_start()
             await asyncio.sleep(5 * 60)
+
+
+async def close_discord_client_after_failed_start():
+    try:
+        if not client.is_closed():
+            await client.close()
+    except Exception as close_error:
+        print(f"Discord-Client konnte nach Fehlstart nicht sauber geschlossen werden: {close_error}")
+    try:
+        client.clear()
+    except Exception:
+        pass
 
 
 start_public_api_server()
