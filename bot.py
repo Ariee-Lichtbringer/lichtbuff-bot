@@ -1931,9 +1931,10 @@ async def update_worldbuff_overview_from_all_guilds():
 
 
 def get_upcoming_horden_rend_entries(limit=None):
-    rows = iter_hordenbuff_sheet_rows()
+    rows = iter_hordenbuff_railway_rows()
     now = datetime.now(BERLIN_TZ).replace(tzinfo=None)
     rend_termine = []
+    seen_events = set()
 
     for row in rows:
         if normalize_buff(row.get("buff", "Rend")) != "Rend":
@@ -1946,6 +1947,10 @@ def get_upcoming_horden_rend_entries(limit=None):
             )
 
             if dt >= now:
+                event_key = f"{row.get('datum', '')}|{row.get('uhrzeit', '')}"
+                if event_key in seen_events:
+                    continue
+                seen_events.add(event_key)
                 rend_termine.append((dt, {
                     "buff": "Rend",
                     "datum": row.get("datum", ""),
@@ -2308,7 +2313,7 @@ def build_hordenbuff_text(rend, data):
     text = "🪓 **Horde-Rend Koordination**\n\n"
     text += f"📌 **Aktiv verwalteter Termin:** {tag_lang}, {rend['datum']} um {rend['uhrzeit']}\n\n"
 
-    upcoming = get_upcoming_horden_rends(limit=4)
+    upcoming = get_upcoming_horden_rends(limit=5)
 
     text += "📅 **Kommende Rend-Termine laut Lichtbuff:**\n"
 
@@ -2424,21 +2429,27 @@ async def update_hordenbuff_post(force=False):
             found_messages = await find_recent_own_messages(channel, is_hordenbuff_overview_message, limit=100)
 
             try:
+                msg = None
                 if message_id:
                     try:
                         msg = await channel.fetch_message(message_id)
                     except discord.NotFound:
-                        msg = found_messages[0] if found_messages else await channel.send(text, embed=guide_embed)
-                        set_hordenbuff_message_id(data, channel_id, msg.id)
-                    await msg.edit(content=text, embed=guide_embed)
-                    await delete_extra_messages([msg] + [message for message in found_messages if message.id != msg.id])
-                    save_json(hordenbuff_file(), data)
+                        msg = None
+                    except Exception as e:
+                        print(f"Gespeicherter Hordenbuff-Post {message_id} konnte nicht geladen werden:", e)
+
+                if not msg:
+                    msg = found_messages[0] if found_messages else None
+
+                if not msg:
+                    msg = await channel.send(text, embed=guide_embed)
                 else:
-                    msg = found_messages[0] if found_messages else await channel.send(text, embed=guide_embed)
-                    await delete_extra_messages(found_messages)
                     await msg.edit(content=text, embed=guide_embed)
-                    set_hordenbuff_message_id(data, channel_id, msg.id)
-                    save_json(hordenbuff_file(), data)
+
+                duplicates = [message for message in found_messages if message.id != msg.id]
+                await delete_extra_messages([msg] + duplicates)
+                set_hordenbuff_message_id(data, channel_id, msg.id)
+                save_json(hordenbuff_file(), data)
 
             except discord.HTTPException as e:
                 if is_discord_rate_limit(e):
