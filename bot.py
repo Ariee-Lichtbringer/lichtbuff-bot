@@ -6607,7 +6607,7 @@ def po_signup_group_by_item(payload):
     return value in {"item", "items", "loot", "gegenstand", "gegenstaende", "gegenstände"}
 
 
-def build_po_signup_entries_by_class_text(entries):
+def build_po_signup_entries_by_class_text(entries, include_points=True):
     all_entries = list(entries or [])
     if not all_entries:
         return "**Anmeldungen:**\nNoch keine PO-Anmeldung vorhanden."
@@ -6631,11 +6631,12 @@ def build_po_signup_entries_by_class_text(entries):
             status = str(entry.get("approvalStatus") or "").lower()
             suffix = " ✅" if status == "approved" else " ❌" if status == "rejected" else ""
             luck = " 🍀" if str(entry.get("luckBy") or entry.get("luck_by") or "").strip() else ""
-            lines.append(f"{po_item_icon(item)} **{item}**{po_points_suffix(entry)} → {player}{suffix}{luck}")
+            points_text = po_points_suffix(entry) if include_points else ""
+            lines.append(f"{po_item_icon(item)} **{item}**{points_text} → {player}{suffix}{luck}")
     return "\n".join(lines)
 
 
-def build_po_signup_entries_by_item_text(entries):
+def build_po_signup_entries_by_item_text(entries, include_points=True):
     all_entries = list(entries or [])
     if not all_entries:
         return "**Anmeldungen:**\nNoch keine PO-Anmeldung vorhanden."
@@ -6656,7 +6657,8 @@ def build_po_signup_entries_by_item_text(entries):
         )
         if lines:
             lines.append("━━━━━━━━━━━━━━━━")
-        lines.append(f"{po_item_icon(item_name)} **{item_name}{po_points_suffix(rows[0])} ({len(rows)})**")
+        points_text = po_points_suffix(rows[0]) if include_points else ""
+        lines.append(f"{po_item_icon(item_name)} **{item_name}{points_text} ({len(rows)})**")
         players = []
         for entry in rows:
             player = str(entry.get("player") or "-").strip()
@@ -6669,10 +6671,10 @@ def build_po_signup_entries_by_item_text(entries):
     return "\n".join(lines)
 
 
-def build_po_signup_entries_text(entries, payload=None):
+def build_po_signup_entries_text(entries, payload=None, include_points=True):
     if payload and po_signup_group_by_item(payload):
-        return build_po_signup_entries_by_item_text(entries)
-    return build_po_signup_entries_by_class_text(entries)
+        return build_po_signup_entries_by_item_text(entries, include_points=include_points)
+    return build_po_signup_entries_by_class_text(entries, include_points=include_points)
 
 
 def is_po_signup_payload(payload):
@@ -6759,15 +6761,32 @@ def build_po_signup_post_text(payload, entries, full_text):
     text = "\n".join(lines)
     if len(text) <= 1900:
         return text
+    compact_full_text = build_po_signup_entries_text(entries, payload, include_points=False)
+    compact_lines = [f"📋 **{title}**", "**PO-Anmelder**"]
+    if post_key:
+        compact_lines.append(f"Post-ID: `{post_key}`")
+    if raid:
+        compact_lines.append(f"Raid: **{display_raid_name(raid)}**")
+    if raid_date != "noch offen" or raid_time != "noch offen":
+        compact_lines.append(f"Termin: **{raid_date} · {raid_time}**")
+    compact_lines.extend([
+        "",
+        "**Anmelden:** Unten ein Item auswählen, Charakter + Spielerlogin eintragen.",
+        "",
+        compact_full_text
+    ])
+    compact_text = "\n".join(compact_lines)
+    if len(compact_text) <= 1900:
+        return compact_text
     kept = []
     used = 0
-    for line in lines:
+    for line in compact_lines:
         next_len = used + len(line) + (1 if kept else 0)
         if next_len > 1840:
             break
         kept.append(line)
         used = next_len
-    kept.extend(["", "Weitere Einträge sind als Datei angehängt."])
+    kept.extend(["", "Liste ist zu lang für eine Discord-Nachricht."])
     return "\n".join(kept)[:1900]
 
 
