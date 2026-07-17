@@ -6640,7 +6640,9 @@ def build_po_signup_post_text(payload, entries, full_text):
         "**Anmelden:** Unten ein Item auswählen, Charakter + Spielerlogin eintragen.",
         "Der Eintrag erscheint danach direkt hier im Post."
     ])
-    if item_options:
+    if item_options and len(full_text or "") > 1300:
+        lines.append(f"Items im Menü: **{len(item_options)}** Item(s)")
+    elif item_options:
         points_by_item = payload.get("_poPointsByItem") or {}
         item_names = ", ".join(
             f"{item['label']}{po_points_suffix_for_item(points_by_item, item['label'])}"
@@ -6655,7 +6657,19 @@ def build_po_signup_post_text(payload, entries, full_text):
         lines.append("")
         lines.append("**Hinweis:**")
         lines.append(raidlead_note[:500])
-    return "\n".join(lines)[:1900]
+    text = "\n".join(lines)
+    if len(text) <= 1900:
+        return text
+    kept = []
+    used = 0
+    for line in lines:
+        next_len = used + len(line) + (1 if kept else 0)
+        if next_len > 1840:
+            break
+        kept.append(line)
+        used = next_len
+    kept.extend(["", "Weitere Einträge sind als Datei angehängt."])
+    return "\n".join(kept)[:1900]
 
 
 def build_po_channel_post_text(payload, entries, full_text):
