@@ -6626,14 +6626,21 @@ def build_po_signup_entries_by_class_text(entries, include_points=True):
         )
         lines.append("")
         lines.append(f"__{signup_class_heading(class_name, len(rows))}__")
+        rows_by_item = {}
         for entry in rows:
-            player = str(entry.get("player") or "-").strip()
-            item = str(entry.get("item") or "-").strip()
-            status = str(entry.get("approvalStatus") or "").lower()
-            suffix = " ✅" if status == "approved" else " ❌" if status == "rejected" else ""
-            luck = " 🍀" if str(entry.get("luckBy") or entry.get("luck_by") or "").strip() else ""
-            points_text = po_points_suffix(entry) if include_points else ""
-            lines.append(f"{po_item_icon(item)} **{item}**{points_text} → {player}{suffix}{luck}")
+            item = str(entry.get("item") or "-").strip() or "-"
+            rows_by_item.setdefault(item, []).append(entry)
+        for item in sorted(rows_by_item.keys(), key=lambda value: value.lower()):
+            item_rows = rows_by_item[item]
+            players = []
+            for entry in item_rows:
+                player = str(entry.get("player") or "-").strip()
+                status = str(entry.get("approvalStatus") or "").lower()
+                suffix = " ✅" if status == "approved" else " ❌" if status == "rejected" else ""
+                luck = " 🍀" if str(entry.get("luckBy") or entry.get("luck_by") or "").strip() else ""
+                players.append(f"{player}{suffix}{luck}")
+            points_text = po_points_suffix(item_rows[0]) if include_points else ""
+            lines.append(f"{po_item_icon(item)} **{item}**{points_text} → {', '.join(players)}")
     return "\n".join(lines)
 
 
