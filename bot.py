@@ -7734,9 +7734,10 @@ class PoSignupClassSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True)
         class_name = canonical_signup_class(self.values[0])
         PO_SIGNUP_CLASS_SELECTIONS[po_signup_selection_key(self.payload, getattr(interaction.user, "id", ""))] = class_name
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"{signup_class_icon(class_name)} Klasse gespeichert: **{class_name}**. Jetzt Item auswählen oder eigenes Item eintragen.",
             ephemeral=True
         )
