@@ -479,15 +479,22 @@ def get_open_worldbuff_signup_slots(limit=25):
     seen = set()
     row_order = 0
 
-    for row in iter_worldbuff_sheet_rows():
+    rows = import_buffs_aus_sheet()
+    local_ticker_buffs = [
+        buff for buff in load_json(worldbuff_file(), [])
+        if isinstance(buff, dict) and not is_deleted_worldbuff(buff)
+    ]
+    if local_ticker_buffs:
+        rows = list(rows)
+        merge_buffs_into_data(rows, local_ticker_buffs)
+
+    for row in rows:
         buff = normalize_buff(row.get("buff", ""))
         if buff not in ["Nef", "Ony", "Hakkar"]:
             continue
         if row.get("charakter"):
             continue
         if not is_open_worldbuff_status(row.get("status")):
-            continue
-        if not is_lichtbringer(row.get("gilde", "")):
             continue
 
         try:
@@ -8727,7 +8734,7 @@ async def on_ready():
     print(f"Raid-Anmelder Klassenemojis gefunden: {', '.join(sorted(found_class_emojis.keys())) or 'keine'}")
     print(f"Raid-Anmelder Skillungsemojis gefunden: {', '.join(sorted(found_spec_emojis.keys())) or 'keine'}")
     print(f"PO-Item Emojis gefunden: {len(found_item_emojis)}")
-    print("Version 4.9.6 gestartet: PO-Anmelder Views und Itemlisten stabilisiert.")
+    print("Version 4.9.7 gestartet: Worldbuff-Auswahl nutzt alle offenen Termine.")
     schedule_p0_release_cache_refresh(force=True)
 
     if not hasattr(client, "raid_signup_view_restore_started"):
