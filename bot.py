@@ -177,6 +177,7 @@ PO_ITEM_EMOJI_ALIASES = {
     "stulpen der dunklen stürme": ["stulpen_der_dunklen_strme"],
     "blaues schmuckstück der hakkari": ["blaues_schmuckstck_der_hakkari", "blaues_schmuckstueck_der_hakkari"],
     "kriegsklinge der hakkari": ["kriegsklinge_der_hakkari"],
+    "neltharions träne": ["_neltharions_trne", "neltharions_trne", "neltharions_traene"],
     "urzeitlicher hakkarigötze": ["urzeitlicher_hakkarigtze", "urzeitlicher_hakkarigoetze"],
     "umhang des geballten hasses": ["umhang_des_geballten_hasses"],
     "wappen des schlächters": ["wappen_des_schlchters_", "wappen_des_schlaechters"],
