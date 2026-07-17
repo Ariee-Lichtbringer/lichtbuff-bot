@@ -7150,14 +7150,49 @@ async def save_po_signup_from_modal(payload, user, item_name, char_name, player_
     return result
 
 
+def po_signup_item_options(payload):
+    raw = payload.get("itemOptions") or payload.get("items") or payload.get("itemList") or ""
+    if isinstance(raw, list):
+        values = raw
+    else:
+        text = str(raw or "").strip()
+        values = []
+        if text:
+            try:
+                parsed = json.loads(text)
+                values = parsed if isinstance(parsed, list) else []
+            except Exception:
+                values = re.split(r"[\n;,]+", text)
+
+    result = []
+    seen = set()
+    for value in values:
+        if isinstance(value, dict):
+            label = str(value.get("label") or value.get("name") or value.get("item") or "").strip()
+            description = str(value.get("description") or value.get("note") or "").strip()
+        else:
+            label = str(value or "").strip()
+            description = ""
+        label = normalize_po_item_name(label)
+        key = p0_item_search_key(label)
+        if not label or not key or key in seen:
+            continue
+        seen.add(key)
+        result.append({"label": label[:100], "description": description[:100]})
+        if len(result) >= 25:
+            break
+    return result
+
+
 class PoSignupModal(discord.ui.Modal):
-    def __init__(self, payload, default_char=""):
+    def __init__(self, payload, default_char="", default_item=""):
         self.payload = payload
         raid = display_raid_name(payload.get("raid") or "")
         super().__init__(title=f"PO eintragen {raid}"[:45])
         self.item_name = discord.ui.TextInput(
             label="Itemname",
             placeholder="z. B. THC",
+            default=str(default_item or "")[:100],
             required=True,
             max_length=120
         )
@@ -7198,7 +7233,7 @@ class PoSignupModal(discord.ui.Modal):
 
 
 class PoSignupButton(discord.ui.Button):
-    def __init__(self, payload):
+    def __init__(self, payload, default_item=""):
         raid = display_raid_name(payload.get("raid") or "")
         post_key = str(payload.get("postKey") or payload.get("poPostKey") or "default").strip()[:70]
         super().__init__(
@@ -7207,10 +7242,34 @@ class PoSignupButton(discord.ui.Button):
             custom_id=f"po_signup:{post_key or 'default'}"
         )
         self.payload = payload
+        self.default_item = default_item
 
     async def callback(self, interaction):
         default_char = infer_worldbuff_char_from_discord_name(interaction.user.display_name)
-        await interaction.response.send_modal(PoSignupModal(self.payload, default_char))
+        await interaction.response.send_modal(PoSignupModal(self.payload, default_char, self.default_item))
+
+
+class PoSignupItemSelect(discord.ui.Select):
+    def __init__(self, payload):
+        self.payload = payload
+        options = []
+        for item in po_signup_item_options(payload):
+            options.append(discord.SelectOption(
+                label=item["label"],
+                value=item["label"],
+                description=item["description"] or None
+            ))
+        super().__init__(
+            placeholder="Item auswählen und PO eintragen",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id=f"po_item_select:{str(payload.get('postKey') or payload.get('poPostKey') or 'default').strip()[:60] or 'default'}"
+        )
+
+    async def callback(self, interaction):
+        default_char = infer_worldbuff_char_from_discord_name(interaction.user.display_name)
+        await interaction.response.send_modal(PoSignupModal(self.payload, default_char, self.values[0]))
 
 
 class PoSignupView(discord.ui.View):
@@ -7218,6 +7277,8 @@ class PoSignupView(discord.ui.View):
         super().__init__(timeout=None)
         source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or "").strip()
         post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
+        if po_signup_item_options(payload):
+            self.add_item(PoSignupItemSelect(payload))
         self.add_item(PoSignupButton(payload))
         if source_channel_id:
             self.add_item(PoDeleteButton(source_channel_id, default_post_key=post_key))
