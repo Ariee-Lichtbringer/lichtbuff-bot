@@ -6643,13 +6643,15 @@ def build_po_signup_entries_by_item_text(entries):
         )
         lines.append("")
         lines.append(f"__{po_item_icon(item_name)} {item_name}{po_points_suffix(rows[0])} ({len(rows)})__")
+        players = []
         for entry in rows:
             player = str(entry.get("player") or "-").strip()
             class_name = canonical_signup_class(entry.get("className") or entry.get("class_name") or entry.get("klasse") or "Ohne Klasse")
             status = str(entry.get("approvalStatus") or "").lower()
             suffix = " ✅" if status == "approved" else " ❌" if status == "rejected" else ""
             luck = " 🍀" if str(entry.get("luckBy") or entry.get("luck_by") or "").strip() else ""
-            lines.append(f"{signup_class_icon(class_name)} **{player}**{suffix}{luck}")
+            players.append(f"{signup_class_icon(class_name)} **{player}**{suffix}{luck}")
+        lines.append(", ".join(players))
     return "\n".join(lines)
 
 
