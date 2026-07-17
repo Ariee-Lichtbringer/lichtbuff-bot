@@ -156,6 +156,7 @@ PO_ITEM_EMOJI_ALIASES = {
     "amulett von veknilash": ["amulett_von_veknilash"],
     "auge von c'thun": ["auge_von_cthun_"],
     "armreifen der königlichen erlösung": ["armreifen_der_kniglichen_erlsung"],
+    "fetisch des sandhäschers": ["fetisch_des_sandhschers", "fetisch_des_sandhaeschers"],
     "formel: brust - große werte": ["formel_brust__groe_werte_"],
     "ring des märtyrers": ["ring_des_mrtyrers"],
     "szepter des falschen propheten": ["szepter_des_falschen_propheten"],
