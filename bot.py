@@ -6747,11 +6747,6 @@ def build_po_signup_post_text(payload, entries, full_text):
         lines.append(f"Termin: **{raid_date} · {raid_time}**")
     if review_recipient:
         lines.append(f"Freigabe per DM an: **{review_recipient}**")
-    lines.extend([
-        "",
-        "**Anmelden:** Unten ein Item auswählen, Charakter + Spielerlogin eintragen.",
-        "Der Eintrag erscheint danach direkt hier im Post."
-    ])
     lines.append("")
     lines.extend(str(full_text or "").splitlines())
     if raidlead_note:
@@ -6769,12 +6764,7 @@ def build_po_signup_post_text(payload, entries, full_text):
         compact_lines.append(f"Raid: **{display_raid_name(raid)}**")
     if raid_date != "noch offen" or raid_time != "noch offen":
         compact_lines.append(f"Termin: **{raid_date} · {raid_time}**")
-    compact_lines.extend([
-        "",
-        "**Anmelden:** Unten ein Item auswählen, Charakter + Spielerlogin eintragen.",
-        "",
-        compact_full_text
-    ])
+    compact_lines.extend(["", compact_full_text])
     compact_text = "\n".join(compact_lines)
     if len(compact_text) <= 1900:
         return compact_text
