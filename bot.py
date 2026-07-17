@@ -7567,6 +7567,43 @@ async def save_po_signup_from_modal(payload, user, item_name, char_name, player_
     return result
 
 
+async def explain_po_signup_error(error, char_name, player_pin):
+    message = str(error or "PO-Eintrag konnte nicht gespeichert werden.")
+    if "passt nicht zu diesem charakter" not in message.casefold():
+        return message
+    try:
+        result = await asyncio.to_thread(lichtloot_get, {
+            "action": "getCharactersByPin",
+            "pin": player_pin
+        })
+        characters = result.get("characters") or result.get("entries") or []
+    except Exception as lookup_error:
+        print(f"Spielerlogin-Zuordnung konnte nicht geladen werden: {lookup_error}")
+        characters = []
+
+    wanted = str(char_name or "").strip()
+    if characters:
+        names = []
+        for character in characters[:10]:
+            name = str(character.get("name") or character.get("char") or "").strip()
+            class_name = str(character.get("class_name") or character.get("className") or "").strip()
+            if name and class_name:
+                names.append(f"{name} ({class_name})")
+            elif name:
+                names.append(name)
+        suffix = ", ".join(names)
+        if len(characters) > 10:
+            suffix += f", +{len(characters) - 10} weitere"
+        return (
+            f"Der Spielerlogin gehört in LichtLoot nicht zu **{wanted}**. "
+            f"Zu diesem Login sind hinterlegt: {suffix}."
+        )
+    return (
+        f"Der Spielerlogin gehört in LichtLoot nicht zu **{wanted}**. "
+        "Zu diesem Login wurden keine Charaktere gefunden."
+    )
+
+
 def po_signup_item_options(payload):
     raw = payload.get("itemOptions") or payload.get("items") or payload.get("itemList") or ""
     if isinstance(raw, list):
@@ -7752,7 +7789,12 @@ class PoSignupModal(discord.ui.Modal):
                 ephemeral=True
             )
         except Exception as e:
-            await interaction.followup.send(f"⚠️ PO konnte nicht gespeichert werden: `{e}`", ephemeral=True)
+            detail = await explain_po_signup_error(
+                e,
+                str(self.char_name.value or ""),
+                str(self.player_pin.value or "")
+            )
+            await interaction.followup.send(f"⚠️ PO konnte nicht gespeichert werden: {detail}", ephemeral=True)
 
 
 class PoSignupButton(discord.ui.Button):
