@@ -6483,6 +6483,14 @@ def po_points_suffix(entry):
     return f" ({suffix})"
 
 
+def po_points_suffix_for_item(points_by_item, item_name):
+    item_key = prio_key(item_name or "")
+    holders = list((points_by_item or {}).get(item_key, []))
+    if not holders:
+        return ""
+    return po_points_suffix({"itemP0PlusPoints": holders})
+
+
 def format_po_point_date(value):
     raw = str(value or "").strip()
     if not raw:
@@ -6549,7 +6557,8 @@ def build_po_signup_entries_text(entries):
         item = str(entry.get("item") or "-").strip()
         status = str(entry.get("approvalStatus") or "").lower()
         suffix = " ✅" if status == "approved" else " ❌" if status == "rejected" else ""
-        lines.append(f"{idx}. **{item}** → {player}{po_points_suffix(entry)}{suffix}")
+        luck = " 🍀" if str(entry.get("luckBy") or entry.get("luck_by") or "").strip() else ""
+        lines.append(f"{idx}. **{item}**{po_points_suffix(entry)} → {player}{suffix}{luck}")
     return "\n".join(lines)
 
 
@@ -6621,7 +6630,11 @@ def build_po_signup_post_text(payload, entries, full_text):
         "Der Eintrag erscheint danach direkt hier im Post."
     ])
     if item_options:
-        item_names = ", ".join(item["label"] for item in item_options[:10])
+        points_by_item = payload.get("_poPointsByItem") or {}
+        item_names = ", ".join(
+            f"{item['label']}{po_points_suffix_for_item(points_by_item, item['label'])}"
+            for item in item_options[:10]
+        )
         if len(item_options) > 10:
             item_names += f", +{len(item_options) - 10}"
         lines.append(f"Items im Menü: {item_names}")
@@ -6697,6 +6710,7 @@ def stable_po_entry_for_fingerprint(entry):
         "createdAt": str(entry.get("createdAt") or entry.get("poCreatedAt") or "").strip(),
         "approvalStatus": str(entry.get("approvalStatus") or "").strip().lower(),
         "approvedBy": str(entry.get("approvedBy") or "").strip(),
+        "luckBy": str(entry.get("luckBy") or entry.get("luck_by") or "").strip(),
         "points": [
             {
                 "player": str(holder.get("player") or "").strip(),
@@ -6831,15 +6845,21 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
             target_message
             and len(text) <= 1800
             and (not guide_expected or target_has_guide)
+            and (not is_po_signup_payload(payload) or not getattr(target_message, "attachments", None))
             and normalize_po_post_text_for_compare(getattr(target_message, "content", "") or "")
                 == normalize_po_post_text_for_compare(post_text)
         )
-        target_file_post = bool(target_message and len(text) > 1800 and (not guide_expected or target_has_guide))
+        target_file_post = bool(
+            target_message
+            and len(text) > 1800
+            and (not guide_expected or target_has_guide)
+            and (not is_po_signup_payload(payload) or not getattr(target_message, "attachments", None))
+        )
 
         if target_message and previous_hash == current_hash and (target_text_matches or target_file_post):
             keep = target_message
             try:
-                await keep.edit(view=PoSignupView(payload))
+                await keep.edit(view=PoSignupView(payload, entries))
             except Exception as e:
                 print(f"PO-Post View konnte nicht aktualisiert werden: {e}")
             for message in candidates:
@@ -6857,7 +6877,7 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
         msg = None
         if target_message:
             try:
-                await target_message.edit(content=post_text, attachments=[], files=make_files(), view=PoSignupView(payload))
+                await target_message.edit(content=post_text, attachments=[], files=make_files(), view=PoSignupView(payload, entries))
                 msg = target_message
             except Exception as e:
                 print(f"PO-Post {target_message.id} konnte nicht bearbeitet werden:", e)
@@ -6878,9 +6898,9 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
         if not msg:
             files = make_files()
             if files:
-                msg = await send_silent(channel, post_text, files=files, view=PoSignupView(payload))
+                msg = await send_silent(channel, post_text, files=files, view=PoSignupView(payload, entries))
             else:
-                msg = await send_silent(channel, post_text, view=PoSignupView(payload))
+                msg = await send_silent(channel, post_text, view=PoSignupView(payload, entries))
 
         await asyncio.sleep(2)
         cleanup_messages = await find_recent_own_messages(
@@ -7244,6 +7264,45 @@ def po_signup_item_options(payload):
     return result
 
 
+def po_luck_entry_options(entries):
+    result = []
+    seen = set()
+    for idx, entry in enumerate(entries or []):
+        player = str(entry.get("player") or "").strip()
+        item = str(entry.get("item") or "").strip()
+        if not player or not item:
+            continue
+        key = f"{prio_key(player)}|{prio_key(item)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        label = f"{player} · {item}"
+        result.append((str(idx), label[:100], player, item))
+        if len(result) >= 25:
+            break
+    return result
+
+
+async def set_po_signup_luck(payload, entry, user):
+    source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or "")
+    target_channel_id = str(payload.get("targetChannelId") or payload.get("discordChannelId") or source_channel_id)
+    result = await asyncio.to_thread(lichtloot_post, {
+        "action": "lichtbotSetPoPostLuck",
+        "queueToken": LICHTBOT_QUEUE_TOKEN,
+        "postKey": payload.get("postKey") or payload.get("poPostKey") or "",
+        "sourceChannelId": source_channel_id,
+        "targetChannelId": target_channel_id,
+        "player": entry.get("player") or "",
+        "item": entry.get("item") or "",
+        "luckBy": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user),
+        "luckByDiscordId": str(getattr(user, "id", "") or "")
+    })
+    if not result.get("success"):
+        raise RuntimeError(result.get("error") or "Kleeblatt konnte nicht gesetzt werden.")
+    await post_standalone_po_list(payload)
+    return result
+
+
 class PoSignupModal(discord.ui.Modal):
     def __init__(self, payload, default_char="", default_item=""):
         self.payload = payload
@@ -7297,7 +7356,7 @@ class PoSignupButton(discord.ui.Button):
         raid = display_raid_name(payload.get("raid") or "")
         post_key = str(payload.get("postKey") or payload.get("poPostKey") or "default").strip()[:70]
         super().__init__(
-            label=f"PO eintragen {raid}"[:80],
+            label=f"Eigenes Item eintragen {raid}"[:80],
             style=discord.ButtonStyle.primary,
             custom_id=f"po_signup:{post_key or 'default'}"
         )
@@ -7332,14 +7391,50 @@ class PoSignupItemSelect(discord.ui.Select):
         await interaction.response.send_modal(PoSignupModal(self.payload, default_char, self.values[0]))
 
 
+class PoSignupLuckSelect(discord.ui.Select):
+    def __init__(self, payload, entries):
+        self.payload = payload
+        self.entries = list(entries or [])
+        options = []
+        for value, label, _player, _item in po_luck_entry_options(self.entries):
+            options.append(discord.SelectOption(
+                label=label,
+                value=value,
+                emoji="🍀"
+            ))
+        super().__init__(
+            placeholder="Spieler Glück wünschen",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id=f"po_luck_select:{str(payload.get('postKey') or payload.get('poPostKey') or 'default').strip()[:60] or 'default'}"
+        )
+
+    async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            idx = int(self.values[0])
+            entry = self.entries[idx]
+            result = await set_po_signup_luck(self.payload, entry, interaction.user)
+            saved = result.get("entry") or entry
+            await interaction.followup.send(
+                f"🍀 Glück gewünscht für **{saved.get('player') or entry.get('player')}** bei **{saved.get('item') or entry.get('item')}**.",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.followup.send(f"⚠️ Kleeblatt konnte nicht gesetzt werden: `{e}`", ephemeral=True)
+
+
 class PoSignupView(discord.ui.View):
-    def __init__(self, payload):
+    def __init__(self, payload, entries=None):
         super().__init__(timeout=None)
         source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or "").strip()
         post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
         if po_signup_item_options(payload):
             self.add_item(PoSignupItemSelect(payload))
         self.add_item(PoSignupButton(payload))
+        if po_luck_entry_options(entries or []):
+            self.add_item(PoSignupLuckSelect(payload, entries or []))
         if source_channel_id:
             self.add_item(PoDeleteButton(source_channel_id, default_post_key=post_key))
 
@@ -7449,7 +7544,9 @@ async def post_standalone_po_list(payload):
         "sourceChannelId": str(source_channel_id),
         "targetChannelId": str(target_channel_id)
     }), payload.get("raid") or "")
-    entries = annotate_po_entries_with_points(entries, await load_po_item_points(payload.get("raid") or ""))
+    points_by_item = await load_po_item_points(payload.get("raid") or "")
+    entries = annotate_po_entries_with_points(entries, points_by_item)
+    payload = {**payload, "_poPointsByItem": points_by_item}
     target_channel = client.get_channel(target_channel_id) or await client.fetch_channel(target_channel_id)
     text = build_po_signup_entries_text(entries) if is_po_signup_payload(payload) else build_standalone_po_entries_text(entries)
     msg, changed = await upsert_standalone_po_post(target_channel, payload, entries, text)
