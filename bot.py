@@ -6696,6 +6696,31 @@ async def load_po_item_points(raid=""):
     return points_by_item
 
 
+async def load_po_raid_item_options(raid=""):
+    raid_key = normalize_raid_name(raid)
+    if not raid_key:
+        return []
+    try:
+        result = await asyncio.to_thread(lichtloot_get, {
+            "action": "getLootItems",
+            "raid": raid_key
+        })
+    except Exception as e:
+        print(f"Loot-Items fuer PO-Anmelder konnten nicht geladen werden ({raid_key}): {e}")
+        return []
+    items = []
+    seen = set()
+    for row in result.get("items") or []:
+        item_name = normalize_po_item_name(row.get("name") or row.get("item") or "")
+        item_key = p0_item_search_key(item_name)
+        if not item_name or not item_key or item_key in seen:
+            continue
+        seen.add(item_key)
+        items.append(item_name)
+    items.sort(key=lambda value: value.lower())
+    return items
+
+
 def annotate_po_entries_with_points(entries, points_by_item):
     annotated = []
     for entry in entries or []:
@@ -8321,6 +8346,13 @@ async def post_standalone_po_list(payload):
                 continue
             seen_items.add(item_key)
             item_options.append(item_name)
+        if not item_options:
+            for item_name in await load_po_raid_item_options(payload.get("raid") or ""):
+                item_key = p0_item_search_key(item_name)
+                if not item_name or not item_key or item_key in seen_items:
+                    continue
+                seen_items.add(item_key)
+                item_options.append(item_name)
         if item_options:
             item_options.sort(key=lambda value: value.lower())
             payload = {**payload, "itemOptions": "\n".join(item_options)}
