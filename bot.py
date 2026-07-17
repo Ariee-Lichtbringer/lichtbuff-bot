@@ -4356,6 +4356,19 @@ def split_prio_aliases(value):
     return result
 
 
+def split_raidhelper_signup_identity(value):
+    aliases = split_prio_aliases(value)
+    char_name = aliases[0] if aliases else normalize_prio_name(value)
+    discord_name = aliases[1] if len(aliases) > 1 else ""
+
+    return {
+        "char": char_name,
+        "spieler": char_name,
+        "discordName": discord_name,
+        "rawName": str(value or "").replace("**", "").replace("`", "").strip()
+    }
+
+
 def add_alias_names(target, value):
     aliases = split_prio_aliases(value)
 
@@ -4508,6 +4521,92 @@ def extract_signup_names_from_text(text):
     return names
 
 
+def extract_signup_entries_from_text(text):
+    """
+    Liest RaidHelper-Anmeldungen mit getrennter Char-/Discord-Namen-Spalte.
+    Beispiel: "Karuzy/Nick" wird zu char=Karuzy, discordName=Nick.
+    """
+    entries = {}
+
+    valid_signup_roles = {
+        "tank", "protection",
+        "warrior", "fury", "arms",
+        "druid", "feral", "balance", "restoration",
+        "paladin", "holy1", "holy", "retribution",
+        "rogue", "combat", "assassination", "subtlety",
+        "hunter", "marksmanship", "beastmastery", "survival",
+        "priest", "discipline", "shadow",
+        "mage", "fire", "frost", "arcane",
+        "warlock", "destruction", "affliction", "demonology",
+        "shaman", "elemental", "enhancement"
+    }
+
+    ignored_words = [
+        "bench", "absence", "absent",
+        "leaderx", "datex", "signupsx", "timex", "countdownx",
+        "loot prio", "raidsheet", "invite", "consumables", "raidregeln",
+        "worte des tauens", "buffeinteilung", "standard consumables",
+        "tanks:", "ranged:", "healers:"
+    ]
+
+    def clean_line(value):
+        return str(value or "").replace("\u200e", "").replace("\u2800", "").strip()
+
+    def add_signup_candidate(raw_name):
+        raw_name = clean_line(raw_name)
+        if not raw_name:
+            return
+
+        raw_name = re.split(r"\s+:[A-Za-z0-9_]+:\s*`?\d+`?\s+", raw_name, maxsplit=1)[0].strip()
+        raw_name = re.split(r"\s+<:[^:>]+:\d+>\s*`?\d+`?\s+", raw_name, maxsplit=1)[0].strip()
+        identity = split_raidhelper_signup_identity(raw_name)
+        key = prio_key(identity.get("char"))
+
+        if identity.get("char") and key:
+            entries[key] = identity
+
+    for raw_field in str(text or "").split("\n<<FIELD_BREAK>>\n"):
+        field = clean_line(raw_field)
+        if not field:
+            continue
+
+        for raw_line in field.splitlines():
+            line = clean_line(raw_line)
+            if not line:
+                continue
+
+            lower_line = line.lower()
+
+            if any(word in lower_line for word in ignored_words):
+                continue
+
+            if re.match(r"^:([A-Za-z0-9_]+):\s*[A-Za-zÄÖÜäöüß ]+\s*\(\d+(?:/\d+)?\)", line):
+                continue
+            if re.match(r"^<:([A-Za-z0-9_]+):\d+>\s*[A-Za-zÄÖÜäöüß ]+\s*\(\d+(?:/\d+)?\)", line):
+                continue
+
+            old_match = re.search(r"`\d+`\s*\*\*([^*]+)\*\*", line)
+            if old_match:
+                add_signup_candidate(old_match.group(1))
+                continue
+
+            new_match = re.search(r"^:([A-Za-z0-9_]+):\s*(?:\*\*)?`?\d+`?(?:\*\*)?\s+(.+)$", line)
+            if new_match:
+                role = prio_key(new_match.group(1))
+                if role in valid_signup_roles:
+                    add_signup_candidate(new_match.group(2))
+                continue
+
+            custom_match = re.search(r"^<:([A-Za-z0-9_]+):\d+>\s*(?:\*\*)?`?\d+`?(?:\*\*)?\s+(.+)$", line)
+            if custom_match:
+                role = prio_key(custom_match.group(1))
+                if role in valid_signup_roles:
+                    add_signup_candidate(custom_match.group(2))
+                continue
+
+    return entries
+
+
 def raid_search_terms(raid):
     raid = normalize_raid_name(raid)
     terms = {raid.lower()}
@@ -4628,6 +4727,16 @@ async def get_raid_signup_names_from_source(raid, source):
     raid_message = await get_raid_helper_message(raid, source)
     text = collect_message_text(raid_message)
     return extract_signup_names_from_text(text)
+
+
+def format_signup_identity_for_debug(value):
+    if isinstance(value, dict):
+        char_name = str(value.get("char") or value.get("spieler") or value.get("player") or "").strip()
+        discord_name = str(value.get("discordName") or value.get("discord") or "").strip()
+        if discord_name:
+            return f"{char_name} (DC: {discord_name})"
+        return char_name
+    return str(value or "").strip()
 
 
 def extract_raid_datetime_from_text(text):
@@ -6018,15 +6127,33 @@ def build_discord_signup_rows(raid, event_info, signups, source_name="Discord"):
     rows = []
     now = datetime.now(BERLIN_TZ).isoformat()
 
-    for char_name in sorted(signups.values(), key=lambda x: x.lower()):
+    def signup_char_name(value):
+        if isinstance(value, dict):
+            return str(value.get("char") or value.get("spieler") or value.get("player") or "").strip()
+        return str(value or "").strip()
+
+    sorted_signups = sorted(signups.values(), key=lambda x: signup_char_name(x).lower())
+
+    for signup in sorted_signups:
+        if isinstance(signup, dict):
+            char_name = signup_char_name(signup)
+            discord_name = str(signup.get("discordName") or signup.get("discord") or "").strip()
+            raw_name = str(signup.get("rawName") or "").strip()
+        else:
+            char_name = signup_char_name(signup)
+            discord_name = ""
+            raw_name = ""
+        if not char_name:
+            continue
         rows.append({
             "char": char_name,
             "spieler": char_name,
             "klasse": "",
             "status": "angemeldet",
-            "discordName": char_name,
+            "discordName": discord_name,
             "quelle": source_name,
-            "zeitstempel": now
+            "zeitstempel": now,
+            "note": f"RaidHelper: {raw_name}" if raw_name and raw_name != char_name else ""
         })
 
     return rows
@@ -6038,7 +6165,7 @@ async def sync_discord_signup_rows_for_source(raid, source):
     raid_message = await get_raid_helper_message(raid, source)
     text_msg = collect_message_text(raid_message)
     raid_date, raid_time = extract_raid_datetime_from_text(text_msg)
-    signups = extract_signup_names_from_text(text_msg)
+    signups = extract_signup_entries_from_text(text_msg)
 
     if not raid_date or not raid_time:
         raise RuntimeError(f"Datum/Uhrzeit konnten für {raid} nicht aus Discord gelesen werden.")
@@ -7882,7 +8009,7 @@ async def on_message(message):
                 raid_message = await get_raid_helper_message(raid, source)
                 text_msg = collect_message_text(raid_message)
                 raid_date, raid_time = extract_raid_datetime_from_text(text_msg)
-                signups = extract_signup_names_from_text(text_msg)
+                signups = extract_signup_entries_from_text(text_msg)
 
                 lines.append(
                     f"Quelle {idx}: Message `{raid_message.id}`\n"
@@ -7988,7 +8115,7 @@ async def on_message(message):
                 raid_message = await get_raid_helper_message(raid, source)
                 text_msg = collect_message_text(raid_message)
                 raid_date, raid_time = extract_raid_datetime_from_text(text_msg)
-                signups = extract_signup_names_from_text(text_msg)
+                signups = extract_signup_entries_from_text(text_msg)
 
                 lines.append(
                     f"Quelle {idx}: Message `{raid_message.id}`\n"
@@ -8057,7 +8184,7 @@ async def on_message(message):
                 raid_message = await get_raid_helper_message(raid, source)
                 text_msg = collect_message_text(raid_message)
                 raid_date, raid_time = extract_raid_datetime_from_text(text_msg)
-                signups = extract_signup_names_from_text(text_msg)
+                signups = extract_signup_entries_from_text(text_msg)
 
                 lines.append(
                     f"Quelle {idx}: Message `{raid_message.id}`\n"
@@ -8154,7 +8281,7 @@ async def on_message(message):
                 raid_message = await get_raid_helper_message(raid, source)
                 text = collect_message_text(raid_message)
                 raid_date, raid_time = extract_raid_datetime_from_text(text)
-                signups = extract_signup_names_from_text(text)
+                signups = extract_signup_entries_from_text(text)
                 lines.append(
                     f"Quelle {idx}: Channel `{source['channel_id']}` | Message `{raid_message.id}` | "
                     f"Datum **{raid_date or '-'}** um **{raid_time or '-'}** | Anmeldungen **{len(signups)}**"
