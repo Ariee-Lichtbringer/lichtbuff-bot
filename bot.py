@@ -157,7 +157,7 @@ PO_ITEM_EMOJI_ALIASES = {
     "auge von c'thun": ["auge_von_cthun_"],
     "auge des todes": ["auge_des_todes"],
     "armreifen der königlichen erlösung": ["armreifen_der_kniglichen_erlsung"],
-    "band der unerhörten gebete": ["band_der_unerhrten_gebete"],
+    "band der unerhörten gebete": ["_band_der_unerhrten_gebete", "band_der_unerhrten_gebete"],
     "band der unnatürlichen kräfte": ["band_der_unnatrlichen_krfte_", "band_der_unnatuerlichen_kraefte"],
     "die zehrende kälte": ["die_zehrende_klte", "die_zehrende_kaelte"],
     "fetisch des sandhäschers": ["fetisch_des_sandhschers", "fetisch_des_sandhaeschers"],
@@ -171,6 +171,7 @@ PO_ITEM_EMOJI_ALIASES = {
     "stulpen der vernichtung": ["stulpen_der_vernichtung"],
     "stulpen der dunklen stürme": ["stulpen_der_dunklen_strme"],
     "umhang des geballten hasses": ["umhang_des_geballten_hasses"],
+    "wappen des schlächters": ["wappen_des_schlchters_", "wappen_des_schlaechters"],
 }
 SPEC_EMOJI_FALLBACKS = {
     "tank": "🛡️",
@@ -6531,7 +6532,7 @@ def po_points_suffix(entry):
         except Exception:
             points = str(holder.get("points") or "0")
         parts.append(f"{holder.get('player')} {points}")
-    suffix = "PO+: " + ", ".join(parts)
+    suffix = ", ".join(parts)
     if len(holders) > 6:
         suffix += f", +{len(holders) - 6}"
     return f" ({suffix})"
@@ -6607,7 +6608,7 @@ def po_signup_group_by_item(payload):
     return value in {"item", "items", "loot", "gegenstand", "gegenstaende", "gegenstände"}
 
 
-def build_po_signup_entries_by_class_text(entries, include_points=False):
+def build_po_signup_entries_by_class_text(entries, include_points=True):
     all_entries = list(entries or [])
     if not all_entries:
         return "**Anmeldungen:**\nNoch keine PO-Anmeldung vorhanden."
@@ -6636,7 +6637,7 @@ def build_po_signup_entries_by_class_text(entries, include_points=False):
     return "\n".join(lines)
 
 
-def build_po_signup_entries_by_item_text(entries, include_points=False):
+def build_po_signup_entries_by_item_text(entries, include_points=True):
     all_entries = list(entries or [])
     if not all_entries:
         return "**Anmeldungen:**\nNoch keine PO-Anmeldung vorhanden."
@@ -6671,7 +6672,7 @@ def build_po_signup_entries_by_item_text(entries, include_points=False):
     return "\n".join(lines)
 
 
-def build_po_signup_entries_text(entries, payload=None, include_points=False):
+def build_po_signup_entries_text(entries, payload=None, include_points=True):
     if payload and po_signup_group_by_item(payload):
         return build_po_signup_entries_by_item_text(entries, include_points=include_points)
     return build_po_signup_entries_by_class_text(entries, include_points=include_points)
