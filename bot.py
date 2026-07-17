@@ -6821,7 +6821,7 @@ def build_po_signup_post_text(payload, entries, full_text):
     text = "\n".join(lines)
     if len(text) <= 1900:
         return text
-    compact_full_text = build_po_signup_entries_text(entries, payload, include_points=False)
+    compact_full_text = build_po_signup_entries_text(entries, payload, include_points=True)
     compact_lines = [f"📋 **{title}**", "**PO-Anmelder**"]
     if post_key:
         compact_lines.append(f"Post-ID: `{post_key}`")
