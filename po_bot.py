@@ -26,6 +26,7 @@ GUILD_SLUG = os.getenv("LICHTLOOT_GUILD", "lichtbringer")
 API_URL = os.getenv("LICHTLOOT_API_URL", "https://lichtloot-production.up.railway.app/api/apps-script")
 QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
 STATE_FILE = Path(os.getenv("PO_BOT_STATE_FILE", "po_bot_posts.json"))
+QUEUE_CHECK_SECONDS = int(os.getenv("PO_BOT_QUEUE_CHECK_SECONDS", "10") or "10")
 
 CLASS_EMOJIS = {
     "Warrior": "⚔️",
@@ -132,13 +133,41 @@ async def load_raid_items(raid):
     return items
 
 
-async def load_entries(post_key, channel_id):
+def payload_source_channel_id(payload):
+    return clean(payload.get("sourceChannelId") or payload.get("channelId"))
+
+
+def payload_target_channel_id(payload):
+    return clean(payload.get("targetChannelId") or payload.get("discordChannelId") or payload.get("channelId"))
+
+
+def parse_item_options(text):
+    seen = set()
+    items = []
+    for raw in re.split(r"[\n;,]+", clean(text)):
+        item = clean(raw)
+        key = slug(item)
+        if not item or key in seen:
+            continue
+        seen.add(key)
+        items.append(item)
+    return items
+
+
+async def items_for_payload(payload):
+    options = parse_item_options(payload.get("itemOptions") or payload.get("items") or payload.get("itemList"))
+    if options:
+        return options
+    return await load_raid_items(payload.get("raid") or "")
+
+
+async def load_entries(payload):
     result = await asyncio.to_thread(api_get, {
         "action": "lichtbotGetPoPostEntries",
         "queueToken": QUEUE_TOKEN,
-        "postKey": post_key,
-        "sourceChannelId": str(channel_id),
-        "targetChannelId": str(channel_id),
+        "postKey": payload["postKey"],
+        "sourceChannelId": payload_source_channel_id(payload),
+        "targetChannelId": payload_target_channel_id(payload),
         "includeArchived": "false",
     })
     return result.get("entries") or []
@@ -219,8 +248,8 @@ class PoEntryModal(discord.ui.Modal):
             "action": "lichtbotSavePoPostEntry",
             "queueToken": QUEUE_TOKEN,
             "postKey": payload["postKey"],
-            "sourceChannelId": str(payload["channelId"]),
-            "targetChannelId": str(payload["channelId"]),
+            "sourceChannelId": payload_source_channel_id(payload),
+            "targetChannelId": payload_target_channel_id(payload),
             "raid": payload["raid"],
             "title": payload.get("title") or "PO-Anmelder",
             "player": char_name,
@@ -314,11 +343,102 @@ class PoView(discord.ui.View):
 
 
 async def refresh_po_message(client, payload):
-    channel = client.get_channel(int(payload["channelId"])) or await client.fetch_channel(int(payload["channelId"]))
+    target_channel_id = payload_target_channel_id(payload)
+    channel = client.get_channel(int(target_channel_id)) or await client.fetch_channel(int(target_channel_id))
     message = await channel.fetch_message(int(payload["messageId"]))
-    items = await load_raid_items(payload["raid"])
-    entries = await load_entries(payload["postKey"], payload["channelId"])
+    items = await items_for_payload(payload)
+    entries = await load_entries(payload)
     await message.edit(embed=make_embed(payload, entries), view=PoView(payload, items))
+
+
+async def post_or_update_from_queue(client, payload):
+    post_key = clean(payload.get("postKey") or payload.get("poPostKey") or payload.get("postId"))
+    if not post_key:
+        raise RuntimeError("PO-Anmelder ohne Post-ID.")
+    target_channel_id = payload_target_channel_id(payload)
+    source_channel_id = payload_source_channel_id(payload) or target_channel_id
+    if not target_channel_id:
+        raise RuntimeError("PO-Anmelder ohne Ziel-Channel.")
+
+    state = load_state()
+    stored = state.get(post_key) or {}
+    normalized = {
+        **stored,
+        **payload,
+        "postKey": post_key,
+        "raid": normalize_raid(payload.get("raid") or stored.get("raid")),
+        "date": clean(payload.get("raidDate") or payload.get("date") or stored.get("date")),
+        "time": clean(payload.get("raidTime") or payload.get("time") or stored.get("time")),
+        "title": clean(payload.get("title") or stored.get("title")) or "PO-Anmelder",
+        "sourceChannelId": str(source_channel_id),
+        "targetChannelId": str(target_channel_id),
+        "channelId": str(target_channel_id),
+        "messageId": clean(stored.get("messageId") or payload.get("messageId") or payload.get("discordMessageId")),
+    }
+
+    channel = client.get_channel(int(target_channel_id)) or await client.fetch_channel(int(target_channel_id))
+    items = await items_for_payload(normalized)
+    entries = await load_entries(normalized)
+    view = PoView(normalized, items)
+    embed = make_embed(normalized, entries)
+    message = None
+    if normalized.get("messageId"):
+        try:
+            message = await channel.fetch_message(int(normalized["messageId"]))
+            await message.edit(embed=embed, view=view)
+        except Exception as error:
+            print(f"PO-Anmelder wird neu gepostet, alte Nachricht nicht nutzbar ({post_key}): {error}")
+            message = None
+    if message is None:
+        message = await channel.send(embed=embed, view=view, silent=True)
+        normalized["messageId"] = str(message.id)
+    state[post_key] = normalized
+    save_state(state)
+    client.add_view(PoView(normalized, items), message_id=message.id)
+    return normalized
+
+
+async def resolve_queue_item(row_number):
+    if not row_number:
+        return
+    await asyncio.to_thread(api_post, {
+        "action": "lichtbotResolveQueue",
+        "queueToken": QUEUE_TOKEN,
+        "rowNumber": row_number,
+    })
+
+
+async def po_queue_loop():
+    await client.wait_until_ready()
+    if not QUEUE_TOKEN:
+        print("PO-Bot Queue deaktiviert: LICHTBOT_QUEUE_TOKEN fehlt.")
+        return
+    print(f"PO-Bot Queue aktiv: pruefe alle {QUEUE_CHECK_SECONDS} Sekunden.")
+    while not client.is_closed():
+        try:
+            result = await asyncio.to_thread(api_get, {
+                "action": "lichtbotGetQueue",
+                "queueToken": QUEUE_TOKEN,
+                "t": int(time.time()),
+            })
+            if result.get("success"):
+                for item in result.get("items") or []:
+                    if clean(item.get("type")) != "po_post":
+                        continue
+                    payload = item.get("payload") or {}
+                    if clean(payload.get("mode")).lower() not in {"signup", "anmelder", "po_signup", "po-anmelder"}:
+                        continue
+                    try:
+                        normalized = await post_or_update_from_queue(client, payload)
+                        await resolve_queue_item(item.get("rowNumber"))
+                        print(f"PO-Anmelder aus Gildenleitung gepostet: {normalized.get('postKey')}")
+                    except Exception as error:
+                        print(f"PO-Anmelder-Queue konnte nicht verarbeitet werden: {error}")
+            else:
+                print(f"PO-Bot Queue Antwort: {result}")
+        except Exception as error:
+            print(f"Fehler im PO-Bot Queue-Loop: {error}")
+        await asyncio.sleep(QUEUE_CHECK_SECONDS)
 
 
 class PoBot(discord.Client):
@@ -329,6 +449,7 @@ class PoBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
+        self.bg_task = asyncio.create_task(po_queue_loop())
         if TEST_GUILD_ID:
             guild = discord.Object(id=int(TEST_GUILD_ID))
             self.tree.copy_global_to(guild=guild)
@@ -347,7 +468,7 @@ async def on_ready():
     state = load_state()
     for payload in state.values():
         try:
-            items = await load_raid_items(payload["raid"])
+            items = await items_for_payload(payload)
             client.add_view(PoView(payload, items), message_id=int(payload["messageId"]))
         except Exception as error:
             print(f"PO View konnte nicht wiederhergestellt werden ({payload.get('postKey')}): {error}")
@@ -371,9 +492,11 @@ async def po_anmelder(interaction, raid: str, datum: str, uhrzeit: str, titel: s
         "time": clean(uhrzeit),
         "title": clean(titel) or f"{display_raid(raid_key)} PO-Anmelder",
         "channelId": str(interaction.channel_id),
+        "sourceChannelId": str(interaction.channel_id),
+        "targetChannelId": str(interaction.channel_id),
         "messageId": "",
     }
-    items = await load_raid_items(raid_key)
+    items = await items_for_payload(payload)
     embed = make_embed(payload, [])
     message = await interaction.channel.send(embed=embed, view=PoView(payload, items), silent=True)
     payload["messageId"] = str(message.id)

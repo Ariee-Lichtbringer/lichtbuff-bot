@@ -6156,11 +6156,11 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
         elif update_type == "raid_signup_notice":
             await send_raid_signup_notice(payload)
         elif update_type == "po_post":
-            result = await post_standalone_po_list(payload)
-            print(f"PO Post erstellt/aktualisiert: {result}")
+            print("PO-Auftrag uebersprungen: wird vom separaten PO-Bot verarbeitet.")
+            return
         elif update_type == "po_post_delete":
-            result = await delete_standalone_po_posts(payload)
-            print(f"PO Post geloescht: {result}")
+            print("PO-Loeschauftrag uebersprungen: wird vom separaten PO-Bot verarbeitet.")
+            return
         elif update_type == "p0_post_refresh":
             channel_id = payload.get("channelId") or payload.get("discordChannelId")
             raid = payload.get("raid") or payload.get("raidName")
@@ -6244,6 +6244,9 @@ async def lichtloot_queue_loop():
 
                 for item in railway_items:
                     try:
+                        if str(item.get("type") or "").strip() in {"po_post", "po_post_delete"}:
+                            print("PO-Auftrag in Railway-Queue uebersprungen: separater PO-Bot ist zustaendig.")
+                            continue
                         await handle_lichtloot_queue_item(item, resolve_old_queue=False)
                         row_number = item.get("rowNumber")
                         if row_number:
