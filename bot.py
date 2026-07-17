@@ -6620,6 +6620,8 @@ def is_standalone_po_message(message, payload):
 def build_po_signup_post_text(payload, entries, full_text):
     title = str(payload.get("title") or "PO-Anmelder").strip() or "PO-Anmelder"
     raid = normalize_raid_name(payload.get("raid") or "")
+    raid_date = format_raid_announcement_date(payload.get("raidDate") or payload.get("date") or "")
+    raid_time = format_raid_announcement_time(payload.get("raidTime") or payload.get("time") or "")
     review_recipient = str(payload.get("reviewRecipient") or "").strip()
     raidlead_note = str(payload.get("note") or payload.get("message") or payload.get("raidleadMessage") or payload.get("extraMessage") or "").strip()
     post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
@@ -6629,6 +6631,8 @@ def build_po_signup_post_text(payload, entries, full_text):
         lines.append(f"Post-ID: `{post_key}`")
     if raid:
         lines.append(f"Raid: **{display_raid_name(raid)}**")
+    if raid_date != "noch offen" or raid_time != "noch offen":
+        lines.append(f"Termin: **{raid_date} · {raid_time}**")
     if review_recipient:
         lines.append(f"Freigabe per DM an: **{review_recipient}**")
     lines.extend([
