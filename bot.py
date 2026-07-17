@@ -7023,7 +7023,7 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
         post_text = build_po_channel_post_text(payload, entries, text)
         def make_files():
             files = []
-            if len(text) > 1800:
+            if len(text) > 1800 and not is_po_signup_payload(payload):
                 files.append(po_list_file(text))
             guide = None if is_po_signup_payload(payload) else po_guide_file()
             if guide:
