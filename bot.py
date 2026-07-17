@@ -170,7 +170,7 @@ PO_ITEM_EMOJI_ALIASES = {
     "saphirons linkes auge": ["saphirons_linkes_auge"],
     "schild der geißelung": ["_schild_der_geielung", "schild_der_geisselung"],
     "schneller razzashiraptor": ["schneller_razzashiraptor"],
-    "schneller zulianischer tiger": ["schneller_zulianischer_tiger"],
+    "schneller zulianischer tiger": ["schneller_zulianischer_tiger", "schneller_zullianischer_tiger"],
     "szepter des falschen propheten": ["szepter_des_falschen_propheten"],
     "stulpen des friedensbewahrers": ["stulpen_des_friedensbewahrers"],
     "stulpen der vernichtung": ["stulpen_der_vernichtung"],
@@ -7553,21 +7553,35 @@ class PoDeleteButton(discord.ui.Button):
         self.entries = list(entries or [])
 
     async def callback(self, interaction):
-        if self.payload:
-            await interaction.response.defer(ephemeral=True)
-            entries = self.entries
-            if not po_delete_entry_options(entries):
+        try:
+            if self.payload:
+                entries = self.entries
+                if po_delete_entry_options(entries):
+                    await interaction.response.send_message(
+                        "Wähle den PO-Eintrag aus, den du löschen möchtest.",
+                        view=PoDeleteEntryView(self.payload, entries),
+                        ephemeral=True
+                    )
+                    return
+                await interaction.response.defer(ephemeral=True)
                 source_channel_id = str(self.payload.get("sourceChannelId") or self.payload.get("channelId") or self.channel_id)
                 target_channel_id = str(self.payload.get("targetChannelId") or self.payload.get("discordChannelId") or source_channel_id)
                 entries = await load_saved_po_post_entries(self.payload, source_channel_id, target_channel_id)
-            if po_delete_entry_options(entries):
-                await interaction.followup.send(
-                    "Wähle den PO-Eintrag aus, den du löschen möchtest.",
-                    view=PoDeleteEntryView(self.payload, entries),
-                    ephemeral=True
-                )
+                if po_delete_entry_options(entries):
+                    await interaction.followup.send(
+                        "Wähle den PO-Eintrag aus, den du löschen möchtest.",
+                        view=PoDeleteEntryView(self.payload, entries),
+                        ephemeral=True
+                    )
+                    return
+                await interaction.followup.send("⚠️ Keine PO-Einträge zum Löschen gefunden.", ephemeral=True)
                 return
-            await interaction.followup.send("⚠️ Keine PO-Einträge zum Löschen gefunden.", ephemeral=True)
+        except Exception as e:
+            print(f"PO-Loeschbutton fehlgeschlagen: {e}")
+            if interaction.response.is_done():
+                await interaction.followup.send(f"⚠️ Löschmenü konnte nicht geöffnet werden: `{e}`", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"⚠️ Löschmenü konnte nicht geöffnet werden: `{e}`", ephemeral=True)
             return
         await interaction.response.send_modal(PoDeleteModal(
             self.channel_id,
