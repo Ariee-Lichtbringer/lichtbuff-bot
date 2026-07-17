@@ -7832,6 +7832,7 @@ class PoSignupClassSelect(discord.ui.Select):
         PO_SIGNUP_CLASS_SELECTIONS[po_signup_selection_key(self.payload, getattr(interaction.user, "id", ""))] = class_name
         await interaction.followup.send(
             f"{signup_class_icon(class_name)} Klasse gespeichert: **{class_name}**. Jetzt Item auswählen oder eigenes Item eintragen.",
+            view=PoSignupQuickEntryView(self.payload),
             ephemeral=True
         )
 
@@ -7858,6 +7859,14 @@ class PoSignupItemSelect(discord.ui.Select):
         default_char = infer_worldbuff_char_from_discord_name(interaction.user.display_name)
         default_class = selected_po_signup_class(self.payload, interaction.user)
         await interaction.response.send_modal(PoSignupModal(self.payload, default_char, self.values[0], default_class))
+
+
+class PoSignupQuickEntryView(discord.ui.View):
+    def __init__(self, payload):
+        super().__init__(timeout=180)
+        if po_signup_item_options(payload):
+            self.add_item(PoSignupItemSelect(payload))
+        self.add_item(PoSignupButton(payload))
 
 
 class PoSignupLuckSelect(discord.ui.Select):
