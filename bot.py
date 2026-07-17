@@ -159,6 +159,8 @@ PO_ITEM_EMOJI_ALIASES = {
     "armreifen der königlichen erlösung": ["armreifen_der_kniglichen_erlsung"],
     "band der unerhörten gebete": ["_band_der_unerhrten_gebete", "band_der_unerhrten_gebete"],
     "band der unnatürlichen kräfte": ["band_der_unnatrlichen_krfte_", "band_der_unnatuerlichen_kraefte"],
+    "die gebundene essenz saphirons": ["die_gebundene_essenz_saphirons"],
+    "gebundene essenz von saphiron": ["die_gebundene_essenz_saphirons"],
     "die zehrende kälte": ["die_zehrende_klte", "die_zehrende_kaelte"],
     "fetisch des sandhäschers": ["fetisch_des_sandhschers", "fetisch_des_sandhaeschers"],
     "formel: brust - große werte": ["formel_brust__groe_werte_"],
