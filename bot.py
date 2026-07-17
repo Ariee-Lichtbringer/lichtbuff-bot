@@ -153,11 +153,15 @@ CLASS_EMOJI_NAME_ALIASES = {
     "shaman": ["schamane", "shaman", "classicon_shaman"],
 }
 PO_ITEM_EMOJI_ALIASES = {
+    "amulett von veknilash": ["amulett_von_veknilash"],
     "auge von c'thun": ["auge_von_cthun_"],
     "armreifen der königlichen erlösung": ["armreifen_der_kniglichen_erlsung"],
     "formel: brust - große werte": ["formel_brust__groe_werte_"],
     "ring des märtyrers": ["ring_des_mrtyrers"],
+    "szepter des falschen propheten": ["szepter_des_falschen_propheten"],
+    "stulpen der vernichtung": ["stulpen_der_vernichtung"],
     "stulpen der dunklen stürme": ["stulpen_der_dunklen_strme"],
+    "umhang des geballten hasses": ["umhang_des_geballten_hasses"],
 }
 SPEC_EMOJI_FALLBACKS = {
     "tank": "🛡️",
@@ -6642,7 +6646,8 @@ def build_po_signup_entries_by_item_text(entries):
             )
         )
         lines.append("")
-        lines.append(f"__{po_item_icon(item_name)} {item_name}{po_points_suffix(rows[0])} ({len(rows)})__")
+        lines.append(f"**{po_item_icon(item_name)} {item_name}{po_points_suffix(rows[0])} ({len(rows)})**")
+        lines.append("")
         players = []
         for entry in rows:
             player = str(entry.get("player") or "-").strip()
