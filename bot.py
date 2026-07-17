@@ -7426,21 +7426,17 @@ def po_review_entry_options(entries):
     return result
 
 
-def po_signup_reviewer_allowed(payload, user):
-    recipient = str(payload.get("reviewRecipient") or "").strip()
-    user_id = str(getattr(user, "id", "") or "")
-    display = str(getattr(user, "display_name", None) or getattr(user, "name", None) or "").strip()
-    if recipient:
-        recipient_key = normalize_p0_reviewer_name(recipient)
-        if recipient == user_id or recipient_key in {
-            normalize_p0_reviewer_name(display),
-            normalize_p0_reviewer_name(getattr(user, "name", "") or "")
-        }:
-            return True
-    permissions = getattr(user, "guild_permissions", None)
-    if permissions and (getattr(permissions, "administrator", False) or getattr(permissions, "manage_messages", False)):
-        return True
-    return not recipient
+async def po_signup_reviewer_allowed(payload, user):
+    try:
+        result = await asyncio.to_thread(lichtloot_get, {
+            "action": "lichtbotCanReviewPoPost",
+            "queueToken": LICHTBOT_QUEUE_TOKEN,
+            "discordUserId": str(getattr(user, "id", "") or "")
+        })
+        return bool(result.get("allowed"))
+    except Exception as e:
+        print(f"PO-Freigabe-Rollenpruefung fehlgeschlagen: {e}")
+        return False
 
 
 async def set_po_signup_luck(payload, entry, user):
@@ -7660,8 +7656,8 @@ class PoSignupReviewSelect(discord.ui.Select):
     async def callback(self, interaction):
         await interaction.response.defer(ephemeral=True)
         try:
-            if not po_signup_reviewer_allowed(self.payload, interaction.user):
-                await interaction.followup.send("⚠️ Du bist für diese PO-Freigabe nicht eingetragen.", ephemeral=True)
+            if not await po_signup_reviewer_allowed(self.payload, interaction.user):
+                await interaction.followup.send("⚠️ Nur Gildenleitung, Raidoffiziere oder Gildenoffiziere können PO-Einträge freigeben.", ephemeral=True)
                 return
             idx = int(self.values[0])
             entry = self.entries[idx]
