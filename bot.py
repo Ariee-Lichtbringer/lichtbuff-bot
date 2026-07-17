@@ -6655,7 +6655,7 @@ def build_po_signup_entries_by_item_text(entries):
             status = str(entry.get("approvalStatus") or "").lower()
             suffix = " ✅" if status == "approved" else " ❌" if status == "rejected" else ""
             luck = " 🍀" if str(entry.get("luckBy") or entry.get("luck_by") or "").strip() else ""
-            players.append(f"{signup_class_icon(class_name)} **{player}**{suffix}{luck}")
+            players.append(f"{signup_class_icon(class_name)} {player}{suffix}{luck}")
         lines.append(", ".join(players))
     return "\n".join(lines)
 
