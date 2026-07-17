@@ -6640,17 +6640,6 @@ def build_po_signup_post_text(payload, entries, full_text):
         "**Anmelden:** Unten ein Item auswählen, Charakter + Spielerlogin eintragen.",
         "Der Eintrag erscheint danach direkt hier im Post."
     ])
-    if item_options and len(full_text or "") > 1300:
-        lines.append(f"Items im Menü: **{len(item_options)}** Item(s)")
-    elif item_options:
-        points_by_item = payload.get("_poPointsByItem") or {}
-        item_names = ", ".join(
-            f"{item['label']}{po_points_suffix_for_item(points_by_item, item['label'])}"
-            for item in item_options[:10]
-        )
-        if len(item_options) > 10:
-            item_names += f", +{len(item_options) - 10}"
-        lines.append(f"Items im Menü: {item_names}")
     lines.append("")
     lines.append(full_text)
     if raidlead_note:
