@@ -6630,11 +6630,11 @@ def po_entry_key(entry):
 
 def merge_po_entries(saved_entries, fresh_entries):
     merged = {}
-    for entry in saved_entries or []:
+    for entry in fresh_entries or []:
         key = po_entry_key(entry)
         if key:
             merged[key] = dict(entry)
-    for entry in fresh_entries or []:
+    for entry in saved_entries or []:
         key = po_entry_key(entry)
         if key:
             merged[key] = {**merged.get(key, {}), **dict(entry)}
