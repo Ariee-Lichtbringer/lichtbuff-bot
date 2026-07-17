@@ -7070,7 +7070,7 @@ async def po_post_payloads_for_source(source_channel_id, post_key_filter=""):
     return await railway_po_post_payloads_for_source(source_channel_id, post_key_filter)
 
 
-async def delete_po_post_entry_for_user(channel, user, item_text, post_key_filter="", player_name=""):
+async def delete_po_post_entry_for_user(channel, user, item_text, post_key_filter="", player_name="", player_pin=""):
     item_text = normalize_po_item_name(item_text)
     player_name = str(player_name or "").strip()
     if not item_text:
@@ -7098,6 +7098,7 @@ async def delete_po_post_entry_for_user(channel, user, item_text, post_key_filte
             "targetChannelId": target_channel_id,
             "discordUserId": str(getattr(user, "id", "") or ""),
             "player": player_name,
+            "playerPin": str(player_pin or ""),
             "item": item_text
         })
         deleted = int(result.get("deleted") or 0)
@@ -7147,6 +7148,12 @@ class PoDeleteModal(discord.ui.Modal):
             required=True,
             max_length=120
         )
+        self.player_pin = discord.ui.TextInput(
+            label="LichtLoot Spielerlogin",
+            placeholder="dein LichtLoot Spielerlogin",
+            required=True,
+            max_length=20
+        )
         self.post_key = discord.ui.TextInput(
             label="Post-ID optional",
             placeholder="z. B. po-liste-mir1ao",
@@ -7156,6 +7163,7 @@ class PoDeleteModal(discord.ui.Modal):
         )
         self.add_item(self.player_name)
         self.add_item(self.item_name)
+        self.add_item(self.player_pin)
         self.add_item(self.post_key)
 
     async def on_submit(self, interaction):
@@ -7166,7 +7174,8 @@ class PoDeleteModal(discord.ui.Modal):
             interaction.user,
             str(self.item_name.value or ""),
             str(self.post_key.value or ""),
-            str(self.player_name.value or "")
+            str(self.player_name.value or ""),
+            str(self.player_pin.value or "")
         )
         deleted = int(result.get("deleted") or 0)
         if deleted <= 0:
@@ -7200,6 +7209,45 @@ def po_delete_entry_options(entries):
     return result
 
 
+class PoDeleteConfirmModal(discord.ui.Modal):
+    def __init__(self, payload, entry):
+        self.payload = payload
+        self.entry = entry
+        player = str(entry.get("player") or "").strip()
+        super().__init__(title="PO-Eintrag löschen")
+        self.player_pin = discord.ui.TextInput(
+            label=f"LichtLoot Login für {player}"[:45],
+            placeholder="dein LichtLoot Spielerlogin",
+            required=True,
+            max_length=20
+        )
+        self.add_item(self.player_pin)
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            source_channel_id = str(self.payload.get("sourceChannelId") or self.payload.get("channelId") or "").strip()
+            channel = client.get_channel(int(source_channel_id)) or await client.fetch_channel(int(source_channel_id))
+            result = await delete_po_post_entry_for_user(
+                channel,
+                interaction.user,
+                str(self.entry.get("item") or ""),
+                str(self.payload.get("postKey") or self.payload.get("poPostKey") or ""),
+                str(self.entry.get("player") or ""),
+                str(self.player_pin.value or "")
+            )
+            deleted = int(result.get("deleted") or 0)
+            if deleted <= 0:
+                await interaction.followup.send("⚠️ Dieser PO-Eintrag wurde nicht gefunden.", ephemeral=True)
+                return
+            await interaction.followup.send(
+                f"✅ PO-Eintrag gelöscht: **{self.entry.get('player')}** → **{self.entry.get('item')}**.",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.followup.send(f"⚠️ PO-Eintrag konnte nicht gelöscht werden: `{e}`", ephemeral=True)
+
+
 class PoDeleteEntrySelect(discord.ui.Select):
     def __init__(self, payload, entries):
         self.payload = payload
@@ -7221,29 +7269,15 @@ class PoDeleteEntrySelect(discord.ui.Select):
         )
 
     async def callback(self, interaction):
-        await interaction.response.defer(ephemeral=True)
         try:
             idx = int(self.values[0])
             entry = self.entries[idx]
-            source_channel_id = str(self.payload.get("sourceChannelId") or self.payload.get("channelId") or "").strip()
-            channel = client.get_channel(int(source_channel_id)) or await client.fetch_channel(int(source_channel_id))
-            result = await delete_po_post_entry_for_user(
-                channel,
-                interaction.user,
-                str(entry.get("item") or ""),
-                str(self.payload.get("postKey") or self.payload.get("poPostKey") or ""),
-                str(entry.get("player") or "")
-            )
-            deleted = int(result.get("deleted") or 0)
-            if deleted <= 0:
-                await interaction.followup.send("⚠️ Dieser PO-Eintrag wurde nicht gefunden.", ephemeral=True)
-                return
-            await interaction.followup.send(
-                f"✅ PO-Eintrag gelöscht: **{entry.get('player')}** → **{entry.get('item')}**.",
-                ephemeral=True
-            )
+            await interaction.response.send_modal(PoDeleteConfirmModal(self.payload, entry))
         except Exception as e:
-            await interaction.followup.send(f"⚠️ PO-Eintrag konnte nicht gelöscht werden: `{e}`", ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send(f"⚠️ PO-Eintrag konnte nicht vorbereitet werden: `{e}`", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"⚠️ PO-Eintrag konnte nicht vorbereitet werden: `{e}`", ephemeral=True)
 
 
 class PoDeleteEntryView(discord.ui.View):
@@ -7431,7 +7465,8 @@ async def po_signup_reviewer_allowed(payload, user):
         result = await asyncio.to_thread(lichtloot_get, {
             "action": "lichtbotCanReviewPoPost",
             "queueToken": LICHTBOT_QUEUE_TOKEN,
-            "discordUserId": str(getattr(user, "id", "") or "")
+            "discordUserId": str(getattr(user, "id", "") or ""),
+            "discordName": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user)
         })
         return bool(result.get("allowed"))
     except Exception as e:
