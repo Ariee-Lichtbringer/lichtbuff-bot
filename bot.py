@@ -6797,7 +6797,9 @@ def build_po_signup_embeds(payload, entries):
             suffix = " ✅" if status == "approved" else " ❌" if status == "rejected" else ""
             luck = " 🍀" if str(entry.get("luckBy") or entry.get("luck_by") or "").strip() else ""
             players.append(f"{signup_class_icon(class_name)} {player}{suffix}{luck}")
-        field_value = truncate_discord_text(", ".join(players) or "-", 1024)
+        field_value = truncate_discord_text(", ".join(players) or "-", 1000)
+        if field_value != "-":
+            field_value = f"{field_value}\n\u200b"
         if field_count >= 25:
             embed = discord.Embed(title="Weitere Anmeldungen", color=discord.Color.gold())
             embeds.append(embed)
