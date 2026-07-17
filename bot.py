@@ -496,6 +496,8 @@ def get_open_worldbuff_signup_slots(limit=25):
             continue
         if not is_open_worldbuff_status(row.get("status")):
             continue
+        if not is_lichtbringer(row.get("gilde", "")):
+            continue
 
         try:
             slot_date = datetime.strptime(row.get("datum", ""), "%d.%m.%Y").date()
@@ -8734,7 +8736,7 @@ async def on_ready():
     print(f"Raid-Anmelder Klassenemojis gefunden: {', '.join(sorted(found_class_emojis.keys())) or 'keine'}")
     print(f"Raid-Anmelder Skillungsemojis gefunden: {', '.join(sorted(found_spec_emojis.keys())) or 'keine'}")
     print(f"PO-Item Emojis gefunden: {len(found_item_emojis)}")
-    print("Version 4.9.7 gestartet: Worldbuff-Auswahl nutzt alle offenen Termine.")
+    print("Version 4.9.8 gestartet: Worldbuff-Eintragung nur fuer Lichtbringer-Termine.")
     schedule_p0_release_cache_refresh(force=True)
 
     if not hasattr(client, "raid_signup_view_restore_started"):
