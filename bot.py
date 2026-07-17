@@ -6645,9 +6645,9 @@ def build_po_signup_entries_by_item_text(entries):
                 str(item.get("player") or "").lower()
             )
         )
-        lines.append("")
-        lines.append(f"> **{po_item_icon(item_name)} {item_name}{po_points_suffix(rows[0])} ({len(rows)})**")
-        lines.append(">")
+        if lines:
+            lines.append("━━━━━━━━━━━━━━━━")
+        lines.append(f"**{po_item_icon(item_name)} {item_name}{po_points_suffix(rows[0])} ({len(rows)})**")
         players = []
         for entry in rows:
             player = str(entry.get("player") or "-").strip()
@@ -6656,7 +6656,7 @@ def build_po_signup_entries_by_item_text(entries):
             suffix = " ✅" if status == "approved" else " ❌" if status == "rejected" else ""
             luck = " 🍀" if str(entry.get("luckBy") or entry.get("luck_by") or "").strip() else ""
             players.append(f"{signup_class_icon(class_name)} **{player}**{suffix}{luck}")
-        lines.append(f"> {', '.join(players)}")
+        lines.append(", ".join(players))
     return "\n".join(lines)
 
 
