@@ -419,6 +419,8 @@ async def po_queue_loop():
             result = await asyncio.to_thread(api_get, {
                 "action": "lichtbotGetQueue",
                 "queueToken": QUEUE_TOKEN,
+                "type": "po_post",
+                "limit": "50",
                 "t": int(time.time()),
             })
             if result.get("success"):
