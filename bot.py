@@ -3324,8 +3324,7 @@ def refresh_class_emoji_cache():
                 found_specs[spec_key] = str(emoji)
                 break
     for emoji_name, emoji in by_name.items():
-        if emoji_name.startswith(("item_", "loot_", "po_")):
-            found_items[emoji_name] = str(emoji)
+        found_items[emoji_name] = str(emoji)
     class_emoji_cache.clear()
     class_emoji_cache.update(found_classes)
     spec_emoji_cache.clear()
