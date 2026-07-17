@@ -155,10 +155,18 @@ CLASS_EMOJI_NAME_ALIASES = {
 PO_ITEM_EMOJI_ALIASES = {
     "amulett von veknilash": ["amulett_von_veknilash"],
     "auge von c'thun": ["auge_von_cthun_"],
+    "auge des todes": ["auge_des_todes"],
     "armreifen der königlichen erlösung": ["armreifen_der_kniglichen_erlsung"],
+    "band der unerhörten gebete": ["band_der_unerhrten_gebete"],
+    "band der unnatürlichen kräfte": ["band_der_unnatrlichen_krfte_", "band_der_unnatuerlichen_kraefte"],
+    "die zehrende kälte": ["die_zehrende_klte", "die_zehrende_kaelte"],
     "fetisch des sandhäschers": ["fetisch_des_sandhschers", "fetisch_des_sandhaeschers"],
     "formel: brust - große werte": ["formel_brust__groe_werte_"],
+    "gressil, vorbote des untergangs": ["gressil_vorbote_des_untergangs"],
+    "hammer des wirbelnden nethers": ["hammer_des_wirbelnden_nethers_"],
     "ring des märtyrers": ["ring_des_mrtyrers"],
+    "saphirons linkes auge": ["saphirons_linkes_auge"],
+    "schild der geißelung": ["_schild_der_geielung", "schild_der_geisselung"],
     "szepter des falschen propheten": ["szepter_des_falschen_propheten"],
     "stulpen der vernichtung": ["stulpen_der_vernichtung"],
     "stulpen der dunklen stürme": ["stulpen_der_dunklen_strme"],
@@ -6623,7 +6631,7 @@ def build_po_signup_entries_by_class_text(entries):
             status = str(entry.get("approvalStatus") or "").lower()
             suffix = " ✅" if status == "approved" else " ❌" if status == "rejected" else ""
             luck = " 🍀" if str(entry.get("luckBy") or entry.get("luck_by") or "").strip() else ""
-            lines.append(f"{signup_class_icon(class_name)} **{item}**{po_points_suffix(entry)} → {player}{suffix}{luck}")
+            lines.append(f"{po_item_icon(item)} **{item}**{po_points_suffix(entry)} → {player}{suffix}{luck}")
     return "\n".join(lines)
 
 
