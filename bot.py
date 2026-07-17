@@ -6736,6 +6736,79 @@ def build_po_signup_entries_text(entries, payload=None, include_points=True):
     return build_po_signup_entries_by_item_text(entries, include_points=include_points)
 
 
+def truncate_discord_text(value, limit):
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[:max(0, limit - 1)].rstrip() + "…"
+
+
+def build_po_signup_content_header(payload):
+    title = str(payload.get("title") or "PO-Anmelder").strip() or "PO-Anmelder"
+    raid = normalize_raid_name(payload.get("raid") or "")
+    raid_date = format_raid_announcement_date(payload.get("raidDate") or payload.get("date") or "")
+    raid_time = format_raid_announcement_time(payload.get("raidTime") or payload.get("time") or "")
+    review_recipient = str(payload.get("reviewRecipient") or "").strip()
+    post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
+    lines = [f"📋 **{title}**", "**PO-Anmelder**"]
+    if post_key:
+        lines.append(f"Post-ID: `{post_key}`")
+    if raid:
+        lines.append(f"Raid: **{display_raid_name(raid)}**")
+    if raid_date != "noch offen" or raid_time != "noch offen":
+        lines.append(f"Termin: **{raid_date} · {raid_time}**")
+    if review_recipient:
+        lines.append(f"Freigabe per DM an: **{review_recipient}**")
+    return "\n".join(lines)
+
+
+def build_po_signup_embeds(payload, entries):
+    all_entries = list(entries or [])
+    embed = discord.Embed(
+        title=f"Anmeldungen ({len(all_entries)})",
+        color=discord.Color.gold()
+    )
+    if not all_entries:
+        embed.description = "Noch keine PO-Anmeldung vorhanden."
+        return [embed]
+
+    grouped = {}
+    for entry in all_entries:
+        item_name = str(entry.get("item") or "-").strip() or "-"
+        grouped.setdefault(item_name, []).append(entry)
+
+    embeds = [embed]
+    field_count = 0
+    for item_name in sorted(grouped.keys(), key=lambda value: value.lower()):
+        rows = sorted(
+            grouped[item_name],
+            key=lambda item: (
+                signup_class_sort_key(canonical_signup_class(item.get("className") or item.get("class_name") or item.get("klasse") or "Ohne Klasse")),
+                str(item.get("player") or "").lower()
+            )
+        )
+        points_text = po_points_suffix(rows[0])
+        field_name = truncate_discord_text(f"{po_item_icon(item_name)} {item_name}{points_text}", 256)
+        players = []
+        for entry in rows:
+            player = str(entry.get("player") or "-").strip()
+            class_name = canonical_signup_class(entry.get("className") or entry.get("class_name") or entry.get("klasse") or "Ohne Klasse")
+            status = str(entry.get("approvalStatus") or "").lower()
+            suffix = " ✅" if status == "approved" else " ❌" if status == "rejected" else ""
+            luck = " 🍀" if str(entry.get("luckBy") or entry.get("luck_by") or "").strip() else ""
+            players.append(f"{signup_class_icon(class_name)} {player}{suffix}{luck}")
+        field_value = truncate_discord_text(", ".join(players) or "-", 1024)
+        if field_count >= 25:
+            embed = discord.Embed(title="Weitere Anmeldungen", color=discord.Color.gold())
+            embeds.append(embed)
+            field_count = 0
+        embed.add_field(name=field_name, value=field_value, inline=False)
+        field_count += 1
+        if len(embeds) >= 10 and field_count >= 25:
+            break
+    return embeds
+
+
 def is_po_signup_payload(payload):
     mode = str(payload.get("mode") or payload.get("poMode") or "").strip().lower()
     if mode in {"signup", "anmelder", "po_signup", "po-anmelder"}:
@@ -6789,6 +6862,10 @@ def is_standalone_po_message(message, payload):
 
 
 def build_po_signup_post_text(payload, entries, full_text):
+    return build_po_signup_content_header(payload)
+
+
+def build_po_signup_post_text_legacy(payload, entries, full_text):
     title = str(payload.get("title") or "PO-Anmelder").strip() or "PO-Anmelder"
     raid = normalize_raid_name(payload.get("raid") or "")
     raid_date = format_raid_announcement_date(payload.get("raidDate") or payload.get("date") or "")
@@ -6938,6 +7015,7 @@ def po_post_fingerprint(payload, entries, text):
             "source": source,
             "target": target,
             "title": title,
+            "renderer": "po_signup_embed_v1" if is_po_signup_payload(payload) else "po_text_v1",
             "entries": [stable_po_entry_for_fingerprint(entry) for entry in entries or []],
             "text": normalize_po_post_text_for_compare(text)
         },
@@ -7020,12 +7098,14 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
         candidate_ids = {message.id for message in candidates}
         candidates.extend(message for message in found_messages if message.id not in candidate_ids)
         target_message = candidates[0] if candidates else None
+        signup_payload = is_po_signup_payload(payload)
         post_text = build_po_channel_post_text(payload, entries, text)
+        post_embeds = build_po_signup_embeds(payload, entries) if signup_payload else []
         def make_files():
             files = []
-            if len(text) > 1800 and not is_po_signup_payload(payload):
+            if len(text) > 1800 and not signup_payload:
                 files.append(po_list_file(text))
-            guide = None if is_po_signup_payload(payload) else po_guide_file()
+            guide = None if signup_payload else po_guide_file()
             if guide:
                 files.append(guide)
             return files or None
@@ -7041,9 +7121,9 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
 
         target_text_matches = (
             target_message
-            and len(text) <= 1800
+            and (signup_payload or len(text) <= 1800)
             and (not guide_expected or target_has_guide)
-            and (not is_po_signup_payload(payload) or not getattr(target_message, "attachments", None))
+            and (not signup_payload or not getattr(target_message, "attachments", None))
             and normalize_po_post_text_for_compare(getattr(target_message, "content", "") or "")
                 == normalize_po_post_text_for_compare(post_text)
         )
@@ -7051,13 +7131,13 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
             target_message
             and len(text) > 1800
             and (not guide_expected or target_has_guide)
-            and (not is_po_signup_payload(payload) or not getattr(target_message, "attachments", None))
+            and (not signup_payload or not getattr(target_message, "attachments", None))
         )
 
         if target_message and previous_hash == current_hash and (target_text_matches or target_file_post):
             keep = target_message
             try:
-                await keep.edit(view=PoSignupView(payload, entries))
+                await keep.edit(embeds=post_embeds, view=PoSignupView(payload, entries))
             except Exception as e:
                 print(f"PO-Post View konnte nicht aktualisiert werden: {e}")
             for message in candidates:
@@ -7075,7 +7155,16 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
         msg = None
         if target_message:
             try:
-                await target_message.edit(content=post_text, attachments=[], files=make_files(), view=PoSignupView(payload, entries))
+                edit_kwargs = {
+                    "content": post_text,
+                    "embeds": post_embeds,
+                    "attachments": [],
+                    "view": PoSignupView(payload, entries)
+                }
+                files = make_files()
+                if files:
+                    edit_kwargs["files"] = files
+                await target_message.edit(**edit_kwargs)
                 msg = target_message
             except Exception as e:
                 print(f"PO-Post {target_message.id} konnte nicht bearbeitet werden:", e)
@@ -7095,10 +7184,13 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
 
         if not msg:
             files = make_files()
+            send_kwargs = {"view": PoSignupView(payload, entries)}
+            if post_embeds:
+                send_kwargs["embeds"] = post_embeds
             if files:
-                msg = await send_silent(channel, post_text, files=files, view=PoSignupView(payload, entries))
+                msg = await send_silent(channel, post_text, files=files, **send_kwargs)
             else:
-                msg = await send_silent(channel, post_text, view=PoSignupView(payload, entries))
+                msg = await send_silent(channel, post_text, **send_kwargs)
 
         await asyncio.sleep(2)
         cleanup_messages = await find_recent_own_messages(
