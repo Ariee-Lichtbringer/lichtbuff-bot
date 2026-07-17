@@ -472,6 +472,19 @@ def is_open_worldbuff_status(status):
     return clean in ["", "offen", "frei", "open"]
 
 
+def get_gildenleitung_worldbuff_rows(days="all"):
+    result = railway_get({
+        "action": "guildGetWorldbuffs",
+        "queueToken": LICHTBOT_QUEUE_TOKEN,
+        "source": "railway",
+        "days": days
+    })
+    if not result or not result.get("success"):
+        return []
+    rows = result.get("buffs") or result.get("entries") or []
+    return rows if isinstance(rows, list) else []
+
+
 def get_open_worldbuff_signup_slots(limit=25):
     today = datetime.now(BERLIN_TZ).date()
     max_date = today + timedelta(days=92)
@@ -479,14 +492,7 @@ def get_open_worldbuff_signup_slots(limit=25):
     seen = set()
     row_order = 0
 
-    rows = import_buffs_aus_sheet()
-    local_ticker_buffs = [
-        buff for buff in load_json(worldbuff_file(), [])
-        if isinstance(buff, dict) and not is_deleted_worldbuff(buff)
-    ]
-    if local_ticker_buffs:
-        rows = list(rows)
-        merge_buffs_into_data(rows, local_ticker_buffs)
+    rows = get_gildenleitung_worldbuff_rows(days="all")
 
     for row in rows:
         buff = normalize_buff(row.get("buff", ""))
@@ -496,7 +502,8 @@ def get_open_worldbuff_signup_slots(limit=25):
             continue
         if not is_open_worldbuff_status(row.get("status")):
             continue
-        if not is_lichtbringer(row.get("gilde", "")):
+        gilde = row.get("gilde", "")
+        if not is_lichtbringer(gilde):
             continue
 
         try:
@@ -514,18 +521,19 @@ def get_open_worldbuff_signup_slots(limit=25):
             choice_buffs.append("Ony")
 
         for choice_index, choice_buff in enumerate(choice_buffs):
-            key = "|".join([choice_buff, row.get("datum", ""), row.get("uhrzeit", ""), row.get("gilde", "")])
+            key = "|".join([choice_buff, row.get("datum", ""), row.get("uhrzeit", ""), "LICHTBRINGER"])
             if key in seen:
                 continue
             seen.add(key)
 
             slots.append({
+                "rowNumber": row.get("eventId") or row.get("rowNumber", ""),
                 "buff": choice_buff,
                 "original_buff": buff,
                 "datum": row.get("datum", ""),
                 "tag": row.get("tag", ""),
                 "uhrzeit": row.get("uhrzeit", ""),
-                "gilde": row.get("gilde", ""),
+                "gilde": gilde,
                 "sort_date": slot_date,
                 "row_order": row_order,
                 "choice_order": choice_index
@@ -541,16 +549,18 @@ def claim_worldbuff_slot_in_sheet(slot, charakter, discord_name):
     payload = {
         "action": "lichtbotClaimWorldbuffSlot",
         "queueToken": LICHTBOT_QUEUE_TOKEN,
+        "rowNumber": slot.get("rowNumber", ""),
         "buff": slot.get("buff", ""),
         "datum": slot.get("datum", ""),
         "uhrzeit": slot.get("uhrzeit", ""),
         "gilde": slot.get("gilde", ""),
         "charakter": charakter,
         "discord": discord_name,
-        "status": "bestätigt"
+        "status": "bestätigt",
+        "source": "railway"
     }
 
-    result = lichtloot_apps_script_post(payload)
+    result = railway_post(payload)
     clear_worldbuff_csv_cache()
     return result
 
@@ -6429,6 +6439,43 @@ def normalize_po_item_name(item_name):
     return PO_ITEM_ALIASES.get(key, raw)
 
 
+def is_po_signup_item_label(label):
+    key = p0_item_search_key(label)
+    if not key:
+        return False
+    non_item_labels = {
+        "worldbuff ubersicht",
+        "worldbuff ue bersicht",
+        "worldbuff übersicht",
+        "worldbuffs",
+        "hordenbuff ubersicht",
+        "hordenbuff übersicht",
+        "hordenbuffs",
+        "po anmelder",
+        "p0 anmelder",
+        "anmeldungen",
+    }
+    return key not in non_item_labels
+
+
+def po_signup_raw_item_values(payload):
+    if payload.get("itemOptions") not in (None, ""):
+        return payload.get("itemOptions")
+    if payload.get("itemList") not in (None, ""):
+        return payload.get("itemList")
+    raw_items = payload.get("items")
+    if isinstance(raw_items, list):
+        for item in raw_items:
+            if isinstance(item, dict) and (
+                item.get("type")
+                or item.get("action")
+                or item.get("payload")
+                or item.get("updateType")
+            ):
+                return ""
+    return raw_items or ""
+
+
 def extract_po_from_line(line):
     raw = str(line or "").strip()
     if not raw:
@@ -6961,7 +7008,12 @@ def is_standalone_po_message(message, payload):
         return False
     if source_channel_id and f"Quelle: <#{source_channel_id}>" not in text and "Post-ID:" not in text:
         return False
-    return "PO-Post" in text or "PO-Einträge" in text or "Vollständige Liste" in text
+    return (
+        "PO-Post" in text
+        or "PO-Einträge" in text
+        or "Vollständige Liste" in text
+        or "PO-Anmelder" in text
+    )
 
 
 def build_po_signup_post_text(payload, entries, full_text):
@@ -7781,7 +7833,7 @@ async def explain_po_signup_error(error, char_name, player_pin):
 
 
 def po_signup_item_options(payload):
-    raw = payload.get("itemOptions") or payload.get("items") or payload.get("itemList") or ""
+    raw = po_signup_raw_item_values(payload)
     if isinstance(raw, list):
         values = raw
     else:
@@ -7805,7 +7857,7 @@ def po_signup_item_options(payload):
             description = ""
         label = normalize_po_item_name(label)
         key = p0_item_search_key(label)
-        if not label or not key or key in seen:
+        if not label or not key or key in seen or not is_po_signup_item_label(label):
             continue
         seen.add(key)
         result.append({"label": label[:100], "description": description[:100]})
@@ -7970,10 +8022,13 @@ class PoSignupButton(discord.ui.Button):
     def __init__(self, payload, default_item=""):
         raid = display_raid_name(payload.get("raid") or "")
         post_key = str(payload.get("postKey") or payload.get("poPostKey") or "default").strip()[:70]
+        default_item = str(default_item or "").strip()
+        label = f"PO eintragen: {default_item}" if default_item else f"Eigenes Item eintragen {raid}"
+        custom_suffix = p0_item_search_key(default_item).replace(" ", "-")[:24] if default_item else "custom"
         super().__init__(
-            label=f"Eigenes Item eintragen {raid}"[:80],
+            label=label[:80],
             style=discord.ButtonStyle.primary,
-            custom_id=f"po_signup:{post_key or 'default'}"
+            custom_id=f"po_signup:{post_key or 'default'}:{custom_suffix or 'custom'}"
         )
         self.payload = payload
         self.default_item = default_item
@@ -8036,7 +8091,10 @@ class PoSignupItemSelect(discord.ui.Select):
 class PoSignupQuickEntryView(discord.ui.View):
     def __init__(self, payload):
         super().__init__(timeout=180)
-        if po_signup_item_options(payload):
+        item_options = po_signup_item_options(payload)
+        if len(item_options) == 1:
+            self.add_item(PoSignupButton(payload, item_options[0]["label"]))
+        elif item_options:
             self.add_item(PoSignupItemSelect(payload))
         self.add_item(PoSignupButton(payload))
 
@@ -8117,8 +8175,11 @@ class PoSignupView(discord.ui.View):
         super().__init__(timeout=None)
         source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or "").strip()
         post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
+        item_options = po_signup_item_options(payload)
         self.add_item(PoSignupClassSelect(payload))
-        if po_signup_item_options(payload):
+        if len(item_options) == 1:
+            self.add_item(PoSignupButton(payload, item_options[0]["label"]))
+        elif item_options:
             self.add_item(PoSignupItemSelect(payload))
         self.add_item(PoSignupButton(payload))
         if po_review_entry_options(entries or []):
@@ -8736,7 +8797,7 @@ async def on_ready():
     print(f"Raid-Anmelder Klassenemojis gefunden: {', '.join(sorted(found_class_emojis.keys())) or 'keine'}")
     print(f"Raid-Anmelder Skillungsemojis gefunden: {', '.join(sorted(found_spec_emojis.keys())) or 'keine'}")
     print(f"PO-Item Emojis gefunden: {len(found_item_emojis)}")
-    print("Version 4.9.8 gestartet: Worldbuff-Eintragung nur fuer Lichtbringer-Termine.")
+    print("Version 4.9.9 gestartet: Worldbuff-Termine kommen aus der Gildenleitung.")
     schedule_p0_release_cache_refresh(force=True)
 
     if not hasattr(client, "raid_signup_view_restore_started"):
