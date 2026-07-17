@@ -32,39 +32,19 @@ DISCORD_SILENT_CHANNEL_POSTS = os.getenv("DISCORD_SILENT_CHANNEL_POSTS", "true")
 }
 
 
-_ORIGINAL_MESSAGEABLE_SEND = discord.abc.Messageable.send
-_PRIVATE_MESSAGE_TARGETS = tuple(
-    cls
-    for cls in (
-        getattr(discord, "DMChannel", None),
-        getattr(discord, "GroupChannel", None),
-        getattr(discord, "User", None),
-        getattr(discord, "Member", None),
-    )
-    if cls is not None
-)
-
-
-async def send_channel_silent_by_default(self, *args, **kwargs):
+async def send_silent(channel, *args, **kwargs):
     added_silent = False
-    if (
-        DISCORD_SILENT_CHANNEL_POSTS
-        and "silent" not in kwargs
-        and not isinstance(self, _PRIVATE_MESSAGE_TARGETS)
-    ):
+    if DISCORD_SILENT_CHANNEL_POSTS and "silent" not in kwargs:
         kwargs["silent"] = True
         added_silent = True
 
     try:
-        return await _ORIGINAL_MESSAGEABLE_SEND(self, *args, **kwargs)
+        return await channel.send(*args, **kwargs)
     except TypeError:
         if added_silent:
             kwargs.pop("silent", None)
-            return await _ORIGINAL_MESSAGEABLE_SEND(self, *args, **kwargs)
+            return await channel.send(*args, **kwargs)
         raise
-
-
-discord.abc.Messageable.send = send_channel_silent_by_default
 
 TOKEN = os.getenv("DISCORD_TOKEN", "MTUxMDY3NzM0Njc4NzY1OTc3Nw.G_-vuz._ocUI4y-Nv7o9Kn0erGGra7cQfrHvFjKfBaeRc")
 LICHTBOT_QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
@@ -1933,7 +1913,7 @@ async def update_worldbuff_post(sync_ticker=True):
             await msg.edit(content=text, embed=guide_embed)
             await delete_extra_messages(existing_messages)
         else:
-            msg = await channel.send(text, embed=guide_embed)
+            msg = await send_silent(channel, text, embed=guide_embed)
         save_json(worldbuff_post_file(), {"message_id": msg.id, "message_ids": [msg.id]})
         return 1
     else:
@@ -1946,7 +1926,7 @@ async def update_worldbuff_post(sync_ticker=True):
                 last_msg = existing_messages[index]
                 await last_msg.edit(content=chunk, embed=guide_embed if index == 0 else None)
             else:
-                last_msg = await channel.send(chunk, embed=guide_embed if index == 0 else None)
+                last_msg = await send_silent(channel, chunk, embed=guide_embed if index == 0 else None)
             message_ids.append(last_msg.id)
 
         for old_msg in existing_messages[len(chunks):]:
@@ -2467,7 +2447,8 @@ async def update_hordenbuff_post(force=False):
 
             if not rend:
                 try:
-                    await channel.send(
+                    await send_silent(
+                        channel,
                         "⚠️ Es wurde kein kommender Rend-Termin im Sheet gefunden.",
                         delete_after=15
                     )
@@ -2498,7 +2479,7 @@ async def update_hordenbuff_post(force=False):
                     msg = found_messages[0] if found_messages else None
 
                 if not msg:
-                    msg = await channel.send(text, embed=guide_embed)
+                    msg = await send_silent(channel, text, embed=guide_embed)
                 else:
                     await msg.edit(content=text, embed=guide_embed)
 
@@ -2802,7 +2783,7 @@ async def process_hordenbuff_reminders_for_current_guild():
 
         if minute - 1 <= minutes_left <= minute and not already_sent:
             for channel in channels:
-                await channel.send(reminder_text)
+                await send_silent(channel, reminder_text)
 
             data.setdefault("reminders_sent", [])
             data["reminders_sent"].append(str(minute))
@@ -3032,7 +3013,8 @@ async def post_log_analysis_from_queue(payload):
     channel = client.get_channel(int(channel_id))
     if channel is None:
         channel = await client.fetch_channel(int(channel_id))
-    await channel.send(
+    await send_silent(
+        channel,
         embed=build_log_analysis_post_embed(payload),
         view=build_log_analysis_post_view(payload)
     )
@@ -5102,7 +5084,8 @@ async def send_p0_review_requests(selection, signup):
             channel_id = int(selection.get("origin_channel_id") or 0)
             channel = client.get_channel(channel_id) or await client.fetch_channel(channel_id)
             target_names = "Ariee/Juksi" if P0_REVIEW_TEST_MODE else "Kaese/Blondi"
-            await channel.send(
+            await send_silent(
+                channel,
                 f"🔎 **P0+ Prüfung für {target_names}**\n{message_text}",
                 view=P0ReviewView(signup, selection)
             )
@@ -5188,7 +5171,7 @@ async def update_p0_post_locked(raid, origin_channel_id, event_info=None):
             event_info or {},
             context=context
         )
-        msg = await channel.send(text, view=view)
+        msg = await send_silent(channel, text, view=view)
 
     await asyncio.sleep(2)
     msg = await keep_latest_p0_overview_message(channel, msg) or msg
@@ -6706,9 +6689,9 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
         if not msg:
             files = make_files()
             if files:
-                msg = await channel.send(post_text, files=files)
+                msg = await send_silent(channel, post_text, files=files)
             else:
-                msg = await channel.send(post_text)
+                msg = await send_silent(channel, post_text)
 
         await asyncio.sleep(2)
         cleanup_messages = await find_recent_own_messages(
@@ -7369,7 +7352,7 @@ async def refresh_prio_check_for_source(raid, source, post_to_discord=False, rep
 
     if post_to_discord:
         channel = client.get_channel(int(source["channel_id"])) or await client.fetch_channel(int(source["channel_id"]))
-        await channel.send(build_prio_check_text(result, report_title))
+        await send_silent(channel, build_prio_check_text(result, report_title))
 
     return result
 
@@ -7397,7 +7380,7 @@ async def refresh_prio_check(raid, post_to_discord=False, report_title=None):
             if post_to_discord:
                 try:
                     channel = client.get_channel(int(source["channel_id"])) or await client.fetch_channel(int(source["channel_id"]))
-                    await channel.send(f"⚠️ Der {raid} Prio-Check konnte nicht erstellt werden. Bitte Bot-Konsole prüfen.")
+                    await send_silent(channel, f"⚠️ Der {raid} Prio-Check konnte nicht erstellt werden. Bitte Bot-Konsole prüfen.")
                 except:
                     pass
 
@@ -7513,9 +7496,9 @@ async def raid_announcement_loop():
                     embed = build_raid_announcement_embed(raid)
                     banner = raid_banner_file(raid)
                     if banner:
-                        await channel.send(embed=embed, file=banner, view=RaidSignupView(raid))
+                        await send_silent(channel, embed=embed, file=banner, view=RaidSignupView(raid))
                     else:
-                        await channel.send(embed=embed, view=RaidSignupView(raid))
+                        await send_silent(channel, embed=embed, view=RaidSignupView(raid))
                     print(f"Raid-Ankuendigung gepostet: {raid.get('raidId')} in {channel_id}")
                     await asyncio.sleep(2)
                 except discord.HTTPException as e:
@@ -7614,20 +7597,20 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None):
     try:
         banner = raid_banner_file(raid)
         if banner:
-            sent_message = await channel.send(embed=embed, file=banner, view=RaidSignupView(raid))
+            sent_message = await send_silent(channel, embed=embed, file=banner, view=RaidSignupView(raid))
         else:
-            sent_message = await channel.send(embed=embed, view=RaidSignupView(raid))
+            sent_message = await send_silent(channel, embed=embed, view=RaidSignupView(raid))
     except discord.HTTPException as e:
         print(f"Raid-Ankuendigung mit Auswahlfeld fehlgeschlagen, versuche Embed ohne Auswahlfeld: {e}")
         try:
             banner = raid_banner_file(raid)
             if banner:
-                sent_message = await channel.send(embed=embed, file=banner)
+                sent_message = await send_silent(channel, embed=embed, file=banner)
             else:
-                sent_message = await channel.send(embed=embed)
+                sent_message = await send_silent(channel, embed=embed)
         except discord.HTTPException as embed_error:
             print(f"Raid-Ankuendigung als Embed fehlgeschlagen, versuche Klartext: {embed_error}")
-            sent_message = await channel.send(build_raid_announcement_text(raid))
+            sent_message = await send_silent(channel, build_raid_announcement_text(raid))
     if sent_message:
         try:
             await asyncio.to_thread(lichtloot_post, {
