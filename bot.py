@@ -7269,12 +7269,21 @@ class PoDeleteButton(discord.ui.Button):
         self.entries = list(entries or [])
 
     async def callback(self, interaction):
-        if self.payload and po_delete_entry_options(self.entries):
-            await interaction.response.send_message(
-                "Wähle den PO-Eintrag aus, den du löschen möchtest.",
-                view=PoDeleteEntryView(self.payload, self.entries),
-                ephemeral=True
-            )
+        if self.payload:
+            await interaction.response.defer(ephemeral=True)
+            entries = self.entries
+            if not po_delete_entry_options(entries):
+                source_channel_id = str(self.payload.get("sourceChannelId") or self.payload.get("channelId") or self.channel_id)
+                target_channel_id = str(self.payload.get("targetChannelId") or self.payload.get("discordChannelId") or source_channel_id)
+                entries = await load_saved_po_post_entries(self.payload, source_channel_id, target_channel_id)
+            if po_delete_entry_options(entries):
+                await interaction.followup.send(
+                    "Wähle den PO-Eintrag aus, den du löschen möchtest.",
+                    view=PoDeleteEntryView(self.payload, entries),
+                    ephemeral=True
+                )
+                return
+            await interaction.followup.send("⚠️ Keine PO-Einträge zum Löschen gefunden.", ephemeral=True)
             return
         await interaction.response.send_modal(PoDeleteModal(
             self.channel_id,
