@@ -7178,8 +7178,79 @@ class PoDeleteModal(discord.ui.Modal):
         )
 
 
+def po_delete_entry_options(entries):
+    result = []
+    seen = set()
+    for idx, entry in enumerate(entries or []):
+        player = str(entry.get("player") or "").strip()
+        item = str(entry.get("item") or "").strip()
+        if not player or not item:
+            continue
+        key = f"{prio_key(player)}|{prio_key(item)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append((str(idx), f"{player} · {item}"[:100], player, item))
+        if len(result) >= 25:
+            break
+    return result
+
+
+class PoDeleteEntrySelect(discord.ui.Select):
+    def __init__(self, payload, entries):
+        self.payload = payload
+        self.entries = list(entries or [])
+        options = []
+        for value, label, _player, item in po_delete_entry_options(self.entries):
+            options.append(discord.SelectOption(
+                label=label,
+                value=value,
+                description=item[:100] if item and item not in label else None,
+                emoji="🗑️"
+            ))
+        super().__init__(
+            placeholder="PO-Eintrag zum Löschen auswählen",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id=f"po_delete_select:{str(payload.get('postKey') or payload.get('poPostKey') or 'default').strip()[:56] or 'default'}"
+        )
+
+    async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            idx = int(self.values[0])
+            entry = self.entries[idx]
+            source_channel_id = str(self.payload.get("sourceChannelId") or self.payload.get("channelId") or "").strip()
+            channel = client.get_channel(int(source_channel_id)) or await client.fetch_channel(int(source_channel_id))
+            result = await delete_po_post_entry_for_user(
+                channel,
+                interaction.user,
+                str(entry.get("item") or ""),
+                str(self.payload.get("postKey") or self.payload.get("poPostKey") or ""),
+                str(entry.get("player") or "")
+            )
+            deleted = int(result.get("deleted") or 0)
+            if deleted <= 0:
+                await interaction.followup.send("⚠️ Dieser PO-Eintrag wurde nicht gefunden.", ephemeral=True)
+                return
+            await interaction.followup.send(
+                f"✅ PO-Eintrag gelöscht: **{entry.get('player')}** → **{entry.get('item')}**.",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.followup.send(f"⚠️ PO-Eintrag konnte nicht gelöscht werden: `{e}`", ephemeral=True)
+
+
+class PoDeleteEntryView(discord.ui.View):
+    def __init__(self, payload, entries):
+        super().__init__(timeout=180)
+        if po_delete_entry_options(entries or []):
+            self.add_item(PoDeleteEntrySelect(payload, entries or []))
+
+
 class PoDeleteButton(discord.ui.Button):
-    def __init__(self, channel_id, default_item="", default_post_key="", default_player=""):
+    def __init__(self, channel_id, default_item="", default_post_key="", default_player="", payload=None, entries=None):
         post_key = str(default_post_key or "default").strip()[:70]
         super().__init__(
             label="PO-Eintrag löschen",
@@ -7190,8 +7261,17 @@ class PoDeleteButton(discord.ui.Button):
         self.default_item = default_item
         self.default_post_key = default_post_key
         self.default_player = default_player
+        self.payload = payload or {}
+        self.entries = list(entries or [])
 
     async def callback(self, interaction):
+        if self.payload and po_delete_entry_options(self.entries):
+            await interaction.response.send_message(
+                "Wähle den PO-Eintrag aus, den du löschen möchtest.",
+                view=PoDeleteEntryView(self.payload, self.entries),
+                ephemeral=True
+            )
+            return
         await interaction.response.send_modal(PoDeleteModal(
             self.channel_id,
             self.default_item,
@@ -7596,7 +7676,7 @@ class PoSignupView(discord.ui.View):
         if po_luck_entry_options(entries or []):
             self.add_item(PoSignupLuckSelect(payload, entries or []))
         if source_channel_id:
-            self.add_item(PoDeleteButton(source_channel_id, default_post_key=post_key))
+            self.add_item(PoDeleteButton(source_channel_id, default_post_key=post_key, payload=payload, entries=entries or []))
 
 
 async def find_discord_member_or_user(identifier):
