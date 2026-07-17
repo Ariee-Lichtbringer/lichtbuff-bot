@@ -8025,6 +8025,18 @@ async def post_standalone_po_list(payload):
     points_by_item = await load_po_item_points(payload.get("raid") or "")
     entries = annotate_po_entries_with_points(entries, points_by_item)
     payload = {**payload, "_poPointsByItem": points_by_item}
+    if is_po_signup_payload(payload) and not po_signup_item_options(payload):
+        item_options = []
+        seen_items = set()
+        for entry in entries or []:
+            item_name = normalize_po_item_name(entry.get("item") or "")
+            item_key = p0_item_search_key(item_name)
+            if not item_name or not item_key or item_key in seen_items:
+                continue
+            seen_items.add(item_key)
+            item_options.append(item_name)
+        if item_options:
+            payload = {**payload, "itemOptions": "\n".join(item_options)}
     target_channel = client.get_channel(target_channel_id) or await client.fetch_channel(target_channel_id)
     text = build_po_signup_entries_text(entries, payload) if is_po_signup_payload(payload) else build_standalone_po_entries_text(entries)
     msg, changed = await upsert_standalone_po_post(target_channel, payload, entries, text)
