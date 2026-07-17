@@ -24,6 +24,48 @@ try:
 except Exception:
     pass
 
+DISCORD_SILENT_CHANNEL_POSTS = os.getenv("DISCORD_SILENT_CHANNEL_POSTS", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+
+
+_ORIGINAL_MESSAGEABLE_SEND = discord.abc.Messageable.send
+_PRIVATE_MESSAGE_TARGETS = tuple(
+    cls
+    for cls in (
+        getattr(discord, "DMChannel", None),
+        getattr(discord, "GroupChannel", None),
+        getattr(discord, "User", None),
+        getattr(discord, "Member", None),
+    )
+    if cls is not None
+)
+
+
+async def send_channel_silent_by_default(self, *args, **kwargs):
+    added_silent = False
+    if (
+        DISCORD_SILENT_CHANNEL_POSTS
+        and "silent" not in kwargs
+        and not isinstance(self, _PRIVATE_MESSAGE_TARGETS)
+    ):
+        kwargs["silent"] = True
+        added_silent = True
+
+    try:
+        return await _ORIGINAL_MESSAGEABLE_SEND(self, *args, **kwargs)
+    except TypeError:
+        if added_silent:
+            kwargs.pop("silent", None)
+            return await _ORIGINAL_MESSAGEABLE_SEND(self, *args, **kwargs)
+        raise
+
+
+discord.abc.Messageable.send = send_channel_silent_by_default
+
 TOKEN = os.getenv("DISCORD_TOKEN", "MTUxMDY3NzM0Njc4NzY1OTc3Nw.G_-vuz._ocUI4y-Nv7o9Kn0erGGra7cQfrHvFjKfBaeRc")
 LICHTBOT_QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
 
