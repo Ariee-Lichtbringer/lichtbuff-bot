@@ -6535,6 +6535,31 @@ def build_standalone_po_entries_text(entries):
     return "\n".join(lines)
 
 
+def build_po_signup_entries_text(entries):
+    sorted_entries = sorted(
+        entries or [],
+        key=lambda item: (str(item.get("item") or "").lower(), str(item.get("player") or "").lower())
+    )
+    if not sorted_entries:
+        return "**Anmeldungen:**\nNoch keine PO-Anmeldung vorhanden."
+
+    lines = [f"**Anmeldungen ({len(sorted_entries)}):**"]
+    for idx, entry in enumerate(sorted_entries, start=1):
+        player = str(entry.get("player") or "-").strip()
+        item = str(entry.get("item") or "-").strip()
+        status = str(entry.get("approvalStatus") or "").lower()
+        suffix = " ✅" if status == "approved" else " ❌" if status == "rejected" else ""
+        lines.append(f"{idx}. **{item}** → {player}{po_points_suffix(entry)}{suffix}")
+    return "\n".join(lines)
+
+
+def is_po_signup_payload(payload):
+    mode = str(payload.get("mode") or payload.get("poMode") or "").strip().lower()
+    if mode in {"signup", "anmelder", "po_signup", "po-anmelder"}:
+        return True
+    return bool(po_signup_item_options(payload))
+
+
 async def send_long_discord_text(channel, text):
     chunks = []
     current = ""
@@ -6576,7 +6601,42 @@ def is_standalone_po_message(message, payload):
     return "PO-Post" in text or "PO-Einträge" in text or "Vollständige Liste" in text
 
 
+def build_po_signup_post_text(payload, entries, full_text):
+    title = str(payload.get("title") or "PO-Anmelder").strip() or "PO-Anmelder"
+    raid = normalize_raid_name(payload.get("raid") or "")
+    review_recipient = str(payload.get("reviewRecipient") or "").strip()
+    raidlead_note = str(payload.get("note") or payload.get("message") or payload.get("raidleadMessage") or payload.get("extraMessage") or "").strip()
+    post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
+    item_options = po_signup_item_options(payload)
+    lines = [f"📋 **{title}**", "**PO-Anmelder**"]
+    if post_key:
+        lines.append(f"Post-ID: `{post_key}`")
+    if raid:
+        lines.append(f"Raid: **{display_raid_name(raid)}**")
+    if review_recipient:
+        lines.append(f"Freigabe per DM an: **{review_recipient}**")
+    lines.extend([
+        "",
+        "**Anmelden:** Unten ein Item auswählen, Charakter + Spielerlogin eintragen.",
+        "Der Eintrag erscheint danach direkt hier im Post."
+    ])
+    if item_options:
+        item_names = ", ".join(item["label"] for item in item_options[:10])
+        if len(item_options) > 10:
+            item_names += f", +{len(item_options) - 10}"
+        lines.append(f"Items im Menü: {item_names}")
+    lines.append("")
+    lines.append(full_text)
+    if raidlead_note:
+        lines.append("")
+        lines.append("**Hinweis:**")
+        lines.append(raidlead_note[:500])
+    return "\n".join(lines)[:1900]
+
+
 def build_po_channel_post_text(payload, entries, full_text):
+    if is_po_signup_payload(payload):
+        return build_po_signup_post_text(payload, entries, full_text)
     title = str(payload.get("title") or "PO Liste").strip() or "PO Liste"
     raid = normalize_raid_name(payload.get("raid") or "")
     source_channel_id = str(payload.get("sourceChannelId") or "").strip()
@@ -6753,7 +6813,7 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
             files = []
             if len(text) > 1800:
                 files.append(po_list_file(text))
-            guide = po_guide_file()
+            guide = None if is_po_signup_payload(payload) else po_guide_file()
             if guide:
                 files.append(guide)
             return files or None
@@ -6765,7 +6825,7 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
                 for attachment in getattr(target_message, "attachments", []) or []
             )
         )
-        guide_expected = PO_GUIDE_IMAGE_PATH.exists()
+        guide_expected = (not is_po_signup_payload(payload)) and PO_GUIDE_IMAGE_PATH.exists()
 
         target_text_matches = (
             target_message
@@ -7391,7 +7451,7 @@ async def post_standalone_po_list(payload):
     }), payload.get("raid") or "")
     entries = annotate_po_entries_with_points(entries, await load_po_item_points(payload.get("raid") or ""))
     target_channel = client.get_channel(target_channel_id) or await client.fetch_channel(target_channel_id)
-    text = build_standalone_po_entries_text(entries)
+    text = build_po_signup_entries_text(entries) if is_po_signup_payload(payload) else build_standalone_po_entries_text(entries)
     msg, changed = await upsert_standalone_po_post(target_channel, payload, entries, text)
     try:
         await asyncio.to_thread(lichtloot_post, {
