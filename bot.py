@@ -6733,9 +6733,7 @@ def build_po_signup_entries_by_item_text(entries, include_points=True):
 
 
 def build_po_signup_entries_text(entries, payload=None, include_points=True):
-    if payload and po_signup_group_by_item(payload):
-        return build_po_signup_entries_by_item_text(entries, include_points=include_points)
-    return build_po_signup_entries_by_class_text(entries, include_points=include_points)
+    return build_po_signup_entries_by_item_text(entries, include_points=include_points)
 
 
 def is_po_signup_payload(payload):
@@ -7761,16 +7759,9 @@ class PoSignupModal(discord.ui.Modal):
             required=True,
             max_length=50
         )
-        self.player_pin = discord.ui.TextInput(
-            label="LichtLoot Spielerlogin",
-            placeholder="dein LichtLoot Spielerlogin",
-            required=True,
-            max_length=20
-        )
         self.add_item(self.class_name)
         self.add_item(self.item_name)
         self.add_item(self.char_name)
-        self.add_item(self.player_pin)
 
     async def on_submit(self, interaction):
         await interaction.response.defer(ephemeral=True)
@@ -7780,7 +7771,7 @@ class PoSignupModal(discord.ui.Modal):
                 interaction.user,
                 str(self.item_name.value or ""),
                 str(self.char_name.value or ""),
-                str(self.player_pin.value or ""),
+                "",
                 str(self.class_name.value or "")
             )
             entry = result.get("entry") or {}
@@ -7792,7 +7783,7 @@ class PoSignupModal(discord.ui.Modal):
             detail = await explain_po_signup_error(
                 e,
                 str(self.char_name.value or ""),
-                str(self.player_pin.value or "")
+                ""
             )
             await interaction.followup.send(f"⚠️ PO konnte nicht gespeichert werden: {detail}", ephemeral=True)
 
