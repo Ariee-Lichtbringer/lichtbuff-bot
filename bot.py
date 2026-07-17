@@ -6641,7 +6641,7 @@ def build_po_signup_post_text(payload, entries, full_text):
         "Der Eintrag erscheint danach direkt hier im Post."
     ])
     lines.append("")
-    lines.append(full_text)
+    lines.extend(str(full_text or "").splitlines())
     if raidlead_note:
         lines.append("")
         lines.append("**Hinweis:**")
