@@ -6573,6 +6573,10 @@ def is_po_signup_payload(payload):
     mode = str(payload.get("mode") or payload.get("poMode") or "").strip().lower()
     if mode in {"signup", "anmelder", "po_signup", "po-anmelder"}:
         return True
+    post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip().lower()
+    title = str(payload.get("title") or "").strip().lower()
+    if "po-anmelder" in post_key or "po_anmelder" in post_key or "anmelder" in title:
+        return True
     return bool(po_signup_item_options(payload))
 
 
