@@ -6607,7 +6607,7 @@ def po_signup_group_by_item(payload):
     return value in {"item", "items", "loot", "gegenstand", "gegenstaende", "gegenstände"}
 
 
-def build_po_signup_entries_by_class_text(entries, include_points=True):
+def build_po_signup_entries_by_class_text(entries, include_points=False):
     all_entries = list(entries or [])
     if not all_entries:
         return "**Anmeldungen:**\nNoch keine PO-Anmeldung vorhanden."
@@ -6636,7 +6636,7 @@ def build_po_signup_entries_by_class_text(entries, include_points=True):
     return "\n".join(lines)
 
 
-def build_po_signup_entries_by_item_text(entries, include_points=True):
+def build_po_signup_entries_by_item_text(entries, include_points=False):
     all_entries = list(entries or [])
     if not all_entries:
         return "**Anmeldungen:**\nNoch keine PO-Anmeldung vorhanden."
@@ -6671,7 +6671,7 @@ def build_po_signup_entries_by_item_text(entries, include_points=True):
     return "\n".join(lines)
 
 
-def build_po_signup_entries_text(entries, payload=None, include_points=True):
+def build_po_signup_entries_text(entries, payload=None, include_points=False):
     if payload and po_signup_group_by_item(payload):
         return build_po_signup_entries_by_item_text(entries, include_points=include_points)
     return build_po_signup_entries_by_class_text(entries, include_points=include_points)
@@ -6736,6 +6736,12 @@ def build_po_signup_post_text(payload, entries, full_text):
     raid_time = format_raid_announcement_time(payload.get("raidTime") or payload.get("time") or "")
     review_recipient = str(payload.get("reviewRecipient") or "").strip()
     raidlead_note = str(payload.get("note") or payload.get("message") or payload.get("raidleadMessage") or payload.get("extraMessage") or "").strip()
+    if normalize_p0_reviewer_name(raidlead_note) in {
+        normalize_p0_reviewer_name("Wähle unten dein Item aus und trage danach Charakter + Spielerlogin ein."),
+        normalize_p0_reviewer_name("Anmelden: Unten ein Item auswählen, Charakter + Spielerlogin eintragen. Der Eintrag erscheint danach direkt hier im Post."),
+        normalize_p0_reviewer_name("Unten ein Item auswählen, Charakter + Spielerlogin eintragen. Der Eintrag erscheint danach direkt hier im Post.")
+    }:
+        raidlead_note = ""
     post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
     item_options = po_signup_item_options(payload)
     lines = [f"📋 **{title}**", "**PO-Anmelder**"]
