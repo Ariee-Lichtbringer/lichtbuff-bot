@@ -169,11 +169,18 @@ PO_ITEM_EMOJI_ALIASES = {
     "ring des märtyrers": ["ring_des_mrtyrers"],
     "saphirons linkes auge": ["saphirons_linkes_auge"],
     "schild der geißelung": ["_schild_der_geielung", "schild_der_geisselung"],
+    "schneller razzashiraptor": ["schneller_razzashiraptor"],
+    "schneller zulianischer tiger": ["schneller_zulianischer_tiger"],
     "szepter des falschen propheten": ["szepter_des_falschen_propheten"],
+    "stulpen des friedensbewahrers": ["stulpen_des_friedensbewahrers"],
     "stulpen der vernichtung": ["stulpen_der_vernichtung"],
     "stulpen der dunklen stürme": ["stulpen_der_dunklen_strme"],
+    "blaues schmuckstück der hakkari": ["blaues_schmuckstck_der_hakkari", "blaues_schmuckstueck_der_hakkari"],
+    "kriegsklinge der hakkari": ["kriegsklinge_der_hakkari"],
+    "urzeitlicher hakkarigötze": ["urzeitlicher_hakkarigtze", "urzeitlicher_hakkarigoetze"],
     "umhang des geballten hasses": ["umhang_des_geballten_hasses"],
     "wappen des schlächters": ["wappen_des_schlchters_", "wappen_des_schlaechters"],
+    "zulianischer tigerbalgumhang": ["zulianischer_tigerbalgumhang"],
 }
 SPEC_EMOJI_FALLBACKS = {
     "tank": "🛡️",
