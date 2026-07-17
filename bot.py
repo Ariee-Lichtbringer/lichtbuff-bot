@@ -6688,6 +6688,7 @@ async def load_po_item_points(raid=""):
             or ""
         )
         points_by_item.setdefault(item_key, []).append({
+            "item": normalize_po_item_name(row.get("item") or ""),
             "player": player,
             "points": points,
             "date": point_date
@@ -8313,7 +8314,15 @@ async def post_standalone_po_list(payload):
                 continue
             seen_items.add(item_key)
             item_options.append(item_name)
+        for holders in points_by_item.values():
+            item_name = normalize_po_item_name((holders or [{}])[0].get("item") or "")
+            item_key = p0_item_search_key(item_name)
+            if not item_name or not item_key or item_key in seen_items:
+                continue
+            seen_items.add(item_key)
+            item_options.append(item_name)
         if item_options:
+            item_options.sort(key=lambda value: value.lower())
             payload = {**payload, "itemOptions": "\n".join(item_options)}
     target_channel = client.get_channel(target_channel_id) or await client.fetch_channel(target_channel_id)
     text = build_po_signup_entries_text(entries, payload) if is_po_signup_payload(payload) else build_standalone_po_entries_text(entries)
