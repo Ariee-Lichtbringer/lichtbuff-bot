@@ -6599,11 +6599,9 @@ def build_po_channel_post_text(payload, entries, full_text):
     command_lines = [
         "",
         "━━━━━━━━━━━━━━━",
-        "**Befehle**",
-        "`!popost` = Post aktualisieren",
-        "`!p0 naxx` = PO-Item für Naxx eintragen",
-        "`!p0 aq40` = PO-Item für AQ40 eintragen",
-        "`!podel` = eigenes PO-Item ändern oder löschen"
+        "**PO-Anmelder**",
+        "Unten auf **PO eintragen** klicken und Item + Charakter eintragen.",
+        "Eigene Einträge können über **PO-Eintrag löschen** entfernt werden."
     ]
     command_text = "\n".join(command_lines)
     if len(full_text) + len(command_text) > 1750:
@@ -6780,6 +6778,10 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
 
         if target_message and previous_hash == current_hash and (target_text_matches or target_file_post):
             keep = target_message
+            try:
+                await keep.edit(view=PoSignupView(payload))
+            except Exception as e:
+                print(f"PO-Post View konnte nicht aktualisiert werden: {e}")
             for message in candidates:
                 if message.id == keep.id:
                     continue
@@ -6795,7 +6797,7 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
         msg = None
         if target_message:
             try:
-                await target_message.edit(content=post_text, attachments=[], files=make_files())
+                await target_message.edit(content=post_text, attachments=[], files=make_files(), view=PoSignupView(payload))
                 msg = target_message
             except Exception as e:
                 print(f"PO-Post {target_message.id} konnte nicht bearbeitet werden:", e)
@@ -6816,9 +6818,9 @@ async def upsert_standalone_po_post(channel, payload, entries, text):
         if not msg:
             files = make_files()
             if files:
-                msg = await send_silent(channel, post_text, files=files)
+                msg = await send_silent(channel, post_text, files=files, view=PoSignupView(payload))
             else:
-                msg = await send_silent(channel, post_text)
+                msg = await send_silent(channel, post_text, view=PoSignupView(payload))
 
         await asyncio.sleep(2)
         cleanup_messages = await find_recent_own_messages(
@@ -7084,9 +7086,11 @@ class PoDeleteModal(discord.ui.Modal):
 
 class PoDeleteButton(discord.ui.Button):
     def __init__(self, channel_id, default_item="", default_post_key="", default_player=""):
+        post_key = str(default_post_key or "default").strip()[:70]
         super().__init__(
             label="PO-Eintrag löschen",
-            style=discord.ButtonStyle.danger
+            style=discord.ButtonStyle.danger,
+            custom_id=f"po_delete:{post_key or 'default'}"
         )
         self.channel_id = str(channel_id)
         self.default_item = default_item
@@ -7100,10 +7104,6 @@ class PoDeleteButton(discord.ui.Button):
             self.default_post_key,
             self.default_player or infer_worldbuff_char_from_discord_name(interaction.user.display_name)
         ))
-        try:
-            await interaction.message.delete()
-        except:
-            pass
 
 
 class PoDeleteView(discord.ui.View):
@@ -7200,25 +7200,27 @@ class PoSignupModal(discord.ui.Modal):
 class PoSignupButton(discord.ui.Button):
     def __init__(self, payload):
         raid = display_raid_name(payload.get("raid") or "")
+        post_key = str(payload.get("postKey") or payload.get("poPostKey") or "default").strip()[:70]
         super().__init__(
             label=f"PO eintragen {raid}"[:80],
-            style=discord.ButtonStyle.primary
+            style=discord.ButtonStyle.primary,
+            custom_id=f"po_signup:{post_key or 'default'}"
         )
         self.payload = payload
 
     async def callback(self, interaction):
         default_char = infer_worldbuff_char_from_discord_name(interaction.user.display_name)
         await interaction.response.send_modal(PoSignupModal(self.payload, default_char))
-        try:
-            await interaction.message.delete()
-        except:
-            pass
 
 
 class PoSignupView(discord.ui.View):
     def __init__(self, payload):
-        super().__init__(timeout=180)
+        super().__init__(timeout=None)
+        source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or "").strip()
+        post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
         self.add_item(PoSignupButton(payload))
+        if source_channel_id:
+            self.add_item(PoDeleteButton(source_channel_id, default_post_key=post_key))
 
 
 async def find_discord_member_or_user(identifier):
