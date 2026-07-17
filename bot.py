@@ -4348,6 +4348,7 @@ async def restore_active_po_signup_views():
     await asyncio.sleep(4)
     restored = 0
     refreshed = 0
+    restored_message_ids = set()
     for guild_slug in WORLDBUFF_GUILD_SLUGS:
         token = CURRENT_GUILD_SLUG.set(guild_slug)
         try:
@@ -4375,6 +4376,7 @@ async def restore_active_po_signup_views():
                 try:
                     client.add_view(PoSignupView(payload, entries), message_id=int(message_id))
                     restored += 1
+                    restored_message_ids.add(str(message_id))
                 except Exception as e:
                     print(f"PO-Anmelder-View konnte nicht registriert werden ({key}): {e}")
                     continue
@@ -4387,6 +4389,69 @@ async def restore_active_po_signup_views():
                         await asyncio.sleep(0.5)
                 except Exception as e:
                     print(f"PO-Anmelder-View konnte nicht aktualisiert werden ({key}): {e}")
+            try:
+                railway_result = await asyncio.to_thread(lichtloot_get, {
+                    "action": "lichtbotGetPoPostEntries",
+                    "queueToken": LICHTBOT_QUEUE_TOKEN,
+                    "t": int(time.time())
+                })
+                grouped = {}
+                for entry in railway_result.get("entries") or []:
+                    post_key = str(entry.get("postKey") or "").strip()
+                    title = str(entry.get("title") or "PO-Anmelder").strip() or "PO-Anmelder"
+                    if "anmelder" not in normalize_p0_reviewer_name(post_key + " " + title):
+                        continue
+                    source_channel_id = str(entry.get("sourceChannelId") or "").strip()
+                    target_channel_id = str(entry.get("targetChannelId") or source_channel_id).strip()
+                    if not post_key or not target_channel_id:
+                        continue
+                    group_key = (post_key, source_channel_id, target_channel_id)
+                    grouped.setdefault(group_key, {
+                        "payload": {
+                            "mode": "signup",
+                            "postKey": post_key,
+                            "sourceChannelId": source_channel_id,
+                            "targetChannelId": target_channel_id,
+                            "raid": entry.get("raid") or "",
+                            "title": title,
+                            "itemOptions": ""
+                        },
+                        "entries": []
+                    })
+                    grouped[group_key]["entries"].append(entry)
+                for (_post_key, _source_channel_id, target_channel_id), group in grouped.items():
+                    payload = group["payload"]
+                    entries = group["entries"]
+                    item_options = []
+                    seen_items = set()
+                    for entry in entries:
+                        item_name = normalize_po_item_name(entry.get("item") or "")
+                        item_key = p0_item_search_key(item_name)
+                        if item_name and item_key and item_key not in seen_items:
+                            seen_items.add(item_key)
+                            item_options.append(item_name)
+                    payload["itemOptions"] = "\n".join(item_options)
+                    channel = client.get_channel(int(target_channel_id)) or await client.fetch_channel(int(target_channel_id))
+                    messages = await find_recent_own_messages(
+                        channel,
+                        lambda message, payload=payload: is_standalone_po_message(message, payload),
+                        limit=300
+                    )
+                    if not messages:
+                        continue
+                    message = max(messages, key=lambda item: int(item.id))
+                    if str(message.id) in restored_message_ids:
+                        continue
+                    try:
+                        client.add_view(PoSignupView(payload, entries), message_id=int(message.id))
+                        restored += 1
+                        restored_message_ids.add(str(message.id))
+                    except Exception as e:
+                        print(f"PO-Anmelder-View konnte aus Railway nicht registriert werden ({payload.get('postKey')}): {e}")
+                if grouped:
+                    print(f"PO-Anmelder-Views aus Railway geprueft: {len(grouped)}.")
+            except Exception as e:
+                print(f"PO-Anmelder-Views konnten nicht aus Railway wiederhergestellt werden ({guild_slug}): {e}")
         except Exception as e:
             print(f"PO-Anmelder-Views konnten beim Start nicht wiederhergestellt werden ({guild_slug}): {e}")
         finally:
@@ -6856,6 +6921,25 @@ def po_post_state_key(payload):
     return f"{target}:{source}:{title}"
 
 
+def merge_previous_po_signup_payload(payload):
+    if not is_po_signup_payload(payload) or po_signup_item_options(payload):
+        return payload
+    try:
+        state_entry = load_json(po_post_file(), {}).get(po_post_state_key(payload)) or {}
+        previous_payload = state_entry.get("payload") or {}
+        previous_items = (
+            previous_payload.get("itemOptions")
+            or previous_payload.get("items")
+            or previous_payload.get("itemList")
+            or ""
+        )
+        if str(previous_items or "").strip():
+            return {**payload, "itemOptions": previous_items}
+    except Exception as e:
+        print(f"Vorherige PO-Anmelder-Itemliste konnte nicht geladen werden: {e}")
+    return payload
+
+
 def is_standalone_po_message(message, payload):
     text = str(getattr(message, "content", "") or "")
     post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
@@ -8124,6 +8208,7 @@ async def send_po_review_dm(payload, entries):
 
 
 async def post_standalone_po_list(payload):
+    payload = merge_previous_po_signup_payload(payload)
     source_channel_id = int(str(payload.get("sourceChannelId") or payload.get("channelId") or "0").strip() or "0")
     target_channel_id = int(str(payload.get("targetChannelId") or payload.get("discordChannelId") or source_channel_id or "0").strip() or "0")
     if not source_channel_id or not target_channel_id:
@@ -8641,7 +8726,7 @@ async def on_ready():
     print(f"Raid-Anmelder Klassenemojis gefunden: {', '.join(sorted(found_class_emojis.keys())) or 'keine'}")
     print(f"Raid-Anmelder Skillungsemojis gefunden: {', '.join(sorted(found_spec_emojis.keys())) or 'keine'}")
     print(f"PO-Item Emojis gefunden: {len(found_item_emojis)}")
-    print("Version 4.9.5 gestartet: PO-Anmelder Klassenwahl stabilisiert.")
+    print("Version 4.9.6 gestartet: PO-Anmelder Views und Itemlisten stabilisiert.")
     schedule_p0_release_cache_refresh(force=True)
 
     if not hasattr(client, "raid_signup_view_restore_started"):
