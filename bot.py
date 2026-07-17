@@ -7881,14 +7881,17 @@ class PoSignupClassSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction):
-        await interaction.response.defer(ephemeral=True)
-        class_name = canonical_signup_class(self.values[0])
-        PO_SIGNUP_CLASS_SELECTIONS[po_signup_selection_key(self.payload, getattr(interaction.user, "id", ""))] = class_name
-        await interaction.followup.send(
-            f"{signup_class_icon(class_name)} Klasse gespeichert: **{class_name}**. Jetzt Item auswählen oder eigenes Item eintragen.",
-            view=PoSignupQuickEntryView(self.payload),
-            ephemeral=True
-        )
+        try:
+            class_name = canonical_signup_class(self.values[0])
+            PO_SIGNUP_CLASS_SELECTIONS[po_signup_selection_key(self.payload, getattr(interaction.user, "id", ""))] = class_name
+            await interaction.response.send_message(
+                f"{signup_class_icon(class_name)} Klasse gespeichert: **{class_name}**. Jetzt Item auswählen oder eigenes Item eintragen.",
+                ephemeral=True
+            )
+        except Exception as e:
+            print(f"PO-Anmelder Klassenwahl fehlgeschlagen: {e}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("⚠️ Klasse konnte nicht gespeichert werden. Bitte nochmal probieren.", ephemeral=True)
 
 
 class PoSignupItemSelect(discord.ui.Select):
@@ -8617,7 +8620,7 @@ async def on_ready():
     print(f"Raid-Anmelder Klassenemojis gefunden: {', '.join(sorted(found_class_emojis.keys())) or 'keine'}")
     print(f"Raid-Anmelder Skillungsemojis gefunden: {', '.join(sorted(found_spec_emojis.keys())) or 'keine'}")
     print(f"PO-Item Emojis gefunden: {len(found_item_emojis)}")
-    print("Version 4.9.4 gestartet: PO-Anmelder Embed-Karten aktiv.")
+    print("Version 4.9.5 gestartet: PO-Anmelder Klassenwahl stabilisiert.")
     schedule_p0_release_cache_refresh(force=True)
 
     if not hasattr(client, "raid_signup_view_restore_started"):
