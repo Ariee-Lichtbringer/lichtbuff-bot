@@ -6474,9 +6474,7 @@ def po_points_suffix(entry):
             points = f"{float(holder.get('points') or 0):g}"
         except Exception:
             points = str(holder.get("points") or "0")
-        date = str(holder.get("date") or "").strip()
-        date_suffix = f" ({date})" if date else ""
-        parts.append(f"{holder.get('player')} {points}{date_suffix}")
+        parts.append(f"{holder.get('player')} {points}")
     suffix = "PO+: " + ", ".join(parts)
     if len(holders) > 6:
         suffix += f", +{len(holders) - 6}"
