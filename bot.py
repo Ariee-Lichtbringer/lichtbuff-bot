@@ -152,6 +152,13 @@ CLASS_EMOJI_NAME_ALIASES = {
     "warlock": ["hexenmeister", "hexer", "warlock", "classicon_warlock"],
     "shaman": ["schamane", "shaman", "classicon_shaman"],
 }
+PO_ITEM_EMOJI_ALIASES = {
+    "auge von c'thun": ["auge_von_cthun_"],
+    "armreifen der königlichen erlösung": ["armreifen_der_kniglichen_erlsung"],
+    "formel: brust - große werte": ["formel_brust__groe_werte_"],
+    "ring des märtyrers": ["ring_des_mrtyrers"],
+    "stulpen der dunklen stürme": ["stulpen_der_dunklen_strme"],
+}
 SPEC_EMOJI_FALLBACKS = {
     "tank": "🛡️",
     "heal": "➕",
@@ -3277,6 +3284,8 @@ def item_emoji_candidates(item_name):
     normalized = normalize_emoji_name(raw)
     underscored = re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", raw)).strip("_")
     candidates = []
+    original_key = str(item_name or "").strip().lower()
+    candidates.extend(PO_ITEM_EMOJI_ALIASES.get(original_key, []))
     for value in [normalized, underscored]:
         if not value:
             continue
