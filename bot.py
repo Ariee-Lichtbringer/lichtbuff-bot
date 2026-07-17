@@ -6544,21 +6544,30 @@ def build_standalone_po_entries_text(entries):
 
 
 def build_po_signup_entries_text(entries):
-    sorted_entries = sorted(
-        entries or [],
-        key=lambda item: (str(item.get("item") or "").lower(), str(item.get("player") or "").lower())
-    )
-    if not sorted_entries:
+    all_entries = list(entries or [])
+    if not all_entries:
         return "**Anmeldungen:**\nNoch keine PO-Anmeldung vorhanden."
 
-    lines = [f"**Anmeldungen ({len(sorted_entries)}):**"]
-    for idx, entry in enumerate(sorted_entries, start=1):
-        player = str(entry.get("player") or "-").strip()
-        item = str(entry.get("item") or "-").strip()
-        status = str(entry.get("approvalStatus") or "").lower()
-        suffix = " ✅" if status == "approved" else " ❌" if status == "rejected" else ""
-        luck = " 🍀" if str(entry.get("luckBy") or entry.get("luck_by") or "").strip() else ""
-        lines.append(f"{idx}. **{item}**{po_points_suffix(entry)} → {player}{suffix}{luck}")
+    grouped = {}
+    for entry in all_entries:
+        class_name = canonical_signup_class(entry.get("className") or entry.get("class_name") or entry.get("klasse") or "Ohne Klasse")
+        grouped.setdefault(class_name, []).append(entry)
+
+    lines = [f"**Anmeldungen ({len(all_entries)}):**"]
+    for class_name in sorted(grouped.keys(), key=signup_class_sort_key):
+        rows = sorted(
+            grouped[class_name],
+            key=lambda item: (str(item.get("item") or "").lower(), str(item.get("player") or "").lower())
+        )
+        lines.append("")
+        lines.append(f"__{signup_class_heading(class_name, len(rows))}__")
+        for entry in rows:
+            player = str(entry.get("player") or "-").strip()
+            item = str(entry.get("item") or "-").strip()
+            status = str(entry.get("approvalStatus") or "").lower()
+            suffix = " ✅" if status == "approved" else " ❌" if status == "rejected" else ""
+            luck = " 🍀" if str(entry.get("luckBy") or entry.get("luck_by") or "").strip() else ""
+            lines.append(f"{signup_class_icon(class_name)} **{item}**{po_points_suffix(entry)} → {player}{suffix}{luck}")
     return "\n".join(lines)
 
 
@@ -7205,8 +7214,21 @@ async def find_po_post_payload_for_signup(channel_id, raid="", post_key_filter="
     return payloads[0] if payloads else None
 
 
-async def save_po_signup_from_modal(payload, user, item_name, char_name, player_pin):
+PO_SIGNUP_CLASS_SELECTIONS = {}
+
+
+def po_signup_selection_key(payload, user_id):
+    post_key = str(payload.get("postKey") or payload.get("poPostKey") or "default").strip()
+    return f"{post_key}:{user_id}"
+
+
+def selected_po_signup_class(payload, user):
+    return PO_SIGNUP_CLASS_SELECTIONS.get(po_signup_selection_key(payload, getattr(user, "id", "")), "")
+
+
+async def save_po_signup_from_modal(payload, user, item_name, char_name, player_pin, class_name=""):
     item_name = normalize_po_item_name(item_name)
+    class_name = canonical_signup_class(class_name or selected_po_signup_class(payload, user) or "")
     source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or "")
     target_channel_id = str(payload.get("targetChannelId") or payload.get("discordChannelId") or source_channel_id)
     result = await asyncio.to_thread(lichtloot_post, {
@@ -7220,6 +7242,7 @@ async def save_po_signup_from_modal(payload, user, item_name, char_name, player_
         "player": char_name,
         "server": "Everlook",
         "playerPin": player_pin,
+        "className": class_name,
         "item": item_name,
         "discordUserId": str(getattr(user, "id", "") or ""),
         "discordName": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user)
@@ -7283,6 +7306,45 @@ def po_luck_entry_options(entries):
     return result
 
 
+def po_review_entry_options(entries):
+    result = []
+    seen = set()
+    for idx, entry in enumerate(entries or []):
+        status = str(entry.get("approvalStatus") or "").strip().lower()
+        if status == "approved":
+            continue
+        player = str(entry.get("player") or "").strip()
+        item = str(entry.get("item") or "").strip()
+        if not player or not item:
+            continue
+        key = f"{prio_key(player)}|{prio_key(item)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        label = f"{player} · {item}"
+        result.append((str(idx), label[:100], player, item))
+        if len(result) >= 25:
+            break
+    return result
+
+
+def po_signup_reviewer_allowed(payload, user):
+    recipient = str(payload.get("reviewRecipient") or "").strip()
+    user_id = str(getattr(user, "id", "") or "")
+    display = str(getattr(user, "display_name", None) or getattr(user, "name", None) or "").strip()
+    if recipient:
+        recipient_key = normalize_p0_reviewer_name(recipient)
+        if recipient == user_id or recipient_key in {
+            normalize_p0_reviewer_name(display),
+            normalize_p0_reviewer_name(getattr(user, "name", "") or "")
+        }:
+            return True
+    permissions = getattr(user, "guild_permissions", None)
+    if permissions and (getattr(permissions, "administrator", False) or getattr(permissions, "manage_messages", False)):
+        return True
+    return not recipient
+
+
 async def set_po_signup_luck(payload, entry, user):
     source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or "")
     target_channel_id = str(payload.get("targetChannelId") or payload.get("discordChannelId") or source_channel_id)
@@ -7303,11 +7365,40 @@ async def set_po_signup_luck(payload, entry, user):
     return result
 
 
+async def review_po_signup_entry(payload, entry, user):
+    source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or "")
+    target_channel_id = str(payload.get("targetChannelId") or payload.get("discordChannelId") or source_channel_id)
+    result = await asyncio.to_thread(lichtloot_post, {
+        "action": "reviewPoPostEntry",
+        "queueToken": LICHTBOT_QUEUE_TOKEN,
+        "postKey": payload.get("postKey") or payload.get("poPostKey") or "",
+        "sourceChannelId": source_channel_id,
+        "targetChannelId": target_channel_id,
+        "messageId": entry.get("messageId") or entry.get("discordMessageId") or "",
+        "status": "approved",
+        "reviewer": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user),
+        "mode": payload.get("mode") or payload.get("poMode") or "signup",
+        "note": payload.get("note") or payload.get("message") or payload.get("raidleadMessage") or "",
+        "itemOptions": payload.get("itemOptions") or payload.get("items") or payload.get("itemList") or ""
+    })
+    if not result.get("success"):
+        raise RuntimeError(result.get("error") or "PO-Eintrag konnte nicht freigegeben werden.")
+    await post_standalone_po_list(payload)
+    return result
+
+
 class PoSignupModal(discord.ui.Modal):
-    def __init__(self, payload, default_char="", default_item=""):
+    def __init__(self, payload, default_char="", default_item="", default_class=""):
         self.payload = payload
         raid = display_raid_name(payload.get("raid") or "")
         super().__init__(title=f"PO eintragen {raid}"[:45])
+        self.class_name = discord.ui.TextInput(
+            label="Klasse",
+            placeholder="z. B. Warrior",
+            default=canonical_signup_class(default_class or "") if default_class else "",
+            required=True,
+            max_length=30
+        )
         self.item_name = discord.ui.TextInput(
             label="Itemname",
             placeholder="z. B. THC",
@@ -7328,6 +7419,7 @@ class PoSignupModal(discord.ui.Modal):
             required=True,
             max_length=20
         )
+        self.add_item(self.class_name)
         self.add_item(self.item_name)
         self.add_item(self.char_name)
         self.add_item(self.player_pin)
@@ -7340,7 +7432,8 @@ class PoSignupModal(discord.ui.Modal):
                 interaction.user,
                 str(self.item_name.value or ""),
                 str(self.char_name.value or ""),
-                str(self.player_pin.value or "")
+                str(self.player_pin.value or ""),
+                str(self.class_name.value or "")
             )
             entry = result.get("entry") or {}
             await interaction.followup.send(
@@ -7365,7 +7458,28 @@ class PoSignupButton(discord.ui.Button):
 
     async def callback(self, interaction):
         default_char = infer_worldbuff_char_from_discord_name(interaction.user.display_name)
-        await interaction.response.send_modal(PoSignupModal(self.payload, default_char, self.default_item))
+        default_class = selected_po_signup_class(self.payload, interaction.user)
+        await interaction.response.send_modal(PoSignupModal(self.payload, default_char, self.default_item, default_class))
+
+
+class PoSignupClassSelect(discord.ui.Select):
+    def __init__(self, payload):
+        self.payload = payload
+        super().__init__(
+            placeholder="Klasse wählen",
+            min_values=1,
+            max_values=1,
+            options=raid_signup_class_options(),
+            custom_id=f"po_class_select:{str(payload.get('postKey') or payload.get('poPostKey') or 'default').strip()[:60] or 'default'}"
+        )
+
+    async def callback(self, interaction):
+        class_name = canonical_signup_class(self.values[0])
+        PO_SIGNUP_CLASS_SELECTIONS[po_signup_selection_key(self.payload, getattr(interaction.user, "id", ""))] = class_name
+        await interaction.response.send_message(
+            f"{signup_class_icon(class_name)} Klasse gespeichert: **{class_name}**. Jetzt Item auswählen oder eigenes Item eintragen.",
+            ephemeral=True
+        )
 
 
 class PoSignupItemSelect(discord.ui.Select):
@@ -7388,7 +7502,8 @@ class PoSignupItemSelect(discord.ui.Select):
 
     async def callback(self, interaction):
         default_char = infer_worldbuff_char_from_discord_name(interaction.user.display_name)
-        await interaction.response.send_modal(PoSignupModal(self.payload, default_char, self.values[0]))
+        default_class = selected_po_signup_class(self.payload, interaction.user)
+        await interaction.response.send_modal(PoSignupModal(self.payload, default_char, self.values[0], default_class))
 
 
 class PoSignupLuckSelect(discord.ui.Select):
@@ -7425,14 +7540,54 @@ class PoSignupLuckSelect(discord.ui.Select):
             await interaction.followup.send(f"⚠️ Kleeblatt konnte nicht gesetzt werden: `{e}`", ephemeral=True)
 
 
+class PoSignupReviewSelect(discord.ui.Select):
+    def __init__(self, payload, entries):
+        self.payload = payload
+        self.entries = list(entries or [])
+        options = []
+        for value, label, _player, _item in po_review_entry_options(self.entries):
+            options.append(discord.SelectOption(
+                label=label,
+                value=value,
+                emoji="✅"
+            ))
+        super().__init__(
+            placeholder="Item freigeben",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id=f"po_review_select:{str(payload.get('postKey') or payload.get('poPostKey') or 'default').strip()[:58] or 'default'}"
+        )
+
+    async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            if not po_signup_reviewer_allowed(self.payload, interaction.user):
+                await interaction.followup.send("⚠️ Du bist für diese PO-Freigabe nicht eingetragen.", ephemeral=True)
+                return
+            idx = int(self.values[0])
+            entry = self.entries[idx]
+            result = await review_po_signup_entry(self.payload, entry, interaction.user)
+            saved = result.get("entry") or entry
+            await interaction.followup.send(
+                f"✅ Freigegeben: **{saved.get('player') or entry.get('player')}** → **{saved.get('item') or entry.get('item')}**.",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.followup.send(f"⚠️ Freigabe konnte nicht gespeichert werden: `{e}`", ephemeral=True)
+
+
 class PoSignupView(discord.ui.View):
     def __init__(self, payload, entries=None):
         super().__init__(timeout=None)
         source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or "").strip()
         post_key = str(payload.get("postKey") or payload.get("poPostKey") or "").strip()
+        self.add_item(PoSignupClassSelect(payload))
         if po_signup_item_options(payload):
             self.add_item(PoSignupItemSelect(payload))
         self.add_item(PoSignupButton(payload))
+        if po_review_entry_options(entries or []):
+            self.add_item(PoSignupReviewSelect(payload, entries or []))
         if po_luck_entry_options(entries or []):
             self.add_item(PoSignupLuckSelect(payload, entries or []))
         if source_channel_id:
