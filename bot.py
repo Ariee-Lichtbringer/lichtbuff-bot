@@ -4368,6 +4368,8 @@ async def restore_active_raid_signup_views():
 
 
 async def restore_active_po_signup_views():
+    print("PO-Anmelder-Views im Lichtbuffs-Bot deaktiviert: separater PO-Bot ist zustaendig.")
+    return
     await client.wait_until_ready()
     await asyncio.sleep(4)
     restored = 0
