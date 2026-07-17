@@ -427,6 +427,8 @@ async def po_queue_loop():
                         continue
                     payload = item.get("payload") or {}
                     if clean(payload.get("mode")).lower() not in {"signup", "anmelder", "po_signup", "po-anmelder"}:
+                        await resolve_queue_item(item.get("rowNumber"))
+                        print(f"Alter PO-Post-Auftrag uebersprungen und erledigt markiert: {payload.get('postKey') or item.get('rowNumber')}")
                         continue
                     try:
                         normalized = await post_or_update_from_queue(client, payload)
