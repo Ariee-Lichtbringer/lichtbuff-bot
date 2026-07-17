@@ -6648,7 +6648,7 @@ def build_po_signup_entries_by_item_text(entries):
         )
         if lines:
             lines.append("━━━━━━━━━━━━━━━━")
-        lines.append(f"__**{po_item_icon(item_name)} {item_name}{po_points_suffix(rows[0])} ({len(rows)})**__")
+        lines.append(f"**{po_item_icon(item_name)} {item_name}{po_points_suffix(rows[0])} ({len(rows)})**")
         players = []
         for entry in rows:
             player = str(entry.get("player") or "-").strip()
