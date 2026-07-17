@@ -319,6 +319,7 @@ hordenbuff_rate_limited_until = 0
 CURRENT_GUILD_SLUG = contextvars.ContextVar("CURRENT_GUILD_SLUG", default=LICHTLOOT_GUILD_SLUG)
 class_emoji_cache = {}
 spec_emoji_cache = {}
+item_emoji_cache = {}
 
 
 def guild_slug_for_channel(channel_id):
@@ -3270,15 +3271,44 @@ def normalize_emoji_name(value):
     return re.sub(r"[^a-z0-9_]+", "", text)
 
 
+def item_emoji_candidates(item_name):
+    raw = str(item_name or "").strip().lower()
+    raw = raw.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+    normalized = normalize_emoji_name(raw)
+    underscored = re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", raw)).strip("_")
+    candidates = []
+    for value in [normalized, underscored]:
+        if not value:
+            continue
+        candidates.extend([value, f"item_{value}", f"loot_{value}", f"po_{value}"])
+    result = []
+    seen = set()
+    for value in candidates:
+        key = normalize_emoji_name(value)
+        if key and key not in seen:
+            result.append(key)
+            seen.add(key)
+    return result
+
+
+def po_item_icon(item_name):
+    for candidate in item_emoji_candidates(item_name):
+        cached = item_emoji_cache.get(candidate)
+        if cached:
+            return cached
+    return "◇"
+
+
 def refresh_class_emoji_cache():
     found_classes = {}
     found_specs = {}
+    found_items = {}
     all_emojis = []
     try:
         for guild in client.guilds:
             all_emojis.extend(getattr(guild, "emojis", []) or [])
     except Exception:
-        return found_classes, found_specs
+        return found_classes, found_specs, found_items
 
     by_name = {normalize_emoji_name(emoji.name): emoji for emoji in all_emojis}
     for class_key, names in CLASS_EMOJI_NAME_ALIASES.items():
@@ -3293,11 +3323,16 @@ def refresh_class_emoji_cache():
             if emoji:
                 found_specs[spec_key] = str(emoji)
                 break
+    for emoji_name, emoji in by_name.items():
+        if emoji_name.startswith(("item_", "loot_", "po_")):
+            found_items[emoji_name] = str(emoji)
     class_emoji_cache.clear()
     class_emoji_cache.update(found_classes)
     spec_emoji_cache.clear()
     spec_emoji_cache.update(found_specs)
-    return found_classes, found_specs
+    item_emoji_cache.clear()
+    item_emoji_cache.update(found_items)
+    return found_classes, found_specs, found_items
 
 
 def signup_spec_icon_key(spec_text, role="", class_name=""):
@@ -6541,7 +6576,17 @@ def build_standalone_po_entries_text(entries):
     return "\n".join(lines)
 
 
-def build_po_signup_entries_text(entries):
+def po_signup_group_by_item(payload):
+    value = str(
+        payload.get("groupBy")
+        or payload.get("poGroupBy")
+        or payload.get("sortBy")
+        or ""
+    ).strip().lower()
+    return value in {"item", "items", "loot", "gegenstand", "gegenstaende", "gegenstände"}
+
+
+def build_po_signup_entries_by_class_text(entries):
     all_entries = list(entries or [])
     if not all_entries:
         return "**Anmeldungen:**\nNoch keine PO-Anmeldung vorhanden."
@@ -6567,6 +6612,43 @@ def build_po_signup_entries_text(entries):
             luck = " 🍀" if str(entry.get("luckBy") or entry.get("luck_by") or "").strip() else ""
             lines.append(f"{signup_class_icon(class_name)} **{item}**{po_points_suffix(entry)} → {player}{suffix}{luck}")
     return "\n".join(lines)
+
+
+def build_po_signup_entries_by_item_text(entries):
+    all_entries = list(entries or [])
+    if not all_entries:
+        return "**Anmeldungen:**\nNoch keine PO-Anmeldung vorhanden."
+
+    grouped = {}
+    for entry in all_entries:
+        item_name = str(entry.get("item") or "-").strip() or "-"
+        grouped.setdefault(item_name, []).append(entry)
+
+    lines = [f"**Anmeldungen ({len(all_entries)}):**"]
+    for item_name in sorted(grouped.keys(), key=lambda value: value.lower()):
+        rows = sorted(
+            grouped[item_name],
+            key=lambda item: (
+                signup_class_sort_key(canonical_signup_class(item.get("className") or item.get("class_name") or item.get("klasse") or "Ohne Klasse")),
+                str(item.get("player") or "").lower()
+            )
+        )
+        lines.append("")
+        lines.append(f"__{po_item_icon(item_name)} {item_name}{po_points_suffix(rows[0])} ({len(rows)})__")
+        for entry in rows:
+            player = str(entry.get("player") or "-").strip()
+            class_name = canonical_signup_class(entry.get("className") or entry.get("class_name") or entry.get("klasse") or "Ohne Klasse")
+            status = str(entry.get("approvalStatus") or "").lower()
+            suffix = " ✅" if status == "approved" else " ❌" if status == "rejected" else ""
+            luck = " 🍀" if str(entry.get("luckBy") or entry.get("luck_by") or "").strip() else ""
+            lines.append(f"{signup_class_icon(class_name)} **{player}**{suffix}{luck}")
+    return "\n".join(lines)
+
+
+def build_po_signup_entries_text(entries, payload=None):
+    if payload and po_signup_group_by_item(payload):
+        return build_po_signup_entries_by_item_text(entries)
+    return build_po_signup_entries_by_class_text(entries)
 
 
 def is_po_signup_payload(payload):
@@ -7832,7 +7914,7 @@ async def post_standalone_po_list(payload):
     entries = annotate_po_entries_with_points(entries, points_by_item)
     payload = {**payload, "_poPointsByItem": points_by_item}
     target_channel = client.get_channel(target_channel_id) or await client.fetch_channel(target_channel_id)
-    text = build_po_signup_entries_text(entries) if is_po_signup_payload(payload) else build_standalone_po_entries_text(entries)
+    text = build_po_signup_entries_text(entries, payload) if is_po_signup_payload(payload) else build_standalone_po_entries_text(entries)
     msg, changed = await upsert_standalone_po_post(target_channel, payload, entries, text)
     try:
         await asyncio.to_thread(lichtloot_post, {
@@ -8313,9 +8395,10 @@ async def on_ready():
     print(f"Postet Übersicht in Channel: {POST_CHANNEL_ID}")
     print(f"Hordenbuff-Channels: {sorted(HORDENBUFF_CHANNEL_IDS)}")
     print(f"Loganalyse-Channels: {sorted(LOG_ANALYSIS_CHANNEL_IDS)}")
-    found_class_emojis, found_spec_emojis = refresh_class_emoji_cache()
+    found_class_emojis, found_spec_emojis, found_item_emojis = refresh_class_emoji_cache()
     print(f"Raid-Anmelder Klassenemojis gefunden: {', '.join(sorted(found_class_emojis.keys())) or 'keine'}")
     print(f"Raid-Anmelder Skillungsemojis gefunden: {', '.join(sorted(found_spec_emojis.keys())) or 'keine'}")
+    print(f"PO-Item Emojis gefunden: {len(found_item_emojis)}")
     print("Version 4.9.3 gestartet: Raid-Ankuendigung Hotfix signup_deadline + stale Queue aktiv.")
     schedule_p0_release_cache_refresh(force=True)
 
