@@ -8615,7 +8615,7 @@ async def on_ready():
     print(f"Raid-Anmelder Klassenemojis gefunden: {', '.join(sorted(found_class_emojis.keys())) or 'keine'}")
     print(f"Raid-Anmelder Skillungsemojis gefunden: {', '.join(sorted(found_spec_emojis.keys())) or 'keine'}")
     print(f"PO-Item Emojis gefunden: {len(found_item_emojis)}")
-    print("Version 4.9.3 gestartet: Raid-Ankuendigung Hotfix signup_deadline + stale Queue aktiv.")
+    print("Version 4.9.4 gestartet: PO-Anmelder Embed-Karten aktiv.")
     schedule_p0_release_cache_refresh(force=True)
 
     if not hasattr(client, "raid_signup_view_restore_started"):
