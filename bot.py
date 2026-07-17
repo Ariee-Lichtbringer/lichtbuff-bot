@@ -4336,6 +4336,57 @@ async def restore_active_raid_signup_views():
         print("Raid-Anmelder-Views konnten beim Start nicht wiederhergestellt werden:", e)
 
 
+async def restore_active_po_signup_views():
+    await client.wait_until_ready()
+    await asyncio.sleep(4)
+    restored = 0
+    refreshed = 0
+    for guild_slug in WORLDBUFF_GUILD_SLUGS:
+        token = CURRENT_GUILD_SLUG.set(guild_slug)
+        try:
+            state = load_json(po_post_file(), {})
+            for key, state_entry in list(state.items()):
+                if not isinstance(state_entry, dict):
+                    continue
+                payload = state_entry.get("payload") or {}
+                if not isinstance(payload, dict) or not is_po_signup_payload(payload):
+                    continue
+                message_id = str(state_entry.get("messageId") or "").strip()
+                if not message_id:
+                    continue
+                source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or "").strip()
+                target_channel_id = str(
+                    payload.get("targetChannelId")
+                    or payload.get("discordChannelId")
+                    or source_channel_id
+                ).strip()
+                try:
+                    entries = await load_saved_po_post_entries(payload, source_channel_id, target_channel_id)
+                except Exception as e:
+                    print(f"PO-Anmelder-Eintraege konnten nicht fuer View geladen werden ({key}): {e}")
+                    entries = []
+                try:
+                    client.add_view(PoSignupView(payload, entries), message_id=int(message_id))
+                    restored += 1
+                except Exception as e:
+                    print(f"PO-Anmelder-View konnte nicht registriert werden ({key}): {e}")
+                    continue
+                try:
+                    if target_channel_id:
+                        channel = client.get_channel(int(target_channel_id)) or await client.fetch_channel(int(target_channel_id))
+                        message = await channel.fetch_message(int(message_id))
+                        await message.edit(view=PoSignupView(payload, entries))
+                        refreshed += 1
+                        await asyncio.sleep(0.5)
+                except Exception as e:
+                    print(f"PO-Anmelder-View konnte nicht aktualisiert werden ({key}): {e}")
+        except Exception as e:
+            print(f"PO-Anmelder-Views konnten beim Start nicht wiederhergestellt werden ({guild_slug}): {e}")
+        finally:
+            CURRENT_GUILD_SLUG.reset(token)
+    print(f"PO-Anmelder-Views wiederhergestellt: {restored}, aktualisiert: {refreshed}.")
+
+
 def get_raid_names_for_channel(channel_id):
     result = []
     for raid, sources in DISCORD_RAIDHELPER_SOURCES.items():
@@ -8455,6 +8506,10 @@ async def on_ready():
     if not hasattr(client, "raid_signup_view_restore_started"):
         client.raid_signup_view_restore_started = True
         client.loop.create_task(restore_active_raid_signup_views())
+
+    if not hasattr(client, "po_signup_view_restore_started"):
+        client.po_signup_view_restore_started = True
+        client.loop.create_task(restore_active_po_signup_views())
 
     if not hasattr(client, "hordenbuff_task_started"):
         client.hordenbuff_task_started = True
