@@ -388,6 +388,63 @@ async def load_entries(payload):
     return result.get("entries") or []
 
 
+async def find_existing_message_id(payload):
+    try:
+        entries = await load_entries(payload)
+    except Exception as error:
+        print(f"PO-Anmelder bestehende Nachricht konnte nicht gesucht werden ({payload.get('postKey')}): {error}")
+        return ""
+    for entry in entries:
+        message_id = clean(entry.get("discordMessageId") or entry.get("mainMessageId"))
+        if message_id:
+            return message_id
+    return ""
+
+
+async def load_payloads_from_api_entries():
+    try:
+        result = await asyncio.to_thread(api_get, {
+            "action": "lichtbotGetPoPostEntries",
+            "queueToken": QUEUE_TOKEN,
+            "includeArchived": "false",
+            "t": int(time.time()),
+        })
+    except Exception as error:
+        print(f"PO-Anmelder konnten nicht aus LichtLoot geladen werden: {error}")
+        return []
+
+    payloads = {}
+    for entry in result.get("entries") or []:
+        post_key = clean(entry.get("postKey"))
+        message_id = clean(entry.get("discordMessageId") or entry.get("mainMessageId"))
+        target_channel_id = clean(entry.get("targetChannelId"))
+        source_channel_id = clean(entry.get("sourceChannelId") or target_channel_id)
+        if not post_key or not message_id or not target_channel_id:
+            continue
+        payloads[post_key] = {
+            "postKey": post_key,
+            "raid": normalize_raid(entry.get("raid")),
+            "title": clean(entry.get("title")) or "PO-Anmelder",
+            "sourceChannelId": source_channel_id,
+            "targetChannelId": target_channel_id,
+            "channelId": target_channel_id,
+            "messageId": message_id,
+            "source": "lichtloot_restore",
+        }
+    return list(payloads.values())
+
+
+async def refresh_po_view_only(client, payload):
+    target_channel_id = payload_target_channel_id(payload)
+    channel = client.get_channel(int(target_channel_id)) or await client.fetch_channel(int(target_channel_id))
+    message = await channel.fetch_message(int(payload["messageId"]))
+    items = await items_for_payload(payload)
+    entries = await load_entries(payload)
+    view = PoView(payload, items, entries)
+    await message.edit(view=view)
+    client.add_view(PoView(payload, items, entries), message_id=message.id)
+
+
 def po_review_entry_options(entries):
     result = []
     seen = set()
@@ -843,6 +900,8 @@ async def post_or_update_from_queue(client, payload):
         "channelId": str(target_channel_id),
         "messageId": clean(stored.get("messageId") or payload.get("messageId") or payload.get("discordMessageId")),
     }
+    if not normalized.get("messageId"):
+        normalized["messageId"] = await find_existing_message_id(normalized)
 
     channel = client.get_channel(int(target_channel_id)) or await client.fetch_channel(int(target_channel_id))
     items = await items_for_payload(normalized)
@@ -950,6 +1009,20 @@ async def on_ready():
             client.add_view(PoView(payload, items, entries), message_id=int(payload["messageId"]))
         except Exception as error:
             print(f"PO View konnte nicht wiederhergestellt werden ({payload.get('postKey')}): {error}")
+    restored = 0
+    known_posts = set(state.keys())
+    for payload in await load_payloads_from_api_entries():
+        if payload.get("postKey") in known_posts:
+            continue
+        try:
+            await refresh_po_view_only(client, payload)
+            state[payload["postKey"]] = payload
+            restored += 1
+        except Exception as error:
+            print(f"PO View konnte nicht aus LichtLoot wiederhergestellt werden ({payload.get('postKey')}): {error}")
+    if restored:
+        save_state(state)
+        print(f"PO Views aus LichtLoot wiederhergestellt: {restored}")
 
 
 @client.tree.command(name="po_anmelder", description="Erstellt einen PO-Anmelder im aktuellen Channel.")
