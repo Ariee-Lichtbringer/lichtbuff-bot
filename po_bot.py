@@ -112,6 +112,8 @@ RAID_NAMES = {
 user_classes = {}
 class_emoji_cache = {}
 item_emoji_cache = {}
+p0plus_cache = {}
+P0PLUS_CACHE_SECONDS = int(os.getenv("PO_BOT_P0PLUS_CACHE_SECONDS", "60") or "60")
 
 
 def clean(value):
@@ -303,6 +305,49 @@ async def load_raid_items(raid):
     return items
 
 
+def format_points(value):
+    try:
+        number = float(str(value).replace(",", "."))
+        if number.is_integer():
+            return str(int(number))
+        return f"{number:.2f}".rstrip("0").rstrip(".")
+    except Exception:
+        return clean(value)
+
+
+async def load_p0plus_labels(raid):
+    raid_key = normalize_raid(raid)
+    cached = p0plus_cache.get(raid_key)
+    now = time.time()
+    if cached and now - cached[0] < P0PLUS_CACHE_SECONDS:
+        return cached[1]
+    try:
+        result = await asyncio.to_thread(api_get, {"action": "getP0Plus", "raid": raid_key, "t": int(now)})
+    except Exception as error:
+        print(f"P0/P0+ Punkte konnten nicht geladen werden ({raid_key}): {error}")
+        return {}
+
+    grouped = {}
+    for row in result.get("entries") or []:
+        item = clean(row.get("item") or row.get("itemName"))
+        player = clean(row.get("player") or row.get("character") or row.get("name"))
+        points = format_points(row.get("count") if row.get("count") is not None else row.get("points"))
+        if not item or not player or not points or points == "0":
+            continue
+        item_key = slug(item)
+        player_key = slug(player)
+        grouped.setdefault(item_key, {})
+        grouped[item_key][player_key] = f"{player} {points}"
+
+    labels = {
+        item_key: ", ".join(players[key] for key in sorted(players.keys()))
+        for item_key, players in grouped.items()
+        if players
+    }
+    p0plus_cache[raid_key] = (now, labels)
+    return labels
+
+
 def payload_source_channel_id(payload):
     return clean(payload.get("sourceChannelId") or payload.get("channelId"))
 
@@ -453,7 +498,7 @@ async def luck_entry(payload, entry, user):
     return result
 
 
-def make_embed(payload, entries):
+def make_embed(payload, entries, p0plus_labels=None):
     embed = discord.Embed(
         title=f"📋 {display_raid(payload['raid'])} PO-Anmelder",
         color=discord.Color.gold(),
@@ -473,10 +518,13 @@ def make_embed(payload, entries):
         return embed
 
     lines = [f"**Anmeldungen ({len(entries)})**"]
+    p0plus_labels = p0plus_labels or {}
     for item in sorted(grouped.keys(), key=lambda value: value.lower()):
         rows = grouped[item]
+        p0_label = p0plus_labels.get(slug(item))
+        item_label = f"{item} ({p0_label})" if p0_label else item
         lines.append("")
-        lines.append(f"{item_icon(item)} **{item}**")
+        lines.append(f"{item_icon(item)} **{item_label}**")
         players = []
         for row in sorted(rows, key=lambda entry: clean(entry.get("player")).lower()):
             class_name = clean(row.get("className") or row.get("Klasse"))
@@ -761,7 +809,8 @@ async def refresh_po_message(client, payload):
     message = await channel.fetch_message(int(payload["messageId"]))
     items = await items_for_payload(payload)
     entries = await load_entries(payload)
-    await message.edit(embed=make_embed(payload, entries), view=PoView(payload, items, entries))
+    p0plus_labels = await load_p0plus_labels(payload.get("raid") or "")
+    await message.edit(embed=make_embed(payload, entries, p0plus_labels), view=PoView(payload, items, entries))
 
 
 async def post_or_update_from_queue(client, payload):
@@ -792,8 +841,9 @@ async def post_or_update_from_queue(client, payload):
     channel = client.get_channel(int(target_channel_id)) or await client.fetch_channel(int(target_channel_id))
     items = await items_for_payload(normalized)
     entries = await load_entries(normalized)
+    p0plus_labels = await load_p0plus_labels(normalized.get("raid") or "")
     view = PoView(normalized, items, entries)
-    embed = make_embed(normalized, entries)
+    embed = make_embed(normalized, entries, p0plus_labels)
     message = None
     if normalized.get("messageId"):
         try:
