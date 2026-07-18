@@ -501,6 +501,39 @@ async def refresh_po_view_only(client, payload):
     view = PoView(payload, items, entries)
     await message.edit(view=view)
     client.add_view(PoView(payload, items, entries), message_id=message.id)
+    return items, entries
+
+
+def quick_items_for_payload(payload):
+    return parse_item_options(payload.get("itemOptions") or payload.get("items") or payload.get("itemList"))
+
+
+def register_po_view(client, payload, items=None, entries=None):
+    message_id = clean(payload.get("messageId"))
+    if not message_id:
+        return False
+    try:
+        client.add_view(PoView(payload, items or [], entries or []), message_id=int(message_id))
+        return True
+    except Exception as error:
+        print(f"PO View konnte nicht registriert werden ({payload.get('postKey')}): {error}")
+        return False
+
+
+async def restore_po_view_fast(client, payload):
+    register_po_view(client, payload, quick_items_for_payload(payload), [])
+    try:
+        items = await items_for_payload(payload)
+    except Exception as error:
+        print(f"PO Items konnten beim Wiederherstellen nicht geladen werden ({payload.get('postKey')}): {error}")
+        items = quick_items_for_payload(payload)
+    try:
+        entries = await load_entries(payload)
+    except Exception as error:
+        print(f"PO Einträge konnten beim Wiederherstellen nicht geladen werden ({payload.get('postKey')}): {error}")
+        entries = []
+    register_po_view(client, payload, items, entries)
+    return items, entries
 
 
 def po_review_entry_options(entries):
@@ -726,12 +759,16 @@ class PoClassSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction):
-        class_name = self.values[0]
-        user_classes[f"{self.payload['postKey']}:{interaction.user.id}"] = class_name
-        await interaction.response.send_message(
-            f"{class_icon(class_name)} Klasse gespeichert: **{class_name}**. Jetzt Item auswählen.",
-            ephemeral=True,
-        )
+        try:
+            await interaction.response.defer(ephemeral=True)
+            class_name = self.values[0]
+            user_classes[f"{self.payload['postKey']}:{interaction.user.id}"] = class_name
+            await interaction.followup.send(
+                f"{class_icon(class_name)} Klasse gespeichert: **{class_name}**. Jetzt Item auswählen.",
+                ephemeral=True,
+            )
+        except Exception as error:
+            print(f"PO Klasse konnte nicht gespeichert werden ({self.payload.get('postKey')}): {error}")
 
 
 class PoItemSelect(discord.ui.Select):
@@ -937,7 +974,9 @@ async def refresh_po_message(client, payload):
     items = await items_for_payload(payload)
     entries = await load_entries(payload)
     p0plus_labels = await load_p0plus_labels(payload.get("raid") or "")
-    await message.edit(embed=make_embed(payload, entries, p0plus_labels), view=PoView(payload, items, entries))
+    view = PoView(payload, items, entries)
+    await message.edit(embed=make_embed(payload, entries, p0plus_labels), view=view)
+    register_po_view(client, payload, items, entries)
 
 
 async def post_or_update_from_queue(client, payload):
@@ -987,7 +1026,7 @@ async def post_or_update_from_queue(client, payload):
     state[post_key] = normalized
     save_state(state)
     await remember_po_message(normalized)
-    client.add_view(PoView(normalized, items, entries), message_id=message.id)
+    register_po_view(client, normalized, items, entries)
     return normalized
 
 
@@ -1068,10 +1107,8 @@ async def on_ready():
     state = load_state()
     for payload in state.values():
         try:
+            await restore_po_view_fast(client, payload)
             await refresh_po_message(client, payload)
-            items = await items_for_payload(payload)
-            entries = await load_entries(payload)
-            client.add_view(PoView(payload, items, entries), message_id=int(payload["messageId"]))
         except Exception as error:
             print(f"PO View konnte nicht wiederhergestellt werden ({payload.get('postKey')}): {error}")
     restored = 0
@@ -1080,6 +1117,7 @@ async def on_ready():
         if payload.get("postKey") in known_posts:
             continue
         try:
+            items, entries = await restore_po_view_fast(client, payload)
             await refresh_po_view_only(client, payload)
             state[payload["postKey"]] = payload
             restored += 1
