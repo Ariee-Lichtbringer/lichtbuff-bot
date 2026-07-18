@@ -648,12 +648,16 @@ async def review_entry(payload, entry, user):
 
 
 async def delete_entry(payload, entry, user):
+    raid_pin = payload_lichtloot_raid_pin(payload)
     result = await asyncio.to_thread(api_post, {
         "action": "lichtbotDeletePoPostEntry",
         "queueToken": QUEUE_TOKEN,
         "postKey": payload["postKey"],
         "sourceChannelId": payload_source_channel_id(payload),
         "targetChannelId": payload_target_channel_id(payload),
+        "raidPin": raid_pin,
+        "prioPin": raid_pin,
+        "lichtlootRaidId": raid_pin,
         "discordMessageId": payload.get("messageId") or entry.get("discordMessageId") or "",
         "player": entry.get("player") or "",
         "item": entry.get("item") or entry.get("itemName") or "",
