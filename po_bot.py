@@ -69,6 +69,7 @@ PO_ITEM_EMOJI_ALIASES = {
     "auge von c'thun": ["auge_von_cthun_"],
     "auge des todes": ["auge_des_todes"],
     "armreifen der königlichen erlösung": ["armreifen_der_kniglichen_erlsung"],
+    "band von accuria": ["band_von_accuria"],
     "band der ausbrennung": ["band_der_ausbrennung_"],
     "band der unerhörten gebete": ["_band_der_unerhrten_gebete", "band_der_unerhrten_gebete"],
     "band der unnatürlichen kräfte": ["band_der_unnatrlichen_krfte_", "band_der_unnatuerlichen_kraefte"],
@@ -79,6 +80,11 @@ PO_ITEM_EMOJI_ALIASES = {
     "formel: brust - große werte": ["formel_brust__groe_werte_"],
     "gressil, vorbote des untergangs": ["gressil_vorbote_des_untergangs"],
     "gurt des ansturms": ["gurt_des_ansturms_"],
+    "handschützer der erhabenheit": [
+        "handschtzer_der_erhabenheit",
+        "handschutzer_der_erhabenheit",
+        "handschuetzer_der_erhabenheit",
+    ],
     "hammer des wirbelnden nethers": ["hammer_des_wirbelnden_nethers_"],
     "maladath, runenverzierte klinge des schwarzen drachenschwarms": ["maladath"],
     "ring des märtyrers": ["ring_des_mrtyrers"],
@@ -94,10 +100,14 @@ PO_ITEM_EMOJI_ALIASES = {
     "blaues schmuckstück der hakkari": ["blaues_schmuckstck_der_hakkari", "blaues_schmuckstueck_der_hakkari"],
     "kriegsklinge der hakkari": ["kriegsklinge_der_hakkari"],
     "neltharions träne": ["_neltharions_trne", "neltharions_trne", "neltharions_traene"],
+    "prestor's talisman der verschwörung": ["prestors_talisman_der_verschwrung", "prestors_talisman_der_verschwoerung"],
+    "prestors talisman der verschwörung": ["prestors_talisman_der_verschwrung", "prestors_talisman_der_verschwoerung"],
     "urzeitlicher hakkarigötze": ["urzeitlicher_hakkarigtze", "urzeitlicher_hakkarigoetze"],
+    "unbarmherzige klinge": ["unbarmherzige_klinge"],
     "umhang des geballten hasses": ["umhang_des_geballten_hasses"],
     "wappen des schlächters": ["wappen_des_schlchters_", "wappen_des_schlaechters"],
     "zulianischer tigerbalgumhang": ["zulianischer_tigerbalgumhang"],
+    "chromatisch gehärtetes schwert": ["chromatisch_gehrttetes_schwert", "chromatisch_gehaertetes_schwert"],
 }
 
 RAID_NAMES = {
@@ -388,17 +398,65 @@ async def load_entries(payload):
     return result.get("entries") or []
 
 
-async def find_existing_message_id(payload):
+def message_matches_post_key(message, post_key):
+    if not post_key:
+        return False
+    if post_key in clean(getattr(message, "content", "")):
+        return True
+    for embed in getattr(message, "embeds", []) or []:
+        if post_key in clean(getattr(embed, "title", "")) or post_key in clean(getattr(embed, "description", "")):
+            return True
+        for field in getattr(embed, "fields", []) or []:
+            if post_key in clean(getattr(field, "name", "")) or post_key in clean(getattr(field, "value", "")):
+                return True
+        footer = getattr(embed, "footer", None)
+        if footer and post_key in clean(getattr(footer, "text", "")):
+            return True
+    return False
+
+
+async def find_existing_message_id(client, payload):
     try:
         entries = await load_entries(payload)
     except Exception as error:
         print(f"PO-Anmelder bestehende Nachricht konnte nicht gesucht werden ({payload.get('postKey')}): {error}")
-        return ""
+        entries = []
     for entry in entries:
         message_id = clean(entry.get("discordMessageId") or entry.get("mainMessageId"))
         if message_id:
             return message_id
+    target_channel_id = payload_target_channel_id(payload)
+    post_key = clean(payload.get("postKey"))
+    if not target_channel_id or not post_key:
+        return ""
+    try:
+        channel = client.get_channel(int(target_channel_id)) or await client.fetch_channel(int(target_channel_id))
+        async for message in channel.history(limit=100):
+            if message_matches_post_key(message, post_key):
+                print(f"PO-Anmelder bestehende Discord-Nachricht gefunden: {post_key} -> {message.id}")
+                return str(message.id)
+    except Exception as error:
+        print(f"PO-Anmelder Channel-Suche fehlgeschlagen ({post_key}): {error}")
     return ""
+
+
+async def remember_po_message(payload):
+    message_id = clean(payload.get("messageId"))
+    if not message_id:
+        return
+    try:
+        await asyncio.to_thread(api_post, {
+            "action": "lichtbotSetPoPostMessage",
+            "queueToken": QUEUE_TOKEN,
+            "postKey": payload["postKey"],
+            "sourceChannelId": payload_source_channel_id(payload),
+            "targetChannelId": payload_target_channel_id(payload),
+            "discordMessageId": message_id,
+            "raid": payload.get("raid") or "",
+            "title": payload.get("title") or "PO-Anmelder",
+        })
+    except Exception as error:
+        print(f"PO-Anmelder Nachricht-ID konnte nicht in LichtLoot gespeichert werden ({payload.get('postKey')}): {error}")
 
 
 async def load_payloads_from_api_entries():
@@ -510,7 +568,9 @@ async def review_entry(payload, entry, user):
         "postKey": payload["postKey"],
         "sourceChannelId": payload_source_channel_id(payload),
         "targetChannelId": payload_target_channel_id(payload),
-        "messageId": entry.get("messageId") or entry.get("discordMessageId") or "",
+        "messageId": entry.get("messageId") or "",
+        "poMessageId": entry.get("messageId") or "",
+        "discordMessageId": payload.get("messageId") or entry.get("discordMessageId") or "",
         "player": entry.get("player") or "",
         "item": entry.get("item") or entry.get("itemName") or "",
         "status": "approved",
@@ -528,6 +588,7 @@ async def delete_entry(payload, entry, user):
         "postKey": payload["postKey"],
         "sourceChannelId": payload_source_channel_id(payload),
         "targetChannelId": payload_target_channel_id(payload),
+        "discordMessageId": payload.get("messageId") or entry.get("discordMessageId") or "",
         "player": entry.get("player") or "",
         "item": entry.get("item") or entry.get("itemName") or "",
         "discordUserId": str(getattr(user, "id", "") or ""),
@@ -545,6 +606,7 @@ async def luck_entry(payload, entry, user):
         "postKey": payload["postKey"],
         "sourceChannelId": payload_source_channel_id(payload),
         "targetChannelId": payload_target_channel_id(payload),
+        "discordMessageId": payload.get("messageId") or entry.get("discordMessageId") or "",
         "player": entry.get("player") or "",
         "item": entry.get("item") or entry.get("itemName") or "",
         "luckBy": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user),
@@ -637,6 +699,8 @@ class PoEntryModal(discord.ui.Modal):
             "targetChannelId": payload_target_channel_id(payload),
             "raid": payload["raid"],
             "title": payload.get("title") or "PO-Anmelder",
+            "discordMessageId": payload.get("messageId") or "",
+            "messageId": payload.get("messageId") or "",
             "player": char_name,
             "className": class_name,
             "item": self.item_name,
@@ -901,7 +965,7 @@ async def post_or_update_from_queue(client, payload):
         "messageId": clean(stored.get("messageId") or payload.get("messageId") or payload.get("discordMessageId")),
     }
     if not normalized.get("messageId"):
-        normalized["messageId"] = await find_existing_message_id(normalized)
+        normalized["messageId"] = await find_existing_message_id(client, normalized)
 
     channel = client.get_channel(int(target_channel_id)) or await client.fetch_channel(int(target_channel_id))
     items = await items_for_payload(normalized)
@@ -922,6 +986,7 @@ async def post_or_update_from_queue(client, payload):
         normalized["messageId"] = str(message.id)
     state[post_key] = normalized
     save_state(state)
+    await remember_po_message(normalized)
     client.add_view(PoView(normalized, items, entries), message_id=message.id)
     return normalized
 
