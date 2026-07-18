@@ -27,6 +27,7 @@ API_URL = os.getenv("LICHTLOOT_API_URL", "https://lichtloot-production.up.railwa
 QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
 STATE_FILE = Path(os.getenv("PO_BOT_STATE_FILE", "po_bot_posts.json"))
 QUEUE_CHECK_SECONDS = int(os.getenv("PO_BOT_QUEUE_CHECK_SECONDS", "10") or "10")
+PRIO_SERVER = os.getenv("PO_BOT_PRIO_SERVER", "Lichtbringer")
 
 CLASS_EMOJI_FALLBACKS = {
     "warrior": "⚔️",
@@ -286,6 +287,30 @@ def api_post(payload):
     )
     with urllib.request.urlopen(request, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def payload_lichtloot_raid_pin(payload):
+    return clean(
+        payload.get("lichtlootPlayerPin")
+        or payload.get("playerPin")
+        or payload.get("lichtlootRaidId")
+    )
+
+
+def save_po_signup_prio(payload, player, class_name, item):
+    raid_pin = payload_lichtloot_raid_pin(payload)
+    if not raid_pin:
+        return None
+
+    return api_post({
+        "action": "lichtbotSavePoSignupPrio",
+        "queueToken": QUEUE_TOKEN,
+        "raidPin": raid_pin,
+        "player": player,
+        "server": PRIO_SERVER,
+        "className": class_name,
+        "item": item,
+    })
 
 
 def load_state():
@@ -752,8 +777,19 @@ class PoEntryModal(discord.ui.Modal):
         if not result.get("success"):
             await interaction.followup.send(f"⚠️ PO konnte nicht gespeichert werden: {result.get('error') or 'unbekannt'}", ephemeral=True)
             return
+        prio_result = None
+        try:
+            prio_result = await asyncio.to_thread(save_po_signup_prio, payload, char_name, class_name, self.item_name)
+        except Exception as error:
+            prio_result = {"success": False, "error": str(error)}
         await refresh_po_message(interaction.client, payload)
-        await interaction.followup.send(f"✅ Gespeichert: **{char_name}** → **{self.item_name}**", ephemeral=True)
+        message = f"✅ Gespeichert: **{char_name}** → **{self.item_name}**"
+        if prio_result:
+            if prio_result.get("success"):
+                message += "\n📌 Auch als PO+ in LichtLoot gespeichert."
+            else:
+                message += f"\n⚠️ LichtLoot-PO+ konnte nicht gespeichert werden: {prio_result.get('error') or 'unbekannt'}"
+        await interaction.followup.send(message, ephemeral=True)
 
 
 class PoClassSelect(discord.ui.Select):
