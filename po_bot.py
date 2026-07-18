@@ -1141,6 +1141,11 @@ async def po_queue_loop():
             if result.get("success"):
                 items = result.get("items") or []
                 po_items = [item for item in items if clean(item.get("type")) == "po_post"]
+                stale_delete_items = [item for item in items if clean(item.get("type")) == "po_post_delete"]
+                for item in stale_delete_items:
+                    await resolve_queue_item(item.get("rowNumber"))
+                if stale_delete_items:
+                    print(f"PO-Bot Queue: {len(stale_delete_items)} alte po_post_delete-Auftraege erledigt markiert.")
                 if not po_items:
                     now = time.time()
                     if now - empty_queue_log_at >= 60:
