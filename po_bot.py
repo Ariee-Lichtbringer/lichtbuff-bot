@@ -25,7 +25,8 @@ TEST_GUILD_ID = str(os.getenv("PO_BOT_GUILD_ID", "") or "").strip()
 GUILD_SLUG = os.getenv("LICHTLOOT_GUILD", "") or os.getenv("LICHTLOOT_GUILD_SLUG", "") or "lichtloot"
 if GUILD_SLUG.strip().lower() == "lichtbringer":
     GUILD_SLUG = "lichtloot"
-API_URL = os.getenv("LICHTLOOT_API_URL", "https://lichtloot-production.up.railway.app/api/apps-script")
+RAILWAY_API_URL = "https://lichtloot-production.up.railway.app/api/apps-script"
+API_URL = os.getenv("PO_BOT_API_URL", "") or os.getenv("LICHTLOOT_RAILWAY_API_URL", "") or RAILWAY_API_URL
 QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
 STATE_FILE = Path(os.getenv("PO_BOT_STATE_FILE", "po_bot_posts.json"))
 QUEUE_CHECK_SECONDS = int(os.getenv("PO_BOT_QUEUE_CHECK_SECONDS", "10") or "10")
@@ -1125,7 +1126,7 @@ async def po_queue_loop():
     if not QUEUE_TOKEN:
         print("PO-Bot Queue deaktiviert: LICHTBOT_QUEUE_TOKEN fehlt.")
         return
-    print(f"PO-Bot Queue aktiv: guild={GUILD_SLUG}, pruefe alle {QUEUE_CHECK_SECONDS} Sekunden.")
+    print(f"PO-Bot Queue aktiv: guild={GUILD_SLUG}, api={API_URL}, pruefe alle {QUEUE_CHECK_SECONDS} Sekunden.")
     while not client.is_closed():
         try:
             result = await asyncio.to_thread(api_get, {
