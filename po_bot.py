@@ -297,15 +297,20 @@ def payload_lichtloot_raid_pin(payload):
     )
 
 
-def save_po_signup_prio(payload, player, class_name, item):
+def save_po_signup_prio(payload, player, class_name, item, player_login=""):
     raid_pin = payload_lichtloot_raid_pin(payload)
     if not raid_pin:
         return None
 
+    login = clean(player_login)
     return api_post({
         "action": "lichtbotSavePoSignupPrio",
         "queueToken": QUEUE_TOKEN,
         "raidPin": raid_pin,
+        "prioPin": raid_pin,
+        "lichtlootRaidId": raid_pin,
+        "playerPin": login,
+        "spielerLogin": login,
         "player": player,
         "server": PRIO_SERVER,
         "className": class_name,
@@ -748,16 +753,28 @@ class PoEntryModal(discord.ui.Modal):
             required=True,
             max_length=50,
         )
+        self.player_login = discord.ui.TextInput(
+            label="LichtLoot Spielerlogin",
+            placeholder="dein Spielerlogin/PIN aus LichtLoot",
+            required=True,
+            max_length=80,
+        )
         self.add_item(self.char_name)
+        self.add_item(self.player_login)
 
     async def on_submit(self, interaction):
         await interaction.response.defer(ephemeral=True)
         char_name = clean(self.char_name.value)
+        player_login = clean(self.player_login.value)
         class_name = clean(self.class_name)
         if not class_name:
             await interaction.followup.send("⚠️ Bitte zuerst eine Klasse wählen.", ephemeral=True)
             return
+        if not player_login:
+            await interaction.followup.send("⚠️ Bitte deinen LichtLoot Spielerlogin eintragen.", ephemeral=True)
+            return
         payload = self.payload
+        raid_pin = payload_lichtloot_raid_pin(payload)
         result = await asyncio.to_thread(api_post, {
             "action": "lichtbotSavePoPostEntry",
             "queueToken": QUEUE_TOKEN,
@@ -768,9 +785,14 @@ class PoEntryModal(discord.ui.Modal):
             "title": payload.get("title") or "PO-Anmelder",
             "discordMessageId": payload.get("messageId") or "",
             "messageId": payload.get("messageId") or "",
+            "raidPin": raid_pin,
+            "prioPin": raid_pin,
+            "lichtlootRaidId": raid_pin,
             "player": char_name,
             "className": class_name,
             "item": self.item_name,
+            "playerPin": player_login,
+            "spielerLogin": player_login,
             "discordUserId": str(interaction.user.id),
             "discordName": interaction.user.display_name,
         })
@@ -779,7 +801,7 @@ class PoEntryModal(discord.ui.Modal):
             return
         prio_result = None
         try:
-            prio_result = await asyncio.to_thread(save_po_signup_prio, payload, char_name, class_name, self.item_name)
+            prio_result = await asyncio.to_thread(save_po_signup_prio, payload, char_name, class_name, self.item_name, player_login)
         except Exception as error:
             prio_result = {"success": False, "error": str(error)}
         await refresh_po_message(interaction.client, payload)
@@ -844,8 +866,15 @@ class ManualItemModal(PoEntryModal):
         self.class_name = class_name
         self.item_input = discord.ui.TextInput(label="Itemname", required=True, max_length=100)
         self.char_name = discord.ui.TextInput(label="Charaktername", default=default_char[:50], required=True, max_length=50)
+        self.player_login = discord.ui.TextInput(
+            label="LichtLoot Spielerlogin",
+            placeholder="dein Spielerlogin/PIN aus LichtLoot",
+            required=True,
+            max_length=80,
+        )
         self.add_item(self.item_input)
         self.add_item(self.char_name)
+        self.add_item(self.player_login)
 
     async def on_submit(self, interaction):
         self.item_name = clean(self.item_input.value)
