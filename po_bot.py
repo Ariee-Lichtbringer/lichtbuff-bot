@@ -131,6 +131,7 @@ class_emoji_cache = {}
 item_emoji_cache = {}
 p0plus_cache = {}
 P0PLUS_CACHE_SECONDS = int(os.getenv("PO_BOT_P0PLUS_CACHE_SECONDS", "60") or "60")
+empty_queue_log_at = 0
 
 
 def clean(value):
@@ -1122,6 +1123,7 @@ async def resolve_queue_item(row_number):
 
 
 async def po_queue_loop():
+    global empty_queue_log_at
     await client.wait_until_ready()
     if not QUEUE_TOKEN:
         print("PO-Bot Queue deaktiviert: LICHTBOT_QUEUE_TOKEN fehlt.")
@@ -1137,9 +1139,15 @@ async def po_queue_loop():
                 "t": int(time.time()),
             })
             if result.get("success"):
-                for item in result.get("items") or []:
-                    if clean(item.get("type")) != "po_post":
-                        continue
+                items = result.get("items") or []
+                po_items = [item for item in items if clean(item.get("type")) == "po_post"]
+                if not po_items:
+                    now = time.time()
+                    if now - empty_queue_log_at >= 60:
+                        queue_types = ", ".join(clean(item.get("type")) or "?" for item in items) or "leer"
+                        print(f"PO-Bot Queue: kein po_post gefunden. Antwort-Typen: {queue_types}")
+                        empty_queue_log_at = now
+                for item in po_items:
                     payload = item.get("payload") or {}
                     mode = clean(payload.get("mode")).lower() or "signup"
                     if mode not in {"signup", "anmelder", "po_signup", "po-anmelder"}:
