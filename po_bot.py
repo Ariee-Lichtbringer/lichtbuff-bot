@@ -944,6 +944,7 @@ async def on_ready():
     state = load_state()
     for payload in state.values():
         try:
+            await refresh_po_message(client, payload)
             items = await items_for_payload(payload)
             entries = await load_entries(payload)
             client.add_view(PoView(payload, items, entries), message_id=int(payload["messageId"]))
