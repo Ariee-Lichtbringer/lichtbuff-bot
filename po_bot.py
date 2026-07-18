@@ -20,9 +20,9 @@ except Exception:
     pass
 
 
-TOKEN = os.getenv("PO_BOT_TOKEN", "")
+TOKEN = os.getenv("PO_BOT_TOKEN", "") or os.getenv("DISCORD_TOKEN", "")
 TEST_GUILD_ID = str(os.getenv("PO_BOT_GUILD_ID", "") or "").strip()
-GUILD_SLUG = os.getenv("LICHTLOOT_GUILD", "lichtbringer")
+GUILD_SLUG = os.getenv("LICHTLOOT_GUILD", "") or os.getenv("LICHTLOOT_GUILD_SLUG", "") or "lichtloot"
 API_URL = os.getenv("LICHTLOOT_API_URL", "https://lichtloot-production.up.railway.app/api/apps-script")
 QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
 STATE_FILE = Path(os.getenv("PO_BOT_STATE_FILE", "po_bot_posts.json"))
@@ -1138,7 +1138,8 @@ async def po_queue_loop():
                     if clean(item.get("type")) != "po_post":
                         continue
                     payload = item.get("payload") or {}
-                    if clean(payload.get("mode")).lower() not in {"signup", "anmelder", "po_signup", "po-anmelder"}:
+                    mode = clean(payload.get("mode")).lower() or "signup"
+                    if mode not in {"signup", "anmelder", "po_signup", "po-anmelder"}:
                         await resolve_queue_item(item.get("rowNumber"))
                         print(f"Alter PO-Post-Auftrag uebersprungen und erledigt markiert: {payload.get('postKey') or item.get('rowNumber')}")
                         continue
