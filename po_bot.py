@@ -668,21 +668,28 @@ class PoReviewSelect(discord.ui.Select):
     def __init__(self, payload, entries):
         self.payload = payload
         self.entries = list(entries or [])
+        review_options = po_review_entry_options(self.entries)
         options = [
             discord.SelectOption(label=label, value=value, emoji="✅")
-            for value, label in po_review_entry_options(self.entries)
+            for value, label in review_options
         ]
+        if not options:
+            options = [discord.SelectOption(label="Keine offenen Einträge", value="none", emoji="✅")]
         super().__init__(
             custom_id=f"po-review:{payload['postKey'][:70]}",
             placeholder="Item freigeben",
             min_values=1,
             max_values=1,
             options=options,
+            disabled=not bool(review_options),
         )
 
     async def callback(self, interaction):
         await interaction.response.defer(ephemeral=True)
         try:
+            if not self.values or self.values[0] == "none":
+                await interaction.followup.send("Es gibt gerade keinen offenen PO-Eintrag zum Freigeben.", ephemeral=True)
+                return
             if not await reviewer_allowed(interaction.user):
                 await interaction.followup.send(
                     "⚠️ Nur Gildenleitung, Raidoffiziere oder Gildenoffiziere können PO-Einträge freigeben.",
@@ -797,8 +804,7 @@ class PoView(discord.ui.View):
             self.add_item(PoItemSelect(payload, items))
         self.add_item(PoManualButton(payload))
         self.add_item(PoDeleteButton(payload))
-        if po_review_entry_options(entries or []):
-            self.add_item(PoReviewSelect(payload, entries or []))
+        self.add_item(PoReviewSelect(payload, entries or []))
         if po_entry_options(entries or [], only_unlucked=True):
             self.add_item(PoLuckSelect(payload, entries or []))
 
