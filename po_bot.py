@@ -28,16 +28,76 @@ QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
 STATE_FILE = Path(os.getenv("PO_BOT_STATE_FILE", "po_bot_posts.json"))
 QUEUE_CHECK_SECONDS = int(os.getenv("PO_BOT_QUEUE_CHECK_SECONDS", "10") or "10")
 
-CLASS_EMOJIS = {
-    "Warrior": "⚔️",
-    "Druid": "🌿",
-    "Paladin": "✨",
-    "Rogue": "🗡️",
-    "Hunter": "🏹",
-    "Priest": "💠",
-    "Mage": "🔥",
-    "Warlock": "💀",
-    "Shaman": "⚡",
+CLASS_EMOJI_FALLBACKS = {
+    "warrior": "⚔️",
+    "druid": "🌿",
+    "paladin": "✨",
+    "rogue": "🗡️",
+    "hunter": "🏹",
+    "priest": "💠",
+    "mage": "🔥",
+    "warlock": "💀",
+    "shaman": "⚡",
+}
+
+CLASS_EMOJI_ENV = {
+    "warrior": ("CLASS_EMOJI_WARRIOR", "classicon_warrior"),
+    "druid": ("CLASS_EMOJI_DRUID", "classicon_druid"),
+    "paladin": ("CLASS_EMOJI_PALADIN", "classicon_paladin"),
+    "rogue": ("CLASS_EMOJI_ROGUE", "classicon_rogue"),
+    "hunter": ("CLASS_EMOJI_HUNTER", "classicon_hunter"),
+    "priest": ("CLASS_EMOJI_PRIEST", "classicon_priest"),
+    "mage": ("CLASS_EMOJI_MAGE", "classicon_mage"),
+    "warlock": ("CLASS_EMOJI_WARLOCK", "classicon_warlock"),
+    "shaman": ("CLASS_EMOJI_SHAMAN", "classicon_shaman"),
+}
+
+CLASS_EMOJI_NAME_ALIASES = {
+    "warrior": ["krieger", "warrior", "classicon_warrior"],
+    "druid": ["druide", "druid", "classicon_druid"],
+    "paladin": ["pala", "paladin", "classicon_paladin"],
+    "rogue": ["schurke", "rogue", "classicon_rogue"],
+    "hunter": ["jäger", "jaeger", "jager", "hunter", "classicon_hunter"],
+    "priest": ["priester", "priest", "classicon_priest"],
+    "mage": ["magier", "mage", "classicon_mage"],
+    "warlock": ["hexenmeister", "hexer", "warlock", "classicon_warlock"],
+    "shaman": ["schamane", "shaman", "classicon_shaman"],
+}
+
+PO_ITEM_EMOJI_ALIASES = {
+    "amulett von veknilash": ["amulett_von_veknilash"],
+    "auge von c'thun": ["auge_von_cthun_"],
+    "auge des todes": ["auge_des_todes"],
+    "armreifen der königlichen erlösung": ["armreifen_der_kniglichen_erlsung"],
+    "band der ausbrennung": ["band_der_ausbrennung_"],
+    "band der unerhörten gebete": ["_band_der_unerhrten_gebete", "band_der_unerhrten_gebete"],
+    "band der unnatürlichen kräfte": ["band_der_unnatrlichen_krfte_", "band_der_unnatuerlichen_kraefte"],
+    "die gebundene essenz saphirons": ["die_gebundene_essenz_saphirons"],
+    "gebundene essenz von saphiron": ["die_gebundene_essenz_saphirons"],
+    "die zehrende kälte": ["die_zehrende_klte", "die_zehrende_kaelte"],
+    "fetisch des sandhäschers": ["fetisch_des_sandhschers", "fetisch_des_sandhaeschers"],
+    "formel: brust - große werte": ["formel_brust__groe_werte_"],
+    "gressil, vorbote des untergangs": ["gressil_vorbote_des_untergangs"],
+    "gurt des ansturms": ["gurt_des_ansturms_"],
+    "hammer des wirbelnden nethers": ["hammer_des_wirbelnden_nethers_"],
+    "maladath, runenverzierte klinge des schwarzen drachenschwarms": ["maladath"],
+    "ring des märtyrers": ["ring_des_mrtyrers"],
+    "saphirons linkes auge": ["saphirons_linkes_auge"],
+    "schild der geißelung": ["_schild_der_geielung", "schild_der_geisselung"],
+    "schlägermal": ["_schlgermal", "schlaegermal"],
+    "schneller razzashiraptor": ["schneller_razzashiraptor"],
+    "schneller zulianischer tiger": ["schneller_zulianischer_tiger", "schneller_zullianischer_tiger"],
+    "szepter des falschen propheten": ["szepter_des_falschen_propheten"],
+    "stulpen des friedensbewahrers": ["stulpen_des_friedensbewahrers"],
+    "stulpen der vernichtung": ["stulpen_der_vernichtung"],
+    "stulpen der dunklen stürme": ["stulpen_der_dunklen_strme"],
+    "blaues schmuckstück der hakkari": ["blaues_schmuckstck_der_hakkari", "blaues_schmuckstueck_der_hakkari"],
+    "kriegsklinge der hakkari": ["kriegsklinge_der_hakkari"],
+    "neltharions träne": ["_neltharions_trne", "neltharions_trne", "neltharions_traene"],
+    "urzeitlicher hakkarigötze": ["urzeitlicher_hakkarigtze", "urzeitlicher_hakkarigoetze"],
+    "umhang des geballten hasses": ["umhang_des_geballten_hasses"],
+    "wappen des schlächters": ["wappen_des_schlchters_", "wappen_des_schlaechters"],
+    "zulianischer tigerbalgumhang": ["zulianischer_tigerbalgumhang"],
 }
 
 RAID_NAMES = {
@@ -50,6 +110,8 @@ RAID_NAMES = {
 }
 
 user_classes = {}
+class_emoji_cache = {}
+item_emoji_cache = {}
 
 
 def clean(value):
@@ -83,6 +145,114 @@ def slug(value):
     text = text.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
     text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
     return text or "po"
+
+
+def class_key(class_name):
+    key = clean(class_name).lower()
+    aliases = {
+        "krieger": "warrior",
+        "druide": "druid",
+        "schurke": "rogue",
+        "jäger": "hunter",
+        "jaeger": "hunter",
+        "jager": "hunter",
+        "priester": "priest",
+        "magier": "mage",
+        "hexenmeister": "warlock",
+        "hexer": "warlock",
+        "schamane": "shaman",
+    }
+    return aliases.get(key, key)
+
+
+def normalize_emoji_name(value):
+    text = clean(value).lower()
+    text = text.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+    return re.sub(r"[^a-z0-9_]+", "", text)
+
+
+def item_emoji_candidates(item_name):
+    raw = clean(item_name).lower()
+    raw = raw.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+    normalized = normalize_emoji_name(raw)
+    underscored = re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", raw)).strip("_")
+    candidates = []
+    original_key = clean(item_name).lower()
+    candidates.extend(PO_ITEM_EMOJI_ALIASES.get(original_key, []))
+    for value in [normalized, underscored]:
+        if value:
+            candidates.extend([value, f"item_{value}", f"loot_{value}", f"po_{value}"])
+    result = []
+    seen = set()
+    for value in candidates:
+        key = normalize_emoji_name(value)
+        if key and key not in seen:
+            result.append(key)
+            seen.add(key)
+    return result
+
+
+def refresh_emoji_cache():
+    found_classes = {}
+    found_items = {}
+    all_emojis = []
+    try:
+        for guild in client.guilds:
+            all_emojis.extend(getattr(guild, "emojis", []) or [])
+    except Exception:
+        return found_classes, found_items
+
+    by_name = {normalize_emoji_name(emoji.name): emoji for emoji in all_emojis}
+    for key, names in CLASS_EMOJI_NAME_ALIASES.items():
+        for name in names:
+            emoji = by_name.get(normalize_emoji_name(name))
+            if emoji:
+                found_classes[key] = str(emoji)
+                break
+    for emoji_name, emoji in by_name.items():
+        found_items[emoji_name] = str(emoji)
+    class_emoji_cache.clear()
+    class_emoji_cache.update(found_classes)
+    item_emoji_cache.clear()
+    item_emoji_cache.update(found_items)
+    return found_classes, found_items
+
+
+def class_icon(class_name):
+    key = class_key(class_name)
+    env_name, emoji_name = CLASS_EMOJI_ENV.get(key, ("", ""))
+    raw = clean(os.getenv(env_name, ""))
+    if raw.startswith("<:") or raw.startswith("<a:"):
+        return raw
+    if raw.isdigit() and len(raw) >= 15:
+        return f"<:{emoji_name}:{raw}>"
+    return class_emoji_cache.get(key) or CLASS_EMOJI_FALLBACKS.get(key, "◆")
+
+
+def select_emoji(icon):
+    if icon.startswith("<:") or icon.startswith("<a:"):
+        try:
+            return discord.PartialEmoji.from_str(icon)
+        except Exception:
+            return None
+    return icon or None
+
+
+def class_select_emoji(class_name):
+    return select_emoji(class_icon(class_name)) or CLASS_EMOJI_FALLBACKS.get(class_key(class_name), "◆")
+
+
+def item_icon(item_name):
+    for candidate in item_emoji_candidates(item_name):
+        cached = item_emoji_cache.get(candidate)
+        if cached:
+            return cached
+    return "◇"
+
+
+def item_select_emoji(item_name):
+    icon = item_icon(item_name)
+    return select_emoji(icon) if icon != "◇" else None
 
 
 def api_get(params):
@@ -196,11 +366,11 @@ def make_embed(payload, entries):
     for item in sorted(grouped.keys(), key=lambda value: value.lower()):
         rows = grouped[item]
         lines.append("")
-        lines.append(f"◇ **{item}**")
+        lines.append(f"{item_icon(item)} **{item}**")
         players = []
         for row in sorted(rows, key=lambda entry: clean(entry.get("player")).lower()):
             class_name = clean(row.get("className") or row.get("Klasse"))
-            icon = CLASS_EMOJIS.get(class_name, "◆")
+            icon = class_icon(class_name)
             approved = " ✅" if row.get("approved") or row.get("approvalStatus") == "approved" else ""
             luck = " 🍀" if row.get("luckBy") else ""
             players.append(f"{icon} {clean(row.get('player'))}{approved}{luck}")
@@ -212,8 +382,8 @@ def make_embed(payload, entries):
 
 def class_options():
     return [
-        discord.SelectOption(label=name, value=name, emoji=emoji)
-        for name, emoji in CLASS_EMOJIS.items()
+        discord.SelectOption(label=name, value=name, emoji=class_select_emoji(name))
+        for name in ["Warrior", "Druid", "Paladin", "Rogue", "Hunter", "Priest", "Mage", "Warlock", "Shaman"]
     ]
 
 
@@ -280,7 +450,7 @@ class PoClassSelect(discord.ui.Select):
         class_name = self.values[0]
         user_classes[f"{self.payload['postKey']}:{interaction.user.id}"] = class_name
         await interaction.response.send_message(
-            f"{CLASS_EMOJIS.get(class_name, '')} Klasse gespeichert: **{class_name}**. Jetzt Item auswählen.",
+            f"{class_icon(class_name)} Klasse gespeichert: **{class_name}**. Jetzt Item auswählen.",
             ephemeral=True,
         )
 
@@ -288,7 +458,10 @@ class PoClassSelect(discord.ui.Select):
 class PoItemSelect(discord.ui.Select):
     def __init__(self, payload, items):
         self.payload = payload
-        options = [discord.SelectOption(label=item[:100], value=item[:100]) for item in items[:25]]
+        options = [
+            discord.SelectOption(label=item[:100], value=item[:100], emoji=item_select_emoji(item))
+            for item in items[:25]
+        ]
         super().__init__(
             custom_id=f"po-item:{payload['postKey']}",
             placeholder="Item auswählen und PO eintragen",
@@ -469,6 +642,9 @@ client = PoBot()
 @client.event
 async def on_ready():
     print(f"PO Bot online als {client.user}")
+    found_classes, found_items = refresh_emoji_cache()
+    print(f"PO Klassenemojis gefunden: {', '.join(sorted(found_classes.keys())) or 'keine'}")
+    print(f"PO Item-Emojis gefunden: {len(found_items)}")
     state = load_state()
     for payload in state.values():
         try:
