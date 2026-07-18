@@ -76,6 +76,8 @@ PO_ITEM_EMOJI_ALIASES = {
     "die gebundene essenz saphirons": ["die_gebundene_essenz_saphirons"],
     "gebundene essenz von saphiron": ["die_gebundene_essenz_saphirons"],
     "die zehrende kälte": ["die_zehrende_klte", "die_zehrende_kaelte"],
+    "drachenfangzahn-talisman": ["_drachenfangzahntalisman", "drachenfangzahntalisman", "drachenfangzahn_talisman"],
+    "drachenfangzahn talisman": ["_drachenfangzahntalisman", "drachenfangzahntalisman", "drachenfangzahn_talisman"],
     "fetisch des sandhäschers": ["fetisch_des_sandhschers", "fetisch_des_sandhaeschers"],
     "formel: brust - große werte": ["formel_brust__groe_werte_"],
     "gressil, vorbote des untergangs": ["gressil_vorbote_des_untergangs"],
@@ -86,6 +88,7 @@ PO_ITEM_EMOJI_ALIASES = {
         "handschuetzer_der_erhabenheit",
     ],
     "hammer des wirbelnden nethers": ["hammer_des_wirbelnden_nethers_"],
+    "krone der zerstörung": ["krone_der_zerstrung_", "krone_der_zerstoerung_", "krone_der_zerstoerung"],
     "maladath, runenverzierte klinge des schwarzen drachenschwarms": ["maladath"],
     "ring des märtyrers": ["ring_des_mrtyrers"],
     "saphirons linkes auge": ["saphirons_linkes_auge"],
@@ -660,16 +663,22 @@ def make_embed(payload, entries, p0plus_labels=None):
     if payload.get("date") or payload.get("time"):
         embed.add_field(name="Termin", value=f"{payload.get('date') or '-'} · {payload.get('time') or '-'} Uhr", inline=True)
 
+    note = clean(payload.get("note") or payload.get("message") or payload.get("description"))
+    header_lines = []
+    if note:
+        header_lines.extend(note.splitlines())
+        header_lines.append("")
+
     grouped = {}
     for entry in entries:
         item = clean(entry.get("item") or entry.get("itemName")) or "Ohne Item"
         grouped.setdefault(item, []).append(entry)
 
     if not grouped:
-        embed.description = "**Anmeldungen (0)**\nNoch keine PO-Anmeldung vorhanden."
+        embed.description = "\n".join(header_lines + ["**Anmeldungen (0)**", "Noch keine PO-Anmeldung vorhanden."])[:3900]
         return embed
 
-    lines = [f"**Anmeldungen ({len(entries)})**"]
+    lines = header_lines + [f"**Anmeldungen ({len(entries)})**"]
     p0plus_labels = p0plus_labels or {}
     for item in sorted(grouped.keys(), key=lambda value: value.lower()):
         rows = grouped[item]
