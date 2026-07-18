@@ -343,6 +343,116 @@ async def load_entries(payload):
     return result.get("entries") or []
 
 
+def po_review_entry_options(entries):
+    result = []
+    seen = set()
+    for idx, entry in enumerate(entries or []):
+        status = clean(entry.get("approvalStatus")).lower()
+        if entry.get("approved") or status == "approved":
+            continue
+        player = clean(entry.get("player"))
+        item = clean(entry.get("item") or entry.get("itemName"))
+        if not player or not item:
+            continue
+        key = f"{slug(player)}|{slug(item)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append((str(idx), f"{player} · {item}"[:100]))
+        if len(result) >= 25:
+            break
+    return result
+
+
+def po_entry_options(entries, *, only_unlucked=False):
+    result = []
+    seen = set()
+    for idx, entry in enumerate(entries or []):
+        if only_unlucked and entry.get("luckBy"):
+            continue
+        player = clean(entry.get("player"))
+        item = clean(entry.get("item") or entry.get("itemName"))
+        if not player or not item:
+            continue
+        key = f"{slug(player)}|{slug(item)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append((str(idx), f"{player} · {item}"[:100]))
+        if len(result) >= 25:
+            break
+    return result
+
+
+async def reviewer_allowed(user):
+    result = await asyncio.to_thread(api_get, {
+        "action": "lichtbotCanReviewPoPost",
+        "queueToken": QUEUE_TOKEN,
+        "discordUserId": str(getattr(user, "id", "") or ""),
+        "discordName": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user),
+    })
+    return bool(result.get("allowed"))
+
+
+async def fresh_entries_for_payload(payload):
+    try:
+        return await load_entries(payload)
+    except Exception:
+        return []
+
+
+async def review_entry(payload, entry, user):
+    result = await asyncio.to_thread(api_post, {
+        "action": "reviewPoPostEntry",
+        "queueToken": QUEUE_TOKEN,
+        "postKey": payload["postKey"],
+        "sourceChannelId": payload_source_channel_id(payload),
+        "targetChannelId": payload_target_channel_id(payload),
+        "messageId": entry.get("messageId") or entry.get("discordMessageId") or "",
+        "player": entry.get("player") or "",
+        "item": entry.get("item") or entry.get("itemName") or "",
+        "status": "approved",
+        "reviewer": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user),
+    })
+    if not result.get("success"):
+        raise RuntimeError(result.get("error") or "PO-Eintrag konnte nicht freigegeben werden.")
+    return result
+
+
+async def delete_entry(payload, entry, user):
+    result = await asyncio.to_thread(api_post, {
+        "action": "lichtbotDeletePoPostEntry",
+        "queueToken": QUEUE_TOKEN,
+        "postKey": payload["postKey"],
+        "sourceChannelId": payload_source_channel_id(payload),
+        "targetChannelId": payload_target_channel_id(payload),
+        "player": entry.get("player") or "",
+        "item": entry.get("item") or entry.get("itemName") or "",
+        "discordUserId": str(getattr(user, "id", "") or ""),
+        "discordName": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user),
+    })
+    if not result.get("success"):
+        raise RuntimeError(result.get("error") or "PO-Eintrag konnte nicht gelöscht werden.")
+    return result
+
+
+async def luck_entry(payload, entry, user):
+    result = await asyncio.to_thread(api_post, {
+        "action": "lichtbotSetPoPostLuck",
+        "queueToken": QUEUE_TOKEN,
+        "postKey": payload["postKey"],
+        "sourceChannelId": payload_source_channel_id(payload),
+        "targetChannelId": payload_target_channel_id(payload),
+        "player": entry.get("player") or "",
+        "item": entry.get("item") or entry.get("itemName") or "",
+        "luckBy": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user),
+        "discordUserId": str(getattr(user, "id", "") or ""),
+    })
+    if not result.get("success"):
+        raise RuntimeError(result.get("error") or "Kleeblatt konnte nicht gespeichert werden.")
+    return result
+
+
 def make_embed(payload, entries):
     embed = discord.Embed(
         title=f"📋 {display_raid(payload['raid'])} PO-Anmelder",
@@ -506,13 +616,143 @@ class PoManualButton(discord.ui.Button):
         await interaction.response.send_modal(ManualItemModal(self.payload, class_name, default_char))
 
 
+class PoReviewSelect(discord.ui.Select):
+    def __init__(self, payload, entries):
+        self.payload = payload
+        self.entries = list(entries or [])
+        options = [
+            discord.SelectOption(label=label, value=value, emoji="✅")
+            for value, label in po_review_entry_options(self.entries)
+        ]
+        super().__init__(
+            custom_id=f"po-review:{payload['postKey'][:70]}",
+            placeholder="Item freigeben",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            if not await reviewer_allowed(interaction.user):
+                await interaction.followup.send(
+                    "⚠️ Nur Gildenleitung, Raidoffiziere oder Gildenoffiziere können PO-Einträge freigeben.",
+                    ephemeral=True,
+                )
+                return
+            entry = self.entries[int(self.values[0])]
+            result = await review_entry(self.payload, entry, interaction.user)
+            saved = result.get("entry") or entry
+            await refresh_po_message(interaction.client, self.payload)
+            await interaction.followup.send(
+                f"✅ Freigegeben: **{saved.get('player') or entry.get('player')}** → **{saved.get('item') or entry.get('item')}**.",
+                ephemeral=True,
+            )
+        except Exception as error:
+            await interaction.followup.send(f"⚠️ Freigabe konnte nicht gespeichert werden: `{error}`", ephemeral=True)
+
+
+class PoDeleteEntrySelect(discord.ui.Select):
+    def __init__(self, payload, entries):
+        self.payload = payload
+        self.entries = list(entries or [])
+        options = [
+            discord.SelectOption(label=label, value=value, emoji="🗑️")
+            for value, label in po_entry_options(self.entries)
+        ]
+        super().__init__(
+            custom_id=f"po-delete-select:{payload['postKey'][:60]}",
+            placeholder="PO-Eintrag zum Löschen auswählen",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            entry = self.entries[int(self.values[0])]
+            await delete_entry(self.payload, entry, interaction.user)
+            await refresh_po_message(interaction.client, self.payload)
+            await interaction.followup.send(
+                f"🗑️ Gelöscht: **{entry.get('player')}** → **{entry.get('item') or entry.get('itemName')}**.",
+                ephemeral=True,
+            )
+        except Exception as error:
+            await interaction.followup.send(f"⚠️ Löschen ging nicht: `{error}`", ephemeral=True)
+
+
+class PoDeleteEntryView(discord.ui.View):
+    def __init__(self, payload, entries):
+        super().__init__(timeout=180)
+        self.add_item(PoDeleteEntrySelect(payload, entries))
+
+
+class PoDeleteButton(discord.ui.Button):
+    def __init__(self, payload):
+        super().__init__(
+            custom_id=f"po-delete:{payload['postKey'][:70]}",
+            label="PO-Eintrag löschen",
+            style=discord.ButtonStyle.danger,
+        )
+        self.payload = payload
+
+    async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        entries = await fresh_entries_for_payload(self.payload)
+        if not po_entry_options(entries):
+            await interaction.followup.send("Es gibt gerade keinen PO-Eintrag zum Löschen.", ephemeral=True)
+            return
+        await interaction.followup.send(
+            "Wähle den PO-Eintrag aus, den du löschen möchtest.",
+            view=PoDeleteEntryView(self.payload, entries),
+            ephemeral=True,
+        )
+
+
+class PoLuckSelect(discord.ui.Select):
+    def __init__(self, payload, entries):
+        self.payload = payload
+        self.entries = list(entries or [])
+        options = [
+            discord.SelectOption(label=label, value=value, emoji="🍀")
+            for value, label in po_entry_options(self.entries, only_unlucked=True)
+        ]
+        super().__init__(
+            custom_id=f"po-luck:{payload['postKey'][:70]}",
+            placeholder="Spieler Glück wünschen",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            entry = self.entries[int(self.values[0])]
+            await luck_entry(self.payload, entry, interaction.user)
+            await refresh_po_message(interaction.client, self.payload)
+            await interaction.followup.send(
+                f"🍀 Glück gewünscht: **{entry.get('player')}**.",
+                ephemeral=True,
+            )
+        except Exception as error:
+            await interaction.followup.send(f"⚠️ Kleeblatt ging nicht: `{error}`", ephemeral=True)
+
+
 class PoView(discord.ui.View):
-    def __init__(self, payload, items):
+    def __init__(self, payload, items, entries=None):
         super().__init__(timeout=None)
         self.add_item(PoClassSelect(payload))
         if items:
             self.add_item(PoItemSelect(payload, items))
         self.add_item(PoManualButton(payload))
+        self.add_item(PoDeleteButton(payload))
+        if po_review_entry_options(entries or []):
+            self.add_item(PoReviewSelect(payload, entries or []))
+        if po_entry_options(entries or [], only_unlucked=True):
+            self.add_item(PoLuckSelect(payload, entries or []))
 
 
 async def refresh_po_message(client, payload):
@@ -521,7 +761,7 @@ async def refresh_po_message(client, payload):
     message = await channel.fetch_message(int(payload["messageId"]))
     items = await items_for_payload(payload)
     entries = await load_entries(payload)
-    await message.edit(embed=make_embed(payload, entries), view=PoView(payload, items))
+    await message.edit(embed=make_embed(payload, entries), view=PoView(payload, items, entries))
 
 
 async def post_or_update_from_queue(client, payload):
@@ -552,7 +792,7 @@ async def post_or_update_from_queue(client, payload):
     channel = client.get_channel(int(target_channel_id)) or await client.fetch_channel(int(target_channel_id))
     items = await items_for_payload(normalized)
     entries = await load_entries(normalized)
-    view = PoView(normalized, items)
+    view = PoView(normalized, items, entries)
     embed = make_embed(normalized, entries)
     message = None
     if normalized.get("messageId"):
@@ -567,7 +807,7 @@ async def post_or_update_from_queue(client, payload):
         normalized["messageId"] = str(message.id)
     state[post_key] = normalized
     save_state(state)
-    client.add_view(PoView(normalized, items), message_id=message.id)
+    client.add_view(PoView(normalized, items, entries), message_id=message.id)
     return normalized
 
 
@@ -649,7 +889,8 @@ async def on_ready():
     for payload in state.values():
         try:
             items = await items_for_payload(payload)
-            client.add_view(PoView(payload, items), message_id=int(payload["messageId"]))
+            entries = await load_entries(payload)
+            client.add_view(PoView(payload, items, entries), message_id=int(payload["messageId"]))
         except Exception as error:
             print(f"PO View konnte nicht wiederhergestellt werden ({payload.get('postKey')}): {error}")
 
@@ -678,13 +919,13 @@ async def po_anmelder(interaction, raid: str, datum: str, uhrzeit: str, titel: s
     }
     items = await items_for_payload(payload)
     embed = make_embed(payload, [])
-    message = await interaction.channel.send(embed=embed, view=PoView(payload, items), silent=True)
+    message = await interaction.channel.send(embed=embed, view=PoView(payload, items, []), silent=True)
     payload["messageId"] = str(message.id)
     state = load_state()
     state[post_key] = payload
     save_state(state)
-    client.add_view(PoView(payload, items), message_id=message.id)
-    await message.edit(embed=make_embed(payload, []), view=PoView(payload, items))
+    client.add_view(PoView(payload, items, []), message_id=message.id)
+    await message.edit(embed=make_embed(payload, []), view=PoView(payload, items, []))
     await interaction.followup.send(f"✅ PO-Anmelder erstellt: `{post_key}`", ephemeral=True)
 
 
