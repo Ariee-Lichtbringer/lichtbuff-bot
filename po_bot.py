@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -209,7 +210,29 @@ def item_emoji_candidates(item_name):
         if key and key not in seen:
             result.append(key)
             seen.add(key)
+        short_key = short_emoji_name(key)
+        if short_key and short_key not in seen:
+            result.append(short_key)
+            seen.add(short_key)
     return result
+
+
+def short_emoji_name(value):
+    key = normalize_emoji_name(value)
+    if not key:
+        return ""
+    if len(key) <= 32:
+        return key
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:6]
+    return f"{key[:25]}_{digest}"[:32]
+
+
+def primary_item_emoji_name(item_name):
+    for candidate in item_emoji_candidates(item_name):
+        name = short_emoji_name(candidate)
+        if len(name) >= 2:
+            return name
+    return ""
 
 
 def refresh_emoji_cache():
@@ -350,6 +373,41 @@ async def load_raid_items(raid):
         items.append(name)
     items.sort(key=lambda value: value.lower())
     return items
+
+
+async def load_raid_item_rows(raid):
+    try:
+        result = await asyncio.to_thread(api_get, {"action": "getLootItems", "raid": normalize_raid(raid), "t": int(time.time())})
+    except Exception as error:
+        print(f"Lootitems konnten nicht geladen werden ({raid}): {error}")
+        return []
+    seen = set()
+    rows = []
+    for row in result.get("items") or []:
+        name = clean(row.get("name") or row.get("item"))
+        key = slug(name)
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "name": name,
+            "icon": clean(row.get("icon") or row.get("iconName") or row.get("IconName")),
+            "itemId": clean(row.get("itemId") or row.get("ItemID")),
+        })
+    rows.sort(key=lambda value: value["name"].lower())
+    return rows
+
+
+def download_item_icon(icon_name):
+    icon = normalize_emoji_name(icon_name)
+    if not icon:
+        return b""
+    url = f"https://wow.zamimg.com/images/wow/icons/large/{icon}.jpg"
+    with urllib.request.urlopen(url, timeout=20) as response:
+        data = response.read()
+    if len(data) > 256 * 1024:
+        raise ValueError("Icon ist größer als 256 KiB.")
+    return data
 
 
 async def search_raid_items(raid, query, limit=25):
@@ -636,6 +694,31 @@ async def reviewer_allowed(user):
         "discordName": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user),
     })
     return bool(result.get("allowed"))
+
+
+def has_expression_admin_permission(user):
+    permissions = getattr(user, "guild_permissions", None)
+    if not permissions:
+        return False
+    for name in [
+        "administrator",
+        "manage_guild",
+        "manage_emojis_and_stickers",
+        "manage_expressions",
+        "create_expressions",
+    ]:
+        if bool(getattr(permissions, name, False)):
+            return True
+    return False
+
+
+async def can_sync_item_emojis(user):
+    if has_expression_admin_permission(user):
+        return True
+    try:
+        return await reviewer_allowed(user)
+    except Exception:
+        return False
 
 
 async def fresh_entries_for_payload(payload):
@@ -1341,6 +1424,91 @@ async def po_anmelder(interaction, raid: str, datum: str, uhrzeit: str, titel: s
     client.add_view(PoView(payload, items, []), message_id=message.id)
     await message.edit(embed=make_embed(payload, []), view=PoView(payload, items, []))
     await interaction.followup.send(f"✅ PO-Anmelder erstellt: `{post_key}`", ephemeral=True)
+
+
+@client.tree.command(name="po_emojis_sync", description="Lädt fehlende Item-Emojis für einen Raid automatisch hoch.")
+@app_commands.describe(
+    raid="Raid, z. B. MC, BWL, AQ20, AQ40, ZG, NAXX",
+    limit="Maximal neu anzulegende Emojis. Standard: 25",
+)
+@app_commands.choices(raid=[
+    app_commands.Choice(name="MC", value="MC"),
+    app_commands.Choice(name="BWL", value="BWL"),
+    app_commands.Choice(name="AQ20", value="AQ20"),
+    app_commands.Choice(name="AQ40", value="AQ40"),
+    app_commands.Choice(name="ZG", value="ZG"),
+    app_commands.Choice(name="Naxxramas", value="NAXX"),
+])
+async def po_emojis_sync(interaction, raid: str, limit: int = 25):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    if not interaction.guild:
+        await interaction.followup.send("⚠️ Dieser Befehl geht nur auf einem Discord-Server.", ephemeral=True)
+        return
+    if not await can_sync_item_emojis(interaction.user):
+        await interaction.followup.send("⚠️ Dafür brauchst du Gildenleitungs- oder Emoji-Rechte.", ephemeral=True)
+        return
+
+    raid_key = normalize_raid(raid)
+    max_create = max(1, min(int(limit or 25), 50))
+    rows = await load_raid_item_rows(raid_key)
+    if not rows:
+        await interaction.followup.send(f"⚠️ Keine Lootitems für {display_raid(raid_key)} gefunden.", ephemeral=True)
+        return
+
+    existing = {normalize_emoji_name(emoji.name): emoji for emoji in getattr(interaction.guild, "emojis", []) or []}
+    created = []
+    skipped_existing = 0
+    skipped_no_icon = 0
+    failed = []
+
+    for row in rows:
+        name = row["name"]
+        candidates = item_emoji_candidates(name)
+        if any(candidate in existing for candidate in candidates):
+            skipped_existing += 1
+            continue
+        emoji_name = primary_item_emoji_name(name)
+        icon_name = row.get("icon") or ""
+        if not emoji_name or not icon_name:
+            skipped_no_icon += 1
+            continue
+        if len(created) >= max_create:
+            break
+        try:
+            image = await asyncio.to_thread(download_item_icon, icon_name)
+            emoji = await interaction.guild.create_custom_emoji(
+                name=emoji_name,
+                image=image,
+                reason=f"LichtLoot PO Item-Emoji Sync {display_raid(raid_key)}",
+            )
+            existing[normalize_emoji_name(emoji.name)] = emoji
+            created.append(f"{emoji} {name}")
+            await asyncio.sleep(1.5)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "⚠️ Der Bot hat keine Rechte, Emojis anzulegen. Bitte dem Bot `Emojis und Sticker verwalten` bzw. `Ausdrücke erstellen` geben.",
+                ephemeral=True,
+            )
+            return
+        except Exception as error:
+            failed.append(f"{name}: {error}")
+            if len(failed) >= 5:
+                break
+
+    refresh_emoji_cache()
+    lines = [
+        f"✅ Emoji-Sync für **{display_raid(raid_key)}** fertig.",
+        f"Neu erstellt: **{len(created)}**",
+        f"Schon vorhanden: **{skipped_existing}**",
+        f"Ohne Icon übersprungen: **{skipped_no_icon}**",
+    ]
+    if created:
+        lines.append("Beispiele: " + ", ".join(created[:8]))
+    if failed:
+        lines.append("Fehler: " + " | ".join(failed[:3]))
+    if len(created) >= max_create:
+        lines.append(f"Limit erreicht ({max_create}). Du kannst den Befehl noch einmal ausführen.")
+    await interaction.followup.send("\n".join(lines)[:1900], ephemeral=True)
 
 
 class HealthHandler(BaseHTTPRequestHandler):
