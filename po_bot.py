@@ -339,7 +339,6 @@ def save_po_signup_prio(payload, player, class_name, item, player_login=""):
         "playerPin": login,
         "spielerLogin": login,
         "player": player,
-        "server": PRIO_SERVER,
         "className": class_name,
         "item": item,
     })

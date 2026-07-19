@@ -7919,7 +7919,6 @@ async def save_po_signup_from_modal(payload, user, item_name, char_name, player_
         "raid": payload.get("raid") or "",
         "title": payload.get("title") or "PO Liste",
         "player": char_name,
-        "server": "Everlook",
         "playerPin": player_pin,
         "className": class_name,
         "item": item_name,
