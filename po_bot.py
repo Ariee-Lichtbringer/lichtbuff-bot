@@ -352,6 +352,20 @@ async def load_raid_items(raid):
     return items
 
 
+async def search_raid_items(raid, query, limit=25):
+    words = [word for word in slug(query).split("-") if word]
+    if not words:
+        return []
+    matches = []
+    for item in await load_raid_items(raid):
+        item_key = slug(item)
+        if all(word in item_key for word in words):
+            matches.append(item)
+            if len(matches) >= limit:
+                break
+    return matches
+
+
 def format_points(value):
     try:
         number = float(str(value).replace(",", "."))
@@ -729,8 +743,7 @@ def make_embed(payload, entries, p0plus_labels=None):
             class_name = clean(row.get("className") or row.get("Klasse"))
             icon = class_icon(class_name)
             approved = " ✅" if row.get("approved") or row.get("approvalStatus") == "approved" else ""
-            luck = " 🍀" if row.get("luckBy") else ""
-            players.append(f"{icon} {clean(row.get('player'))}{approved}{luck}")
+            players.append(f"{icon} {clean(row.get('player'))}{approved}")
         lines.append(", ".join(players) or "-")
 
     embed.description = "\n".join(lines)[:3900]
@@ -865,6 +878,81 @@ class PoItemSelect(discord.ui.Select):
         class_name = selected_class(self.payload["postKey"], interaction.user.id)
         default_char = clean(interaction.user.display_name).split("/")[0].strip()
         await interaction.response.send_modal(PoEntryModal(self.payload, self.values[0], class_name, default_char))
+
+
+class PoItemSearchResultSelect(discord.ui.Select):
+    def __init__(self, payload, items, class_name, default_char=""):
+        self.payload = payload
+        self.class_name = class_name
+        self.default_char = default_char
+        options = [
+            discord.SelectOption(label=item[:100], value=item[:100], emoji=item_select_emoji(item))
+            for item in items[:25]
+        ]
+        super().__init__(
+            custom_id=f"po-search-result:{payload['postKey'][:55]}",
+            placeholder="Gefundenes Item auswählen",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction):
+        await interaction.response.send_modal(
+            PoEntryModal(self.payload, self.values[0], self.class_name, self.default_char)
+        )
+
+
+class PoItemSearchResultView(discord.ui.View):
+    def __init__(self, payload, items, class_name, default_char=""):
+        super().__init__(timeout=180)
+        self.add_item(PoItemSearchResultSelect(payload, items, class_name, default_char))
+
+
+class PoItemSearchModal(discord.ui.Modal):
+    def __init__(self, payload, class_name, default_char=""):
+        super().__init__(title="PO-Item suchen")
+        self.payload = payload
+        self.class_name = class_name
+        self.default_char = default_char
+        self.query = discord.ui.TextInput(
+            label="Item suchen",
+            placeholder="z. B. Vek'nilash, Gebundene Essenz, Raptor ...",
+            required=True,
+            max_length=80,
+        )
+        self.add_item(self.query)
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not self.class_name:
+            await interaction.followup.send("⚠️ Bitte zuerst eine Klasse wählen.", ephemeral=True)
+            return
+        query = clean(self.query.value)
+        matches = await search_raid_items(self.payload.get("raid"), query)
+        if not matches:
+            await interaction.followup.send(f"Keine Items für **{query}** gefunden.", ephemeral=True)
+            return
+        await interaction.followup.send(
+            f"Gefundene Items für **{query}**:",
+            view=PoItemSearchResultView(self.payload, matches, self.class_name, self.default_char),
+            ephemeral=True,
+        )
+
+
+class PoSearchButton(discord.ui.Button):
+    def __init__(self, payload):
+        super().__init__(
+            custom_id=f"po-search:{payload['postKey'][:70]}",
+            label="Item suchen",
+            style=discord.ButtonStyle.secondary,
+        )
+        self.payload = payload
+
+    async def callback(self, interaction):
+        class_name = selected_class(self.payload["postKey"], interaction.user.id)
+        default_char = clean(interaction.user.display_name).split("/")[0].strip()
+        await interaction.response.send_modal(PoItemSearchModal(self.payload, class_name, default_char))
 
 
 class ManualItemModal(PoEntryModal):
@@ -1042,11 +1130,10 @@ class PoView(discord.ui.View):
         self.add_item(PoClassSelect(payload))
         if items:
             self.add_item(PoItemSelect(payload, items))
+        self.add_item(PoSearchButton(payload))
         self.add_item(PoManualButton(payload))
         self.add_item(PoDeleteButton(payload))
         self.add_item(PoReviewSelect(payload, entries or []))
-        if po_entry_options(entries or [], only_unlucked=True):
-            self.add_item(PoLuckSelect(payload, entries or []))
 
 
 async def refresh_po_message(client, payload):
