@@ -840,7 +840,7 @@ class PoClassSelect(discord.ui.Select):
         self.payload = payload
         super().__init__(
             custom_id=f"po-class:{payload['postKey']}",
-            placeholder="Klasse wählen",
+            placeholder="1. Klasse wählen",
             min_values=1,
             max_values=1,
             options=class_options(),
@@ -945,7 +945,7 @@ class PoSearchButton(discord.ui.Button):
     def __init__(self, payload):
         super().__init__(
             custom_id=f"po-search:{payload['postKey'][:70]}",
-            label="Item suchen",
+            label="2. Item suchen und PO eintragen",
             style=discord.ButtonStyle.success,
         )
         self.payload = payload
@@ -982,7 +982,7 @@ class PoManualButton(discord.ui.Button):
     def __init__(self, payload):
         super().__init__(
             custom_id=f"po-manual:{payload['postKey']}",
-            label="Eigenes Item eintragen",
+            label="2. Eigenes Item eintragen",
             style=discord.ButtonStyle.primary,
         )
         self.payload = payload
@@ -1129,8 +1129,6 @@ class PoView(discord.ui.View):
     def __init__(self, payload, items, entries=None):
         super().__init__(timeout=None)
         self.add_item(PoClassSelect(payload))
-        if items:
-            self.add_item(PoItemSelect(payload, items))
         self.add_item(PoSearchButton(payload))
         self.add_item(PoManualButton(payload))
         self.add_item(PoDeleteButton(payload))
