@@ -1344,7 +1344,7 @@ async def po_queue_loop():
 class PoBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
-        intents.message_content = False
+        intents.message_content = True
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
 
@@ -1530,6 +1530,95 @@ async def run_po_emoji_sync(interaction, raid: str, limit: int = 25):
     if len(created) >= max_create:
         lines.append(f"Limit erreicht ({max_create}). Du kannst den Befehl noch einmal ausführen.")
     await interaction.followup.send("\n".join(lines)[:1900], ephemeral=True)
+
+
+async def send_po_emoji_sync_text(message, text):
+    await message.channel.send(text[:1900], silent=True)
+
+
+async def run_po_emoji_sync_for_message(message, raid: str, limit: int = 25):
+    if not message.guild:
+        await send_po_emoji_sync_text(message, "⚠️ Dieser Befehl geht nur auf einem Discord-Server.")
+        return
+    if not await can_sync_item_emojis(message.author):
+        await send_po_emoji_sync_text(message, "⚠️ Dafür brauchst du Gildenleitungs- oder Emoji-Rechte.")
+        return
+
+    raid_key = normalize_raid(raid)
+    max_create = max(1, min(int(limit or 25), 50))
+    await send_po_emoji_sync_text(message, f"⏳ Emoji-Sync für **{display_raid(raid_key)}** startet, Limit {max_create} ...")
+    rows = await load_raid_item_rows(raid_key)
+    if not rows:
+        await send_po_emoji_sync_text(message, f"⚠️ Keine Lootitems für {display_raid(raid_key)} gefunden.")
+        return
+
+    existing = {normalize_emoji_name(emoji.name): emoji for emoji in getattr(message.guild, "emojis", []) or []}
+    created = []
+    skipped_existing = 0
+    skipped_no_icon = 0
+    failed = []
+
+    for row in rows:
+        name = row["name"]
+        candidates = item_emoji_candidates(name)
+        if any(candidate in existing for candidate in candidates):
+            skipped_existing += 1
+            continue
+        emoji_name = primary_item_emoji_name(name)
+        icon_name = row.get("icon") or ""
+        if not emoji_name or not icon_name:
+            skipped_no_icon += 1
+            continue
+        if len(created) >= max_create:
+            break
+        try:
+            image = await asyncio.to_thread(download_item_icon, icon_name)
+            emoji = await message.guild.create_custom_emoji(
+                name=emoji_name,
+                image=image,
+                reason=f"LichtLoot PO Item-Emoji Sync {display_raid(raid_key)}",
+            )
+            existing[normalize_emoji_name(emoji.name)] = emoji
+            created.append(f"{emoji} {name}")
+            await asyncio.sleep(1.5)
+        except discord.Forbidden:
+            await send_po_emoji_sync_text(
+                message,
+                "⚠️ Der Bot hat keine Rechte, Emojis anzulegen. Bitte dem Bot `Emojis und Sticker verwalten` bzw. `Ausdrücke erstellen` geben.",
+            )
+            return
+        except Exception as error:
+            failed.append(f"{name}: {error}")
+            if len(failed) >= 5:
+                break
+
+    refresh_emoji_cache()
+    lines = [
+        f"✅ Emoji-Sync für **{display_raid(raid_key)}** fertig.",
+        f"Neu erstellt: **{len(created)}**",
+        f"Schon vorhanden: **{skipped_existing}**",
+        f"Ohne Icon übersprungen: **{skipped_no_icon}**",
+    ]
+    if created:
+        lines.append("Beispiele: " + ", ".join(created[:8]))
+    if failed:
+        lines.append("Fehler: " + " | ".join(failed[:3]))
+    if len(created) >= max_create:
+        lines.append(f"Limit erreicht ({max_create}). Du kannst den Befehl noch einmal ausführen.")
+    await send_po_emoji_sync_text(message, "\n".join(lines))
+
+
+@client.event
+async def on_message(message):
+    if message.author.bot:
+        return
+    text = clean(getattr(message, "content", ""))
+    match = re.match(r"^!(?:poemoji|po_emojis_sync)\s+([a-zA-Z0-9]+)(?:\s+(\d+))?\s*$", text)
+    if not match:
+        return
+    raid = match.group(1)
+    limit = int(match.group(2) or 25)
+    await run_po_emoji_sync_for_message(message, raid, limit)
 
 
 class HealthHandler(BaseHTTPRequestHandler):
