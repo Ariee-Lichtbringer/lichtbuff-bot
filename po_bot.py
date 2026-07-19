@@ -837,6 +837,15 @@ def selected_class(post_key, user_id):
     return user_classes.get(f"{post_key}:{user_id}", "")
 
 
+def po_signup_error_message(error, char_name=""):
+    message = str(error or "unbekannt")
+    if "passt nicht zu diesem charakter" in message.casefold():
+        wanted = clean(char_name)
+        suffix = f" für **{wanted}**" if wanted else ""
+        return f"SpielerLogin/PIN falsch{suffix}. Bitte prüfe deinen SpielerLogin in LichtLoot."
+    return message
+
+
 class PoEntryModal(discord.ui.Modal):
     def __init__(self, payload, item_name, class_name, default_char=""):
         super().__init__(title="PO eintragen")
@@ -894,7 +903,8 @@ class PoEntryModal(discord.ui.Modal):
             "discordName": interaction.user.display_name,
         })
         if not result.get("success"):
-            await interaction.followup.send(f"⚠️ PO konnte nicht gespeichert werden: {result.get('error') or 'unbekannt'}", ephemeral=True)
+            detail = po_signup_error_message(result.get("error") or "unbekannt", char_name)
+            await interaction.followup.send(f"⚠️ PO konnte nicht gespeichert werden: {detail}", ephemeral=True)
             return
         prio_result = None
         try:
