@@ -27,7 +27,21 @@ GUILD_SLUG = os.getenv("LICHTLOOT_GUILD", "") or os.getenv("LICHTLOOT_GUILD_SLUG
 if GUILD_SLUG.strip().lower() == "lichtbringer":
     GUILD_SLUG = "lichtloot"
 RAILWAY_API_URL = "https://lichtloot-production.up.railway.app/api/apps-script"
-API_URL = os.getenv("PO_BOT_API_URL", "") or os.getenv("LICHTLOOT_RAILWAY_API_URL", "") or RAILWAY_API_URL
+
+
+def normalize_api_url(value):
+    url = str(value or "").strip().rstrip("/")
+    if not url:
+        return RAILWAY_API_URL
+    parsed = urllib.parse.urlparse(url)
+    if parsed.path.rstrip("/").endswith("/api/apps-script"):
+        return url
+    return url + "/api/apps-script"
+
+
+API_URL = normalize_api_url(
+    os.getenv("PO_BOT_API_URL", "") or os.getenv("LICHTLOOT_RAILWAY_API_URL", "") or RAILWAY_API_URL
+)
 QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
 STATE_FILE = Path(os.getenv("PO_BOT_STATE_FILE", "po_bot_posts.json"))
 QUEUE_CHECK_SECONDS = int(os.getenv("PO_BOT_QUEUE_CHECK_SECONDS", "10") or "10")
@@ -300,8 +314,9 @@ def item_select_emoji(item_name):
 
 def api_get(params):
     query = urllib.parse.urlencode({"guild": GUILD_SLUG, **params})
-    with urllib.request.urlopen(API_URL + "?" + query, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
+    url = API_URL + "?" + query
+    with urllib.request.urlopen(url, timeout=30) as response:
+        return parse_api_response(response, "GET", url)
 
 
 def api_post(payload):
@@ -313,7 +328,15 @@ def api_post(payload):
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
+        return parse_api_response(response, "POST", API_URL)
+
+
+def parse_api_response(response, method, url):
+    raw = response.read().decode("utf-8")
+    content_type = response.headers.get("Content-Type", "")
+    if "json" not in content_type.lower() and raw.lstrip().startswith("<"):
+        raise RuntimeError(f"LichtLoot API {method} liefert HTML statt JSON. Bitte API-URL pruefen: {url}")
+    return json.loads(raw)
 
 
 def payload_lichtloot_raid_pin(payload):
