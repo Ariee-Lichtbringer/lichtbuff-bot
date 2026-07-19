@@ -1128,6 +1128,9 @@ class PoDeleteEntrySelect(discord.ui.Select):
         await interaction.response.defer(ephemeral=True)
         try:
             entry = self.entries[int(self.values[0])]
+            if str(entry.get("discordUserId") or entry.get("discord_user_id") or "").strip() != str(interaction.user.id):
+                await interaction.followup.send("⚠️ Du kannst nur deinen eigenen PO-Eintrag löschen.", ephemeral=True)
+                return
             await delete_entry(self.payload, entry, interaction.user)
             await refresh_po_message(interaction.client, self.payload)
             await interaction.followup.send(
@@ -1155,12 +1158,16 @@ class PoDeleteButton(discord.ui.Button):
 
     async def callback(self, interaction):
         await interaction.response.defer(ephemeral=True)
-        entries = await fresh_entries_for_payload(self.payload)
+        user_id = str(interaction.user.id)
+        entries = [
+            entry for entry in await fresh_entries_for_payload(self.payload)
+            if str(entry.get("discordUserId") or entry.get("discord_user_id") or "").strip() == user_id
+        ]
         if not po_entry_options(entries):
-            await interaction.followup.send("Es gibt gerade keinen PO-Eintrag zum Löschen.", ephemeral=True)
+            await interaction.followup.send("Es gibt gerade keinen eigenen PO-Eintrag zum Löschen.", ephemeral=True)
             return
         await interaction.followup.send(
-            "Wähle den PO-Eintrag aus, den du löschen möchtest.",
+            "Wähle deinen PO-Eintrag aus, den du löschen möchtest.",
             view=PoDeleteEntryView(self.payload, entries),
             ephemeral=True,
         )

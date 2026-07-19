@@ -7750,6 +7750,16 @@ def po_delete_entry_options(entries):
     return result
 
 
+def own_po_entries(entries, user):
+    user_id = str(getattr(user, "id", "") or "").strip()
+    if not user_id:
+        return []
+    return [
+        entry for entry in (entries or [])
+        if str(entry.get("discordUserId") or entry.get("discord_user_id") or "").strip() == user_id
+    ]
+
+
 class PoDeleteEntrySelect(discord.ui.Select):
     def __init__(self, payload, entries):
         self.payload = payload
@@ -7775,6 +7785,9 @@ class PoDeleteEntrySelect(discord.ui.Select):
         try:
             idx = int(self.values[0])
             entry = self.entries[idx]
+            if str(entry.get("discordUserId") or entry.get("discord_user_id") or "").strip() != str(interaction.user.id):
+                await interaction.followup.send("⚠️ Du kannst nur deinen eigenen PO-Eintrag löschen.", ephemeral=True)
+                return
             source_channel_id = str(self.payload.get("sourceChannelId") or self.payload.get("channelId") or "").strip()
             channel = client.get_channel(int(source_channel_id)) or await client.fetch_channel(int(source_channel_id))
             result = await delete_po_post_entry_for_user(
@@ -7822,10 +7835,10 @@ class PoDeleteButton(discord.ui.Button):
     async def callback(self, interaction):
         try:
             if self.payload:
-                entries = self.entries
+                entries = own_po_entries(self.entries, interaction.user)
                 if po_delete_entry_options(entries):
                     await interaction.response.send_message(
-                        "Wähle den PO-Eintrag aus, den du löschen möchtest.",
+                        "Wähle deinen PO-Eintrag aus, den du löschen möchtest.",
                         view=PoDeleteEntryView(self.payload, entries),
                         ephemeral=True
                     )
@@ -7833,15 +7846,18 @@ class PoDeleteButton(discord.ui.Button):
                 await interaction.response.defer(ephemeral=True)
                 source_channel_id = str(self.payload.get("sourceChannelId") or self.payload.get("channelId") or self.channel_id)
                 target_channel_id = str(self.payload.get("targetChannelId") or self.payload.get("discordChannelId") or source_channel_id)
-                entries = await load_saved_po_post_entries(self.payload, source_channel_id, target_channel_id)
+                entries = own_po_entries(
+                    await load_saved_po_post_entries(self.payload, source_channel_id, target_channel_id),
+                    interaction.user
+                )
                 if po_delete_entry_options(entries):
                     await interaction.followup.send(
-                        "Wähle den PO-Eintrag aus, den du löschen möchtest.",
+                        "Wähle deinen PO-Eintrag aus, den du löschen möchtest.",
                         view=PoDeleteEntryView(self.payload, entries),
                         ephemeral=True
                     )
                     return
-                await interaction.followup.send("⚠️ Keine PO-Einträge zum Löschen gefunden.", ephemeral=True)
+                await interaction.followup.send("⚠️ Kein eigener PO-Eintrag zum Löschen gefunden.", ephemeral=True)
                 return
         except Exception as e:
             print(f"PO-Loeschbutton fehlgeschlagen: {e}")
