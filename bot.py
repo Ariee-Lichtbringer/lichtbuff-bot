@@ -9569,23 +9569,16 @@ async def on_message(message):
         return
 
     if lower in ["!worldbuff", "!worldbuffs"]:
-        slots = await asyncio.to_thread(get_open_worldbuff_signup_slots, 75)
-
-        if not slots:
-            await send_temp(
-                message.channel,
-                "⚠️ Es wurde kein freier Nef-, Ony- oder Hakkar-Termin gefunden."
-            )
-            await delete_command_message(message)
-            return
-
-        await message.channel.send(
-            "✅ **Worldbuff eintragen**\n"
-            "Wähle zuerst den Buff. Danach erscheinen die freien Termine.",
-            embed=await asyncio.to_thread(build_worldbuff_signup_embed),
-            view=WorldbuffBuffPickerView(),
-            delete_after=180
-        )
+        status_message = await message.channel.send("🔄 **Worldbuff-Post wird aktualisiert...**")
+        try:
+            count = await asyncio.wait_for(update_worldbuff_post(sync_ticker=True, force_repost=True), timeout=60)
+            if count:
+                await status_message.edit(content=f"✅ **Worldbuff-Post aktualisiert.** Posts: **{count}**")
+            else:
+                await status_message.edit(content="⚠️ **Worldbuff-Post wurde nicht aktualisiert.** Kein Zielchannel oder keine Termine gefunden.")
+            client.loop.create_task(delete_message_later(status_message, 15))
+        except asyncio.TimeoutError:
+            await status_message.edit(content="⏱️ **Worldbuff-Update dauert zu lange.** Bitte Railway-Logs prüfen.")
         await delete_command_message(message)
         return
 
