@@ -687,13 +687,7 @@ def po_entry_options(entries, *, only_unlucked=False):
 
 
 async def reviewer_allowed(user):
-    result = await asyncio.to_thread(api_get, {
-        "action": "lichtbotCanReviewPoPost",
-        "queueToken": QUEUE_TOKEN,
-        "discordUserId": str(getattr(user, "id", "") or ""),
-        "discordName": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user),
-    })
-    return bool(result.get("allowed"))
+    return True
 
 
 def has_expression_admin_permission(user):
@@ -1101,12 +1095,6 @@ class PoReviewSelect(discord.ui.Select):
         try:
             if not self.values or self.values[0] == "none":
                 await interaction.followup.send("Es gibt gerade keinen offenen PO-Eintrag zum Freigeben.", ephemeral=True)
-                return
-            if not await reviewer_allowed(interaction.user):
-                await interaction.followup.send(
-                    "⚠️ Nur Gildenleitung, Raidoffiziere oder Gildenoffiziere können PO-Einträge freigeben.",
-                    ephemeral=True,
-                )
                 return
             entry = self.entries[int(self.values[0])]
             result = await review_entry(self.payload, entry, interaction.user)

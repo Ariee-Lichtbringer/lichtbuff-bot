@@ -8029,17 +8029,7 @@ def po_review_entry_options(entries):
 
 
 async def po_signup_reviewer_allowed(payload, user):
-    try:
-        result = await asyncio.to_thread(lichtloot_get, {
-            "action": "lichtbotCanReviewPoPost",
-            "queueToken": LICHTBOT_QUEUE_TOKEN,
-            "discordUserId": str(getattr(user, "id", "") or ""),
-            "discordName": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user)
-        })
-        return bool(result.get("allowed"))
-    except Exception as e:
-        print(f"PO-Freigabe-Rollenpruefung fehlgeschlagen: {e}")
-        return False
+    return True
 
 
 async def set_po_signup_luck(payload, entry, user):
@@ -8276,9 +8266,6 @@ class PoSignupReviewSelect(discord.ui.Select):
     async def callback(self, interaction):
         await interaction.response.defer(ephemeral=True)
         try:
-            if not await po_signup_reviewer_allowed(self.payload, interaction.user):
-                await interaction.followup.send("⚠️ Nur Gildenleitung, Raidoffiziere oder Gildenoffiziere können PO-Einträge freigeben.", ephemeral=True)
-                return
             idx = int(self.values[0])
             entry = self.entries[idx]
             result = await review_po_signup_entry(self.payload, entry, interaction.user)
