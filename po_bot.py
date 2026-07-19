@@ -946,7 +946,7 @@ class PoSearchButton(discord.ui.Button):
         super().__init__(
             custom_id=f"po-search:{payload['postKey'][:70]}",
             label="Item suchen",
-            style=discord.ButtonStyle.secondary,
+            style=discord.ButtonStyle.success,
         )
         self.payload = payload
 
@@ -982,7 +982,7 @@ class PoManualButton(discord.ui.Button):
     def __init__(self, payload):
         super().__init__(
             custom_id=f"po-manual:{payload['postKey']}",
-            label=f"Eigenes Item eintragen {display_raid(payload['raid'])}",
+            label="Eigenes Item eintragen",
             style=discord.ButtonStyle.primary,
         )
         self.payload = payload
