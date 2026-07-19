@@ -628,20 +628,22 @@ class WorldbuffSignupModal(discord.ui.Modal):
 
 
 class WorldbuffSignupSelect(discord.ui.Select):
-    def __init__(self, slots):
+    def __init__(self, slots, buff_filter=""):
         self.slots = slots
         options = []
         for index, slot in enumerate(slots):
             label = f"{slot.get('buff')} · {slot.get('datum')} {slot.get('uhrzeit')}"
-            description = str(slot.get("gilde") or "Lichtbringer")[:100]
+            tag = str(slot.get("tag") or "").strip()
+            description = f"{tag + ' · ' if tag else ''}{slot.get('gilde') or 'Lichtbringer'}"
             options.append(discord.SelectOption(
                 label=label[:100],
-                description=description,
+                description=description[:100],
                 value=str(index),
                 emoji=BUFF_EMOJIS.get(slot.get("buff"), "⚪")
             ))
+        buff_label = normalize_buff(buff_filter) if buff_filter else "Worldbuff"
         super().__init__(
-            placeholder="Nef, Ony oder Hakkar-Termin auswählen",
+            placeholder=f"{buff_label}-Termin auswählen",
             min_values=1,
             max_values=1,
             options=options
@@ -655,10 +657,48 @@ class WorldbuffSignupSelect(discord.ui.Select):
 
 
 class WorldbuffSignupView(discord.ui.View):
-    def __init__(self, slots):
+    def __init__(self, slots, buff_filter=""):
         super().__init__(timeout=180)
         if slots:
-            self.add_item(WorldbuffSignupSelect(slots))
+            self.add_item(WorldbuffSignupSelect(slots, buff_filter=buff_filter))
+
+
+class WorldbuffBuffButton(discord.ui.Button):
+    def __init__(self, buff, label, style, emoji):
+        self.buff = buff
+        super().__init__(
+            label=label,
+            style=style,
+            emoji=emoji,
+            custom_id=f"worldbuff_pick:{buff.lower()}"
+        )
+
+    async def callback(self, interaction):
+        buff = normalize_buff(self.buff)
+        slots = await asyncio.to_thread(get_open_worldbuff_signup_slots, 75)
+        slots = [slot for slot in slots if normalize_buff(slot.get("buff")) == buff]
+
+        if not slots:
+            await interaction.response.send_message(
+                f"⚠️ Aktuell ist kein freier {buff}-Termin verfügbar.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(
+            f"✅ **{buff} eintragen**\n"
+            "Wähle einen freien Termin aus. Danach öffnet sich das Feld für deinen Charakternamen.",
+            view=WorldbuffSignupView(slots[:25], buff_filter=buff),
+            ephemeral=True
+        )
+
+
+class WorldbuffBuffPickerView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(WorldbuffBuffButton("Hakkar", "Hakkar", discord.ButtonStyle.success, "🟢"))
+        self.add_item(WorldbuffBuffButton("Ony", "Ony", discord.ButtonStyle.danger, "🔴"))
+        self.add_item(WorldbuffBuffButton("Nef", "Nef", discord.ButtonStyle.danger, "🔴"))
 
 
 def clean_hordenbuff_name(value):
@@ -1258,7 +1298,8 @@ def get_worldbuff_rows_from_apps_script(days=14):
 
     try:
         result = lichtloot_apps_script_get({
-            "action": "getPublicWorldbuffs",
+            "action": "guildGetWorldbuffs",
+            "source": "railway",
             "days": days,
             "t": int(time.time())
         })
@@ -1784,16 +1825,49 @@ def current_worldbuff_announcement_block(max_lines=8):
     return "\n".join(lines).strip()
 
 
-def build_worldbuff_guide_embed():
-    if not WORLDBUFF_GUIDE_IMAGE_URL:
-        return None
+def build_worldbuff_signup_embed():
+    slots = get_open_worldbuff_signup_slots(limit=75)
+    counts = {"Hakkar": 0, "Ony": 0, "Nef": 0}
+    next_slots = {"Hakkar": [], "Ony": [], "Nef": []}
+
+    for slot in slots:
+        buff = normalize_buff(slot.get("buff"))
+        if buff not in counts:
+            continue
+        counts[buff] += 1
+        if len(next_slots[buff]) < 3:
+            next_slots[buff].append(slot)
+
     embed = discord.Embed(
         title="Worldbuff eintragen",
-        description="Kurzanleitung für die Anmeldung per `!worldbuff`.",
-        color=0x5865F2
+        description=(
+            "Wähle unten **Hakkar**, **Ony** oder **Nef**. "
+            "Danach erscheinen die freien Termine und du trägst deinen Charakter ein."
+        ),
+        color=0x22C55E
     )
-    embed.set_image(url=WORLDBUFF_GUIDE_IMAGE_URL)
+
+    for buff in ["Hakkar", "Ony", "Nef"]:
+        preview = []
+        for slot in next_slots[buff]:
+            tag = str(slot.get("tag") or "").strip()
+            prefix = f"{tag} " if tag else ""
+            preview.append(f"{prefix}{slot.get('datum')} · {slot.get('uhrzeit')}")
+        value = "\n".join(preview) if preview else "Aktuell kein freier Termin"
+        if counts[buff] > len(preview):
+            value += f"\n… und {counts[buff] - len(preview)} weitere"
+        embed.add_field(
+            name=f"{BUFF_EMOJIS.get(buff, '⚪')} {buff}",
+            value=value,
+            inline=True
+        )
+
+    embed.set_footer(text="Ein belegter Termin kann nicht durch einen anderen Spieler überschrieben werden.")
     return embed
+
+
+def build_worldbuff_guide_embed():
+    return build_worldbuff_signup_embed()
 
 
 def build_hordenbuff_guide_embed():
@@ -1952,7 +2026,8 @@ async def update_worldbuff_post(sync_ticker=True):
     if sync_ticker:
         await sync_recent_ticker_messages()
     text = await asyncio.to_thread(build_overview)
-    guide_embed = build_worldbuff_guide_embed()
+    guide_embed = await asyncio.to_thread(build_worldbuff_guide_embed)
+    signup_view = WorldbuffBuffPickerView()
     existing_messages = await fetch_worldbuff_post_messages(channel)
     known_message_ids = {message.id for message in existing_messages}
     recent_messages = await find_recent_own_messages(channel, is_worldbuff_overview_message, limit=100)
@@ -1965,10 +2040,10 @@ async def update_worldbuff_post(sync_ticker=True):
     if len(text) <= 1900:
         if existing_messages:
             msg = existing_messages[0]
-            await msg.edit(content=text, embed=guide_embed)
+            await msg.edit(content=text, embed=guide_embed, view=signup_view)
             await delete_extra_messages(existing_messages)
         else:
-            msg = await send_silent(channel, text, embed=guide_embed)
+            msg = await send_silent(channel, text, embed=guide_embed, view=signup_view)
         save_json(worldbuff_post_file(), {"message_id": msg.id, "message_ids": [msg.id]})
         return 1
     else:
@@ -1979,9 +2054,9 @@ async def update_worldbuff_post(sync_ticker=True):
         for index, chunk in enumerate(chunks):
             if index < len(existing_messages):
                 last_msg = existing_messages[index]
-                await last_msg.edit(content=chunk, embed=guide_embed if index == 0 else None)
+                await last_msg.edit(content=chunk, embed=guide_embed if index == 0 else None, view=signup_view if index == 0 else None)
             else:
-                last_msg = await send_silent(channel, chunk, embed=guide_embed if index == 0 else None)
+                last_msg = await send_silent(channel, chunk, embed=guide_embed if index == 0 else None, view=signup_view if index == 0 else None)
             message_ids.append(last_msg.id)
 
         for old_msg in existing_messages[len(chunks):]:
@@ -8850,6 +8925,10 @@ async def on_ready():
     print("Version 4.9.9 gestartet: Worldbuff-Termine kommen aus der Gildenleitung.")
     schedule_p0_release_cache_refresh(force=True)
 
+    if not hasattr(client, "worldbuff_picker_view_registered"):
+        client.worldbuff_picker_view_registered = True
+        client.add_view(WorldbuffBuffPickerView())
+
     if not hasattr(client, "raid_signup_view_restore_started"):
         client.raid_signup_view_restore_started = True
         client.loop.create_task(restore_active_raid_signup_views())
@@ -9479,7 +9558,7 @@ async def on_message(message):
         return
 
     if lower in ["!worldbuff", "!worldbuffs"]:
-        slots = await asyncio.to_thread(get_open_worldbuff_signup_slots)
+        slots = await asyncio.to_thread(get_open_worldbuff_signup_slots, 75)
 
         if not slots:
             await send_temp(
@@ -9491,9 +9570,9 @@ async def on_message(message):
 
         await message.channel.send(
             "✅ **Worldbuff eintragen**\n"
-            "Wähle Nef, Ony oder Hakkar mit passendem freien Termin aus. "
-            "Danach öffnet sich ein Fenster für den Charakternamen.",
-            view=WorldbuffSignupView(slots),
+            "Wähle zuerst den Buff. Danach erscheinen die freien Termine.",
+            embed=await asyncio.to_thread(build_worldbuff_signup_embed),
+            view=WorldbuffBuffPickerView(),
             delete_after=180
         )
         await delete_command_message(message)
