@@ -898,14 +898,17 @@ class PoItemSearchResultSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction):
+        class_name = selected_class(self.payload["postKey"], interaction.user.id) or self.class_name
         await interaction.response.send_modal(
-            PoEntryModal(self.payload, self.values[0], self.class_name, self.default_char)
+            PoEntryModal(self.payload, self.values[0], class_name, self.default_char)
         )
 
 
 class PoItemSearchResultView(discord.ui.View):
     def __init__(self, payload, items, class_name, default_char=""):
         super().__init__(timeout=180)
+        if not class_name:
+            self.add_item(PoClassSelect(payload))
         self.add_item(PoItemSearchResultSelect(payload, items, class_name, default_char))
 
 
@@ -925,16 +928,14 @@ class PoItemSearchModal(discord.ui.Modal):
 
     async def on_submit(self, interaction):
         await interaction.response.defer(ephemeral=True)
-        if not self.class_name:
-            await interaction.followup.send("⚠️ Bitte zuerst eine Klasse wählen.", ephemeral=True)
-            return
         query = clean(self.query.value)
         matches = await search_raid_items(self.payload.get("raid"), query)
         if not matches:
             await interaction.followup.send(f"Keine Items für **{query}** gefunden.", ephemeral=True)
             return
+        hint = "\nBitte in dieser Trefferliste noch die Klasse wählen, falls sie noch nicht gesetzt ist." if not self.class_name else ""
         await interaction.followup.send(
-            f"Gefundene Items für **{query}**:",
+            f"Gefundene Items für **{query}**:{hint}",
             view=PoItemSearchResultView(self.payload, matches, self.class_name, self.default_char),
             ephemeral=True,
         )
