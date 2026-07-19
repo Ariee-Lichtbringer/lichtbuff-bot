@@ -2012,7 +2012,7 @@ async def sync_recent_ticker_messages(limit=500):
     return added
 
 
-async def update_worldbuff_post(sync_ticker=True):
+async def update_worldbuff_post(sync_ticker=True, force_repost=False):
     if not can_post_worldbuff_overview():
         print(f"Worldbuff-Uebersicht fuer {current_guild_slug()} uebersprungen: kein Zielchannel konfiguriert.")
         return 0
@@ -2036,6 +2036,17 @@ async def update_worldbuff_post(sync_ticker=True):
         if not existing_messages:
             print(f"Worldbuff-Uebersicht im Channel wiedergefunden: {len(recent_messages)} Nachricht(en).")
         existing_messages.extend(message for message in recent_messages if message.id not in known_message_ids)
+
+    if force_repost and existing_messages:
+        for old_msg in existing_messages:
+            try:
+                await old_msg.delete()
+                await asyncio.sleep(0.4)
+            except discord.NotFound:
+                pass
+            except Exception as e:
+                print(f"Worldbuff-Uebersicht konnte zum Neu-Posten nicht geloescht werden: {e}")
+        existing_messages = []
 
     if len(text) <= 1900:
         if existing_messages:
@@ -2085,12 +2096,12 @@ async def sync_recent_ticker_messages_for_all_guilds(limit=500):
     return total_added
 
 
-async def update_worldbuff_overview_from_all_guilds():
+async def update_worldbuff_overview_from_all_guilds(force_repost=False):
     await sync_recent_ticker_messages_for_all_guilds()
 
     token = CURRENT_GUILD_SLUG.set(LICHTLOOT_GUILD_SLUG)
     try:
-        await update_worldbuff_post(sync_ticker=False)
+        await update_worldbuff_post(sync_ticker=False, force_repost=force_repost)
     finally:
         CURRENT_GUILD_SLUG.reset(token)
 
@@ -8894,7 +8905,7 @@ async def handle_ticker_update(message):
 
     print(f"{len(new_buffs)} Worldbuffs aus Ticker übernommen oder geprüft, {added} neu gespeichert.")
 
-    await update_worldbuff_overview_from_all_guilds()
+    await update_worldbuff_overview_from_all_guilds(force_repost=True)
 
     if any(normalize_buff(b["buff"]) == "Rend" for b in new_buffs):
         await update_hordenbuff_post(force=True)
