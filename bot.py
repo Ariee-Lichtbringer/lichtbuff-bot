@@ -8100,9 +8100,16 @@ class PoSignupModal(discord.ui.Modal):
             required=True,
             max_length=50
         )
+        self.player_login = discord.ui.TextInput(
+            label="LichtLoot SpielerLogin",
+            placeholder="dein SpielerLogin/PIN aus LichtLoot",
+            required=True,
+            max_length=80
+        )
         self.add_item(self.class_name)
         self.add_item(self.item_name)
         self.add_item(self.char_name)
+        self.add_item(self.player_login)
 
     async def on_submit(self, interaction):
         await interaction.response.defer(ephemeral=True)
@@ -8112,7 +8119,7 @@ class PoSignupModal(discord.ui.Modal):
                 interaction.user,
                 str(self.item_name.value or ""),
                 str(self.char_name.value or ""),
-                "",
+                str(self.player_login.value or ""),
                 str(self.class_name.value or "")
             )
             entry = result.get("entry") or {}
@@ -8124,7 +8131,7 @@ class PoSignupModal(discord.ui.Modal):
             detail = await explain_po_signup_error(
                 e,
                 str(self.char_name.value or ""),
-                ""
+                str(self.player_login.value or "")
             )
             await interaction.followup.send(f"⚠️ PO konnte nicht gespeichert werden: {detail}", ephemeral=True)
 
