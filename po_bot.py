@@ -1440,6 +1440,27 @@ async def po_anmelder(interaction, raid: str, datum: str, uhrzeit: str, titel: s
     app_commands.Choice(name="Naxxramas", value="NAXX"),
 ])
 async def po_emojis_sync(interaction, raid: str, limit: int = 25):
+    await run_po_emoji_sync(interaction, raid, limit)
+
+
+@client.tree.command(name="poemoji", description="Kurzform: Lädt fehlende Item-Emojis für einen Raid hoch.")
+@app_commands.describe(
+    raid="Raid, z. B. MC, BWL, AQ20, AQ40, ZG, NAXX",
+    limit="Maximal neu anzulegende Emojis. Standard: 25",
+)
+@app_commands.choices(raid=[
+    app_commands.Choice(name="MC", value="MC"),
+    app_commands.Choice(name="BWL", value="BWL"),
+    app_commands.Choice(name="AQ20", value="AQ20"),
+    app_commands.Choice(name="AQ40", value="AQ40"),
+    app_commands.Choice(name="ZG", value="ZG"),
+    app_commands.Choice(name="Naxxramas", value="NAXX"),
+])
+async def poemoji(interaction, raid: str, limit: int = 25):
+    await run_po_emoji_sync(interaction, raid, limit)
+
+
+async def run_po_emoji_sync(interaction, raid: str, limit: int = 25):
     await interaction.response.defer(ephemeral=True, thinking=True)
     if not interaction.guild:
         await interaction.followup.send("⚠️ Dieser Befehl geht nur auf einem Discord-Server.", ephemeral=True)
