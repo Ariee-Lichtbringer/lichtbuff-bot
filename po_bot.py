@@ -44,11 +44,18 @@ API_URL = normalize_api_url(
     os.getenv("PO_BOT_API_URL", "") or os.getenv("LICHTLOOT_RAILWAY_API_URL", "") or RAILWAY_API_URL
 )
 QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
+def normalize_role_name(value):
+    text = re.sub(r"[^a-z0-9]+", "", str(value or "").strip().casefold())
+    if text.startswith("po"):
+        text = "p0" + text[2:]
+    return text
+
+
 PO_REVIEW_ROLE_NAMES = {
-    value.strip().casefold()
+    normalize_role_name(value)
     for value in os.getenv(
         "PO_REVIEW_ROLE_NAMES",
-        "PO-Freigabe,Gildenleitung,Gildenoffiziere,Raidoffiziere"
+        "PO-Freigabe,P0 Freigabe,P0-Freigabe,PO Freigabe,Gildenleitung,Gildenoffiziere,Raidoffiziere"
     ).split(",")
     if value.strip()
 }
@@ -833,7 +840,7 @@ async def reviewer_allowed(user):
     ):
         return True
     for role in getattr(user, "roles", []) or []:
-        if str(getattr(role, "name", "") or "").strip().casefold() in PO_REVIEW_ROLE_NAMES:
+        if normalize_role_name(getattr(role, "name", "")) in PO_REVIEW_ROLE_NAMES:
             return True
     return False
 
