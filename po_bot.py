@@ -946,19 +946,26 @@ class PoEntryModal(discord.ui.Modal):
             detail = po_signup_error_message(result.get("error") or "unbekannt", char_name)
             await interaction.followup.send(f"⚠️ PO konnte nicht gespeichert werden: {detail}", ephemeral=True)
             return
+        saved_entry = result.get("entry") or {}
+        saved_player = clean(saved_entry.get("player")) or char_name
+        saved_item = clean(saved_entry.get("item")) or self.item_name
+        await interaction.followup.send(
+            f"✅ Deine PO wurde im Discord gespeichert: **{saved_player}** → **{saved_item}**.\n"
+            "Der PO-Post wird gleich aktualisiert.",
+            ephemeral=True,
+        )
+        asyncio.create_task(refresh_po_message_safely(interaction.client, payload))
         prio_result = None
         try:
             prio_result = await asyncio.to_thread(save_po_signup_prio, payload, char_name, class_name, self.item_name, player_login)
         except Exception as error:
             prio_result = {"success": False, "error": str(error)}
-        await refresh_po_message(interaction.client, payload)
-        message = f"✅ Gespeichert: **{char_name}** → **{self.item_name}**"
-        if prio_result:
-            if prio_result.get("success"):
-                message += "\n📌 Auch als PO+ in LichtLoot gespeichert."
-            else:
-                message += f"\n⚠️ LichtLoot-PO+ konnte nicht gespeichert werden: {prio_result.get('error') or 'unbekannt'}"
-        await interaction.followup.send(message, ephemeral=True)
+        if prio_result and not prio_result.get("success"):
+            await interaction.followup.send(
+                f"⚠️ Discord-Eintrag ist gespeichert, aber LichtLoot-PO+ konnte nicht gespeichert werden: "
+                f"{prio_result.get('error') or 'unbekannt'}",
+                ephemeral=True,
+            )
 
 
 class PoClassSelect(discord.ui.Select):
@@ -1281,6 +1288,13 @@ async def refresh_po_message(client, payload):
     view = PoView(payload, items, entries)
     await message.edit(embed=make_embed(payload, entries, p0plus_labels), view=view)
     register_po_view(client, payload, items, entries)
+
+
+async def refresh_po_message_safely(client, payload):
+    try:
+        await refresh_po_message(client, payload)
+    except Exception as error:
+        print(f"PO-Anmelder konnte nach Eintrag nicht aktualisiert werden ({payload.get('postKey')}): {error}")
 
 
 async def post_or_update_from_queue(client, payload):
