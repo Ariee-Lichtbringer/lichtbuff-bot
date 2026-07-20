@@ -614,7 +614,7 @@ async def search_raid_items(raid, query, limit=25):
     if not words:
         return []
     matches = []
-    for item in await load_raid_items(raid):
+    for item in await load_raid_item_rows(raid):
         item_key = slug(" ".join([
             po_item_name_value(item),
             clean(item.get("slot") or "") if isinstance(item, dict) else "",
@@ -696,7 +696,7 @@ async def items_for_payload(payload):
     options = parse_item_options(payload.get("itemOptions") or payload.get("items") or payload.get("itemList"))
     if options:
         return options
-    return await load_raid_items(payload.get("raid") or "")
+    return await load_raid_item_rows(payload.get("raid") or "")
 
 
 async def load_entries(payload):
