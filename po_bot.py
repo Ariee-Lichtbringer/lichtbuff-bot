@@ -55,6 +55,8 @@ PO_REVIEW_ROLE_NAMES = {
 STATE_FILE = Path(os.getenv("PO_BOT_STATE_FILE", "po_bot_posts.json"))
 QUEUE_CHECK_SECONDS = int(os.getenv("PO_BOT_QUEUE_CHECK_SECONDS", "10") or "10")
 PRIO_SERVER = os.getenv("PO_BOT_PRIO_SERVER", "Lichtbringer")
+PO_HELP_IMAGE_FILENAME = "po-anmelder-hinweis.png"
+PO_HELP_IMAGE_PATH = Path(os.getenv("PO_BOT_HELP_IMAGE", str(Path(__file__).with_name(PO_HELP_IMAGE_FILENAME))))
 
 CLASS_EMOJI_FALLBACKS = {
     "warrior": "⚔️",
@@ -390,6 +392,40 @@ def payload_with_lichtloot_id(payload):
     }
 
 
+def payload_with_lichtloot_id_from_sources(payload, *sources):
+    raid_pin = payload_lichtloot_raid_pin(payload)
+    if not raid_pin:
+        for source in sources:
+            raid_pin = payload_lichtloot_raid_pin(source or {})
+            if raid_pin:
+                break
+
+    if raid_pin:
+        result = payload_with_lichtloot_id({**(payload or {}), "raidPin": raid_pin})
+    else:
+        result = dict(payload or {})
+
+    lead_pin = clean((payload or {}).get("lichtlootLeadPin") or (payload or {}).get("leadPin"))
+    if not lead_pin:
+        for source in sources:
+            lead_pin = clean((source or {}).get("lichtlootLeadPin") or (source or {}).get("leadPin"))
+            if lead_pin:
+                break
+    if lead_pin:
+        result["lichtlootLeadPin"] = lead_pin
+        result["leadPin"] = lead_pin
+
+    return result
+
+
+def payload_with_saved_lichtloot_id(payload):
+    post_key = clean((payload or {}).get("postKey") or (payload or {}).get("poPostKey") or (payload or {}).get("postId"))
+    stored = {}
+    if post_key:
+        stored = load_state().get(post_key) or {}
+    return payload_with_lichtloot_id_from_sources(payload, stored)
+
+
 def save_po_signup_prio(payload, player, class_name, item, player_login=""):
     raid_pin = payload_lichtloot_raid_pin(payload)
     if not raid_pin:
@@ -693,12 +729,17 @@ async def load_payloads_from_api_entries():
             "targetChannelId": target_channel_id,
             "channelId": target_channel_id,
             "messageId": message_id,
+            "raidPin": clean(entry.get("raidPin") or entry.get("prioPin") or entry.get("lichtlootPlayerPin") or entry.get("lichtlootRaidId")),
+            "prioPin": clean(entry.get("prioPin") or entry.get("raidPin") or entry.get("lichtlootPlayerPin") or entry.get("lichtlootRaidId")),
+            "lichtlootRaidId": clean(entry.get("lichtlootRaidId") or entry.get("raidPin") or entry.get("prioPin") or entry.get("lichtlootPlayerPin")),
+            "lichtlootPlayerPin": clean(entry.get("lichtlootPlayerPin") or entry.get("raidPin") or entry.get("prioPin") or entry.get("lichtlootRaidId")),
             "source": "lichtloot_restore",
         }
     return list(payloads.values())
 
 
 async def refresh_po_view_only(client, payload):
+    payload = payload_with_saved_lichtloot_id(payload)
     target_channel_id = payload_target_channel_id(payload)
     channel = client.get_channel(int(target_channel_id)) or await client.fetch_channel(int(target_channel_id))
     message = await channel.fetch_message(int(payload["messageId"]))
@@ -715,6 +756,7 @@ def quick_items_for_payload(payload):
 
 
 def register_po_view(client, payload, items=None, entries=None):
+    payload = payload_with_saved_lichtloot_id(payload)
     message_id = clean(payload.get("messageId"))
     if not message_id:
         return False
@@ -829,6 +871,8 @@ async def fresh_entries_for_payload(payload):
 
 
 async def review_entry(payload, entry, user):
+    payload = payload_with_saved_lichtloot_id(payload)
+    raid_pin = payload_lichtloot_raid_pin(payload)
     result = await asyncio.to_thread(api_post, {
         "action": "reviewPoPostEntry",
         "queueToken": QUEUE_TOKEN,
@@ -838,6 +882,10 @@ async def review_entry(payload, entry, user):
         "messageId": entry.get("messageId") or "",
         "poMessageId": entry.get("messageId") or "",
         "discordMessageId": payload.get("messageId") or entry.get("discordMessageId") or "",
+        "raidPin": raid_pin,
+        "prioPin": raid_pin,
+        "lichtlootRaidId": raid_pin,
+        "lichtlootPlayerPin": raid_pin,
         "player": entry.get("player") or "",
         "item": entry.get("item") or entry.get("itemName") or "",
         "status": "approved",
@@ -893,6 +941,8 @@ def make_embed(payload, entries, p0plus_labels=None):
         title=f"📋 {display_raid(payload['raid'])} PO-Anmelder",
         color=discord.Color.gold(),
     )
+    if PO_HELP_IMAGE_PATH.exists():
+        embed.set_image(url=f"attachment://{PO_HELP_IMAGE_FILENAME}")
     embed.add_field(name="Post-ID", value=f"`{payload['postKey']}`", inline=False)
     lichtloot_id = payload_lichtloot_raid_pin(payload)
     if lichtloot_id:
@@ -936,6 +986,34 @@ def make_embed(payload, entries, p0plus_labels=None):
     return embed
 
 
+def po_help_image_file():
+    if not PO_HELP_IMAGE_PATH.exists():
+        return None
+    return discord.File(str(PO_HELP_IMAGE_PATH), filename=PO_HELP_IMAGE_FILENAME)
+
+
+def po_message_has_help_image(message):
+    return any(
+        str(getattr(attachment, "filename", "") or "") == PO_HELP_IMAGE_FILENAME
+        for attachment in getattr(message, "attachments", []) or []
+    )
+
+
+async def send_po_message(channel, embed, view):
+    file = po_help_image_file()
+    if file:
+        return await channel.send(embed=embed, view=view, file=file, silent=True)
+    return await channel.send(embed=embed, view=view, silent=True)
+
+
+async def edit_po_message(message, embed, view):
+    file = po_help_image_file()
+    if file and not po_message_has_help_image(message):
+        await message.edit(embed=embed, view=view, attachments=[*message.attachments, file])
+        return
+    await message.edit(embed=embed, view=view)
+
+
 def class_options():
     return [
         discord.SelectOption(label=name, value=name, emoji=class_select_emoji(name))
@@ -958,7 +1036,7 @@ def po_signup_error_message(error, char_name=""):
 
 
 async def submit_po_entry(interaction, payload, item_name, class_name, char_name, player_login, server=""):
-    payload = payload_with_lichtloot_id(payload)
+    payload = payload_with_saved_lichtloot_id(payload)
     raid_pin = payload_lichtloot_raid_pin(payload)
     char_name = clean(char_name)
     player_login = clean(player_login)
@@ -1420,7 +1498,7 @@ class PoView(discord.ui.View):
 
 
 async def refresh_po_message(client, payload):
-    payload = payload_with_lichtloot_id(payload)
+    payload = payload_with_saved_lichtloot_id(payload)
     target_channel_id = payload_target_channel_id(payload)
     channel = client.get_channel(int(target_channel_id)) or await client.fetch_channel(int(target_channel_id))
     message = await channel.fetch_message(int(payload["messageId"]))
@@ -1428,7 +1506,7 @@ async def refresh_po_message(client, payload):
     entries = await load_entries(payload)
     p0plus_labels = await load_p0plus_labels(payload.get("raid") or "")
     view = PoView(payload, items, entries)
-    await message.edit(embed=make_embed(payload, entries, p0plus_labels), view=view)
+    await edit_po_message(message, make_embed(payload, entries, p0plus_labels), view)
     register_po_view(client, payload, items, entries)
 
 
@@ -1463,7 +1541,7 @@ async def post_or_update_from_queue(client, payload):
         "channelId": str(target_channel_id),
         "messageId": clean(stored.get("messageId") or payload.get("messageId") or payload.get("discordMessageId")),
     }
-    normalized = payload_with_lichtloot_id(normalized)
+    normalized = payload_with_lichtloot_id_from_sources(normalized, stored)
     if not normalized.get("messageId"):
         normalized["messageId"] = await find_existing_message_id(client, normalized)
 
@@ -1477,12 +1555,12 @@ async def post_or_update_from_queue(client, payload):
     if normalized.get("messageId"):
         try:
             message = await channel.fetch_message(int(normalized["messageId"]))
-            await message.edit(embed=embed, view=view)
+            await edit_po_message(message, embed, view)
         except Exception as error:
             print(f"PO-Anmelder wird neu gepostet, alte Nachricht nicht nutzbar ({post_key}): {error}")
             message = None
     if message is None:
-        message = await channel.send(embed=embed, view=view, silent=True)
+        message = await send_po_message(channel, embed, view)
         normalized["messageId"] = str(message.id)
     state[post_key] = normalized
     save_state(state)
@@ -1628,13 +1706,13 @@ async def po_anmelder(interaction, raid: str, datum: str, uhrzeit: str, titel: s
     payload = payload_with_lichtloot_id(payload)
     items = await items_for_payload(payload)
     embed = make_embed(payload, [])
-    message = await interaction.channel.send(embed=embed, view=PoView(payload, items, []), silent=True)
+    message = await send_po_message(interaction.channel, embed, PoView(payload, items, []))
     payload["messageId"] = str(message.id)
     state = load_state()
     state[post_key] = payload
     save_state(state)
     client.add_view(PoView(payload, items, []), message_id=message.id)
-    await message.edit(embed=make_embed(payload, []), view=PoView(payload, items, []))
+    await edit_po_message(message, make_embed(payload, []), PoView(payload, items, []))
     await interaction.followup.send(f"✅ PO-Anmelder erstellt: `{post_key}`", ephemeral=True)
 
 
