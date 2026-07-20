@@ -43,6 +43,14 @@ API_URL = normalize_api_url(
     os.getenv("PO_BOT_API_URL", "") or os.getenv("LICHTLOOT_RAILWAY_API_URL", "") or RAILWAY_API_URL
 )
 QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
+PO_REVIEW_ROLE_NAMES = {
+    value.strip().casefold()
+    for value in os.getenv(
+        "PO_REVIEW_ROLE_NAMES",
+        "PO-Freigabe,Gildenleitung,Gildenoffiziere,Raidoffiziere"
+    ).split(",")
+    if value.strip()
+}
 STATE_FILE = Path(os.getenv("PO_BOT_STATE_FILE", "po_bot_posts.json"))
 QUEUE_CHECK_SECONDS = int(os.getenv("PO_BOT_QUEUE_CHECK_SECONDS", "10") or "10")
 PRIO_SERVER = os.getenv("PO_BOT_PRIO_SERVER", "Lichtbringer")
@@ -709,7 +717,16 @@ def po_entry_options(entries, *, only_unlucked=False):
 
 
 async def reviewer_allowed(user):
-    return True
+    permissions = getattr(user, "guild_permissions", None)
+    if permissions and (
+        getattr(permissions, "administrator", False)
+        or getattr(permissions, "manage_guild", False)
+    ):
+        return True
+    for role in getattr(user, "roles", []) or []:
+        if str(getattr(role, "name", "") or "").strip().casefold() in PO_REVIEW_ROLE_NAMES:
+            return True
+    return False
 
 
 def has_expression_admin_permission(user):
@@ -744,13 +761,10 @@ async def fresh_entries_for_payload(payload):
         return []
 
 
-async def review_entry(payload, entry, user, master_code):
-    master_code = clean(master_code)
-    if not master_code:
-        raise RuntimeError("Master-Code fehlt.")
+async def review_entry(payload, entry, user):
     result = await asyncio.to_thread(api_post, {
         "action": "reviewPoPostEntry",
-        "masterCode": master_code,
+        "queueToken": QUEUE_TOKEN,
         "postKey": payload["postKey"],
         "sourceChannelId": payload_source_channel_id(payload),
         "targetChannelId": payload_target_channel_id(payload),
@@ -1130,40 +1144,26 @@ class PoReviewSelect(discord.ui.Select):
             if not self.values or self.values[0] == "none":
                 await interaction.response.send_message("Es gibt gerade keinen offenen PO-Eintrag zum Freigeben.", ephemeral=True)
                 return
+            await interaction.response.defer(ephemeral=True)
+            if not await reviewer_allowed(interaction.user):
+                await interaction.followup.send(
+                    "⚠️ Nur PO-Freigeber können PO-Einträge freigeben.",
+                    ephemeral=True,
+                )
+                return
             entry = self.entries[int(self.values[0])]
-            await interaction.response.send_modal(PoReviewMasterCodeModal(self.payload, entry))
+            result = await review_entry(self.payload, entry, interaction.user)
+            saved = result.get("entry") or entry
+            await refresh_po_message(interaction.client, self.payload)
+            await interaction.followup.send(
+                f"✅ Freigegeben: **{saved.get('player') or entry.get('player')}** → **{saved.get('item') or entry.get('item')}**.",
+                ephemeral=True,
+            )
         except Exception as error:
             if interaction.response.is_done():
                 await interaction.followup.send(f"⚠️ Freigabe konnte nicht geöffnet werden: `{error}`", ephemeral=True)
             else:
                 await interaction.response.send_message(f"⚠️ Freigabe konnte nicht geöffnet werden: `{error}`", ephemeral=True)
-
-
-class PoReviewMasterCodeModal(discord.ui.Modal):
-    def __init__(self, payload, entry):
-        super().__init__(title="Item freigeben")
-        self.payload = payload
-        self.entry = entry
-        self.master_code = discord.ui.TextInput(
-            label="Master-Code",
-            placeholder="Master-Code der Gildenleitung",
-            required=True,
-            max_length=100,
-        )
-        self.add_item(self.master_code)
-
-    async def on_submit(self, interaction):
-        await interaction.response.defer(ephemeral=True)
-        try:
-            result = await review_entry(self.payload, self.entry, interaction.user, self.master_code.value)
-            saved = result.get("entry") or self.entry
-            await refresh_po_message(interaction.client, self.payload)
-            await interaction.followup.send(
-                f"✅ Freigegeben: **{saved.get('player') or self.entry.get('player')}** → **{saved.get('item') or self.entry.get('item')}**.",
-                ephemeral=True,
-            )
-        except Exception as error:
-            await interaction.followup.send(f"⚠️ Freigabe konnte nicht gespeichert werden: `{error}`", ephemeral=True)
 
 
 class PoDeleteEntrySelect(discord.ui.Select):

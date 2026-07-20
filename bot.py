@@ -48,6 +48,14 @@ async def send_silent(channel, *args, **kwargs):
 
 TOKEN = os.getenv("DISCORD_TOKEN", "MTUxMDY3NzM0Njc4NzY1OTc3Nw.G_-vuz._ocUI4y-Nv7o9Kn0erGGra7cQfrHvFjKfBaeRc")
 LICHTBOT_QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
+PO_REVIEW_ROLE_NAMES = {
+    value.strip().casefold()
+    for value in os.getenv(
+        "PO_REVIEW_ROLE_NAMES",
+        "PO-Freigabe,Gildenleitung,Gildenoffiziere,Raidoffiziere"
+    ).split(",")
+    if value.strip()
+}
 
 TICKER_CHANNEL_ID = 1283706980103356448
 PANEM_TICKER_CHANNEL_ID = 1482656882857349277
@@ -8016,7 +8024,16 @@ def po_review_entry_options(entries):
 
 
 async def po_signup_reviewer_allowed(payload, user):
-    return True
+    permissions = getattr(user, "guild_permissions", None)
+    if permissions and (
+        getattr(permissions, "administrator", False)
+        or getattr(permissions, "manage_guild", False)
+    ):
+        return True
+    for role in getattr(user, "roles", []) or []:
+        if str(getattr(role, "name", "") or "").strip().casefold() in PO_REVIEW_ROLE_NAMES:
+            return True
+    return False
 
 
 async def set_po_signup_luck(payload, entry, user):
@@ -8260,6 +8277,12 @@ class PoSignupReviewSelect(discord.ui.Select):
     async def callback(self, interaction):
         await interaction.response.defer(ephemeral=True)
         try:
+            if not await po_signup_reviewer_allowed(self.payload, interaction.user):
+                await interaction.followup.send(
+                    "⚠️ Nur PO-Freigeber können PO-Einträge freigeben.",
+                    ephemeral=True
+                )
+                return
             idx = int(self.values[0])
             entry = self.entries[idx]
             result = await review_po_signup_entry(self.payload, entry, interaction.user)
