@@ -573,6 +573,44 @@ def po_item_display_text(item):
     return f"{name} ({description})" if description else name
 
 
+def po_entry_item_name(entry):
+    return clean(entry.get("item") or entry.get("itemName")) or "Ohne Item"
+
+
+def po_entry_item_id(entry):
+    return clean(entry.get("itemId") or entry.get("item_id") or entry.get("poItemId") or entry.get("po_item_id"))
+
+
+def po_entry_item_slot(entry):
+    return clean(entry.get("itemSlot") or entry.get("item_slot") or entry.get("slot"))
+
+
+def po_entry_item_boss(entry):
+    return clean(entry.get("itemBoss") or entry.get("item_boss") or entry.get("boss"))
+
+
+def po_entry_item_group_key(entry):
+    item_id = po_entry_item_id(entry)
+    if item_id:
+        return f"id:{item_id}"
+    return "|".join([
+        slug(po_entry_item_name(entry)),
+        slug(po_entry_item_slot(entry)),
+        slug(po_entry_item_boss(entry)),
+    ])
+
+
+def po_entry_item_display(entry):
+    name = po_entry_item_name(entry)
+    parts = [
+        po_entry_item_slot(entry),
+        po_entry_item_boss(entry),
+        f"ID {po_entry_item_id(entry)}" if po_entry_item_id(entry) else "",
+    ]
+    suffix = " · ".join(part for part in parts if part)
+    return f"{name} ({suffix})" if suffix else name
+
+
 def po_item_option_label(item):
     return po_item_name_value(item)[:100]
 
@@ -1030,8 +1068,7 @@ def make_embed(payload, entries, p0plus_labels=None):
 
     grouped = {}
     for entry in entries:
-        item = clean(entry.get("item") or entry.get("itemName")) or "Ohne Item"
-        grouped.setdefault(item, []).append(entry)
+        grouped.setdefault(po_entry_item_group_key(entry), []).append(entry)
 
     if not grouped:
         embed.description = "\n".join(header_lines + ["**Anmeldungen (0)**", "Noch keine PO-Anmeldung vorhanden."])[:3900]
@@ -1039,12 +1076,14 @@ def make_embed(payload, entries, p0plus_labels=None):
 
     lines = header_lines + [f"**Anmeldungen ({len(entries)})**"]
     p0plus_labels = p0plus_labels or {}
-    for item in sorted(grouped.keys(), key=lambda value: value.lower()):
-        rows = grouped[item]
-        p0_label = p0plus_labels.get(slug(item))
-        item_label = f"{item} ({p0_label})" if p0_label else item
+    for item_key in sorted(grouped.keys(), key=lambda value: po_entry_item_display(grouped[value][0]).lower()):
+        rows = grouped[item_key]
+        item_name = po_entry_item_name(rows[0])
+        item_label_base = po_entry_item_display(rows[0])
+        p0_label = p0plus_labels.get(slug(item_name))
+        item_label = f"{item_label_base} ({p0_label})" if p0_label else item_label_base
         lines.append("")
-        lines.append(f"{item_icon(item)} **{item_label}**")
+        lines.append(f"{item_icon(item_name)} **{item_label}**")
         players = []
         for row in sorted(rows, key=lambda entry: clean(entry.get("player")).lower()):
             class_name = clean(row.get("className") or row.get("Klasse"))
@@ -1112,6 +1151,8 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
     char_name = clean(char_name)
     player_login = clean(player_login)
     item_id = po_item_id_value(item_name)
+    item_slot = clean(item_name.get("slot") or item_name.get("Slot")) if isinstance(item_name, dict) else ""
+    item_boss = clean(item_name.get("boss") or item_name.get("Boss")) if isinstance(item_name, dict) else ""
     item_name = po_item_name_value(item_name)
     class_name = clean(class_name)
     server = clean(server)
@@ -1145,6 +1186,8 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
             "className": class_name,
             "item": item_name,
             "itemId": item_id,
+            "itemSlot": item_slot,
+            "itemBoss": item_boss,
             "playerPin": player_login,
             "spielerLogin": player_login,
             "discordUserId": str(interaction.user.id),
