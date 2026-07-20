@@ -7552,6 +7552,8 @@ async def delete_standalone_po_posts(payload):
 
 
 async def refresh_saved_po_posts_for_source(source_channel_id, cleanup_source=False, post_key_filter=""):
+    print("PO-Refresh im Lichtbuffs-Bot uebersprungen: separater PO-Bot ist zustaendig.")
+    return []
     refreshed = []
     payloads = await po_post_payloads_for_source(source_channel_id, post_key_filter)
     for payload in payloads:
@@ -8404,6 +8406,14 @@ async def send_po_review_dm(payload, entries):
 
 
 async def post_standalone_po_list(payload):
+    print("PO-Post im Lichtbuffs-Bot uebersprungen: separater PO-Bot ist zustaendig.")
+    return {
+        "skipped": True,
+        "postKey": payload.get("postKey") or payload.get("poPostKey") or "",
+        "entries": 0,
+        "newEntries": 0,
+        "deletedSourceMessages": 0
+    }
     payload = merge_previous_po_signup_payload(payload)
     source_channel_id = int(str(payload.get("sourceChannelId") or payload.get("channelId") or "0").strip() or "0")
     target_channel_id = int(str(payload.get("targetChannelId") or payload.get("discordChannelId") or source_channel_id or "0").strip() or "0")
@@ -9000,10 +9010,7 @@ async def on_message_edit(before, after):
         await handle_log_analysis_message(after)
         await handle_ticker_update(after)
         if is_plain_po_source_message(after):
-            await asyncio.sleep(1)
-            refreshed = await refresh_saved_po_posts_for_source(after.channel.id, cleanup_source=True)
-            if refreshed:
-                print(f"PO-Post nach Bearbeitung automatisch aktualisiert: {refreshed}")
+            print("PO-Nachricht im Lichtbuffs-Bot ignoriert: separater PO-Bot ist zustaendig.")
     finally:
         CURRENT_GUILD_SLUG.reset(token)
 
@@ -9021,10 +9028,21 @@ async def on_message(message):
     lower = content.lower()
 
     if is_plain_po_source_message(message):
-        await asyncio.sleep(1)
-        refreshed = await refresh_saved_po_posts_for_source(message.channel.id, cleanup_source=True)
-        if refreshed:
-            print(f"PO-Post nach neuer PO-Nachricht automatisch aktualisiert: {refreshed}")
+        print("PO-Nachricht im Lichtbuffs-Bot ignoriert: separater PO-Bot ist zustaendig.")
+
+    if (
+        lower.startswith("!popost")
+        or lower.startswith("!po-post")
+        or lower.startswith("!poliste")
+        or lower.startswith("!po ")
+        or lower.startswith("!p0 ")
+        or lower.startswith("!podel")
+        or lower.startswith("!podelete")
+        or lower.startswith("!poloeschen")
+        or lower.startswith("!polöschen")
+    ):
+        print("PO-Kommando im Lichtbuffs-Bot ignoriert: separater PO-Bot ist zustaendig.")
+        return
 
     if lower.startswith("!syncchannels") or lower.startswith("!channel-sync"):
         try:
