@@ -324,8 +324,17 @@ def item_select_emoji(item_name):
 def api_get(params):
     query = urllib.parse.urlencode({"guild": GUILD_SLUG, **params})
     url = API_URL + "?" + query
-    with urllib.request.urlopen(url, timeout=30) as response:
-        return parse_api_response(response, "GET", url)
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            return parse_api_response(response, "GET", url)
+    except urllib.error.HTTPError as error:
+        try:
+            raw = error.read().decode("utf-8")
+            parsed = json.loads(raw)
+            detail = parsed.get("error") or raw
+        except Exception:
+            detail = error.reason or str(error)
+        raise RuntimeError(f"HTTP Error {error.code}: {detail}") from error
 
 
 def api_post(payload):
@@ -400,6 +409,37 @@ def save_po_signup_prio(payload, player, class_name, item, player_login=""):
         "className": class_name,
         "item": item,
     })
+
+
+async def load_po_linked_characters(discord_user_id):
+    if not discord_user_id:
+        return []
+    try:
+        result = await asyncio.to_thread(api_get, {
+            "action": "lichtbotGetPoLinkedCharacters",
+            "queueToken": QUEUE_TOKEN,
+            "discordUserId": str(discord_user_id),
+            "t": int(time.time()),
+        })
+    except Exception as error:
+        print(f"PO bekannte Charaktere konnten nicht geladen werden ({discord_user_id}): {error}")
+        return []
+    chars = []
+    seen = set()
+    for row in result.get("characters") or result.get("entries") or []:
+        name = clean(row.get("name") or row.get("player") or row.get("char"))
+        pin = clean(row.get("playerPin") or row.get("pin") or row.get("spielerLogin"))
+        key = f"{name.lower()}|{pin.lower()}"
+        if not name or not pin or key in seen:
+            continue
+        seen.add(key)
+        chars.append({
+            "name": name,
+            "server": clean(row.get("server")) or "Everlook",
+            "className": clean(row.get("className") or row.get("class_name")),
+            "playerPin": pin,
+        })
+    return chars[:3]
 
 
 def load_state():
@@ -917,6 +957,80 @@ def po_signup_error_message(error, char_name=""):
     return message
 
 
+async def submit_po_entry(interaction, payload, item_name, class_name, char_name, player_login, server=""):
+    payload = payload_with_lichtloot_id(payload)
+    raid_pin = payload_lichtloot_raid_pin(payload)
+    char_name = clean(char_name)
+    player_login = clean(player_login)
+    item_name = clean(item_name)
+    class_name = clean(class_name)
+    server = clean(server) or "Everlook"
+
+    if not class_name:
+        await interaction.followup.send("⚠️ Bitte zuerst eine Klasse wählen.", ephemeral=True)
+        return
+    if not player_login:
+        await interaction.followup.send("⚠️ Bitte deinen LichtLoot Spielerlogin eintragen.", ephemeral=True)
+        return
+    if not char_name:
+        await interaction.followup.send("⚠️ Bitte deinen Charakternamen eintragen.", ephemeral=True)
+        return
+
+    try:
+        result = await asyncio.to_thread(api_post, {
+            "action": "lichtbotSavePoPostEntry",
+            "queueToken": QUEUE_TOKEN,
+            "postKey": payload["postKey"],
+            "sourceChannelId": payload_source_channel_id(payload),
+            "targetChannelId": payload_target_channel_id(payload),
+            "raid": payload["raid"],
+            "title": payload.get("title") or "PO-Anmelder",
+            "discordMessageId": payload.get("messageId") or "",
+            "messageId": payload.get("messageId") or "",
+            "raidPin": raid_pin,
+            "prioPin": raid_pin,
+            "lichtlootRaidId": raid_pin,
+            "player": char_name,
+            "server": server,
+            "className": class_name,
+            "item": item_name,
+            "playerPin": player_login,
+            "spielerLogin": player_login,
+            "discordUserId": str(interaction.user.id),
+            "discordName": interaction.user.display_name,
+        })
+    except Exception as error:
+        detail = po_signup_error_message(error, char_name)
+        await interaction.followup.send(f"⚠️ PO konnte nicht gespeichert werden: {detail}", ephemeral=True)
+        return
+
+    if not result.get("success"):
+        detail = po_signup_error_message(result.get("error") or "unbekannt", char_name)
+        await interaction.followup.send(f"⚠️ PO konnte nicht gespeichert werden: {detail}", ephemeral=True)
+        return
+
+    saved_entry = result.get("entry") or {}
+    saved_player = clean(saved_entry.get("player")) or char_name
+    saved_item = clean(saved_entry.get("item")) or item_name
+    await interaction.followup.send(
+        f"✅ Deine PO wurde im Discord gespeichert: **{saved_player}** → **{saved_item}**.\n"
+        "Der PO-Post wird gleich aktualisiert.",
+        ephemeral=True,
+    )
+    asyncio.create_task(refresh_po_message_safely(interaction.client, payload))
+    prio_result = None
+    try:
+        prio_result = await asyncio.to_thread(save_po_signup_prio, {**payload, "server": server}, saved_player, class_name, saved_item, player_login)
+    except Exception as error:
+        prio_result = {"success": False, "error": str(error)}
+    if prio_result and not prio_result.get("success"):
+        detail = po_signup_error_message(prio_result.get("error") or "unbekannt", saved_player)
+        await interaction.followup.send(
+            f"⚠️ Discord-Eintrag ist gespeichert, aber LichtLoot-PO+ konnte nicht gespeichert werden: {detail}",
+            ephemeral=True,
+        )
+
+
 class PoEntryModal(discord.ui.Modal):
     def __init__(self, payload, item_name, class_name, default_char=""):
         super().__init__(title="PO eintragen")
@@ -944,59 +1058,95 @@ class PoEntryModal(discord.ui.Modal):
         char_name = clean(self.char_name.value)
         player_login = clean(self.player_login.value)
         class_name = clean(self.class_name)
-        if not class_name:
-            await interaction.followup.send("⚠️ Bitte zuerst eine Klasse wählen.", ephemeral=True)
+        await submit_po_entry(interaction, self.payload, self.item_name, class_name, char_name, player_login)
+
+
+class PoKnownCharacterSelect(discord.ui.Select):
+    def __init__(self, payload, item_name, class_name, characters):
+        self.payload = payload
+        self.item_name = item_name
+        self.class_name = class_name
+        self.characters = list(characters or [])[:3]
+        options = []
+        for index, char in enumerate(self.characters):
+            label = clean(char.get("name"))[:100]
+            description = " · ".join(
+                part for part in [clean(char.get("className")), clean(char.get("server"))] if part
+            )[:100]
+            options.append(discord.SelectOption(label=label, value=str(index), description=description or None))
+        super().__init__(
+            custom_id=f"po-known-char:{payload['postKey'][:55]}",
+            placeholder="Bekannten Charakter wählen",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            char = self.characters[int(self.values[0])]
+        except Exception:
+            await interaction.followup.send("⚠️ Charakterauswahl konnte nicht gelesen werden.", ephemeral=True)
             return
-        if not player_login:
-            await interaction.followup.send("⚠️ Bitte deinen LichtLoot Spielerlogin eintragen.", ephemeral=True)
-            return
-        payload = payload_with_lichtloot_id(self.payload)
-        raid_pin = payload_lichtloot_raid_pin(payload)
-        result = await asyncio.to_thread(api_post, {
-            "action": "lichtbotSavePoPostEntry",
-            "queueToken": QUEUE_TOKEN,
-            "postKey": payload["postKey"],
-            "sourceChannelId": payload_source_channel_id(payload),
-            "targetChannelId": payload_target_channel_id(payload),
-            "raid": payload["raid"],
-            "title": payload.get("title") or "PO-Anmelder",
-            "discordMessageId": payload.get("messageId") or "",
-            "messageId": payload.get("messageId") or "",
-            "raidPin": raid_pin,
-            "prioPin": raid_pin,
-            "lichtlootRaidId": raid_pin,
-            "player": char_name,
-            "className": class_name,
-            "item": self.item_name,
-            "playerPin": player_login,
-            "spielerLogin": player_login,
-            "discordUserId": str(interaction.user.id),
-            "discordName": interaction.user.display_name,
-        })
-        if not result.get("success"):
-            detail = po_signup_error_message(result.get("error") or "unbekannt", char_name)
-            await interaction.followup.send(f"⚠️ PO konnte nicht gespeichert werden: {detail}", ephemeral=True)
-            return
-        saved_entry = result.get("entry") or {}
-        saved_player = clean(saved_entry.get("player")) or char_name
-        saved_item = clean(saved_entry.get("item")) or self.item_name
+        class_name = clean(char.get("className")) or clean(self.class_name)
+        await submit_po_entry(
+            interaction,
+            self.payload,
+            self.item_name,
+            class_name,
+            char.get("name"),
+            char.get("playerPin"),
+            char.get("server"),
+        )
+
+
+class PoOtherCharacterButton(discord.ui.Button):
+    def __init__(self, payload, item_name, class_name, default_char=""):
+        super().__init__(
+            custom_id=f"po-other-char:{payload['postKey'][:55]}",
+            label="Anderen Charakter eingeben",
+            style=discord.ButtonStyle.secondary,
+        )
+        self.payload = payload
+        self.item_name = item_name
+        self.class_name = class_name
+        self.default_char = default_char
+
+    async def callback(self, interaction):
+        await interaction.response.send_modal(
+            PoEntryModal(self.payload, self.item_name, self.class_name, self.default_char)
+        )
+
+
+class PoKnownCharacterView(discord.ui.View):
+    def __init__(self, payload, item_name, class_name, characters, default_char=""):
+        super().__init__(timeout=180)
+        self.add_item(PoKnownCharacterSelect(payload, item_name, class_name, characters))
+        self.add_item(PoOtherCharacterButton(payload, item_name, class_name, default_char))
+
+
+class PoOtherCharacterView(discord.ui.View):
+    def __init__(self, payload, item_name, class_name, default_char=""):
+        super().__init__(timeout=180)
+        self.add_item(PoOtherCharacterButton(payload, item_name, class_name, default_char))
+
+
+async def open_po_entry_flow(interaction, payload, item_name, class_name, default_char=""):
+    await interaction.response.defer(ephemeral=True)
+    characters = await load_po_linked_characters(interaction.user.id)
+    if characters:
         await interaction.followup.send(
-            f"✅ Deine PO wurde im Discord gespeichert: **{saved_player}** → **{saved_item}**.\n"
-            "Der PO-Post wird gleich aktualisiert.",
+            f"Item gewählt: **{item_name}**.\nWähle deinen Charakter oder trage einen anderen ein.",
+            view=PoKnownCharacterView(payload, item_name, class_name, characters, default_char),
             ephemeral=True,
         )
-        asyncio.create_task(refresh_po_message_safely(interaction.client, payload))
-        prio_result = None
-        try:
-            prio_result = await asyncio.to_thread(save_po_signup_prio, payload, saved_player, class_name, saved_item, player_login)
-        except Exception as error:
-            prio_result = {"success": False, "error": str(error)}
-        if prio_result and not prio_result.get("success"):
-            await interaction.followup.send(
-                f"⚠️ Discord-Eintrag ist gespeichert, aber LichtLoot-PO+ konnte nicht gespeichert werden: "
-                f"{prio_result.get('error') or 'unbekannt'}",
-                ephemeral=True,
-            )
+        return
+    await interaction.followup.send(
+        f"Item gewählt: **{item_name}**.\nFür dich ist noch kein Charakter gespeichert.",
+        view=PoOtherCharacterView(payload, item_name, class_name, default_char),
+        ephemeral=True,
+    )
 
 
 class PoClassSelect(discord.ui.Select):
@@ -1041,7 +1191,7 @@ class PoItemSelect(discord.ui.Select):
     async def callback(self, interaction):
         class_name = selected_class(self.payload["postKey"], interaction.user.id)
         default_char = clean(interaction.user.display_name).split("/")[0].strip()
-        await interaction.response.send_modal(PoEntryModal(self.payload, self.values[0], class_name, default_char))
+        await open_po_entry_flow(interaction, self.payload, self.values[0], class_name, default_char)
 
 
 class PoItemSearchResultSelect(discord.ui.Select):
@@ -1063,9 +1213,7 @@ class PoItemSearchResultSelect(discord.ui.Select):
 
     async def callback(self, interaction):
         class_name = selected_class(self.payload["postKey"], interaction.user.id) or self.class_name
-        await interaction.response.send_modal(
-            PoEntryModal(self.payload, self.values[0], class_name, self.default_char)
-        )
+        await open_po_entry_flow(interaction, self.payload, self.values[0], class_name, self.default_char)
 
 
 class PoItemSearchResultView(discord.ui.View):
@@ -1118,43 +1266,6 @@ class PoSearchButton(discord.ui.Button):
         class_name = selected_class(self.payload["postKey"], interaction.user.id)
         default_char = clean(interaction.user.display_name).split("/")[0].strip()
         await interaction.response.send_modal(PoItemSearchModal(self.payload, class_name, default_char))
-
-
-class ManualItemModal(PoEntryModal):
-    def __init__(self, payload, class_name, default_char=""):
-        discord.ui.Modal.__init__(self, title="Eigenes PO-Item")
-        self.payload = payload
-        self.class_name = class_name
-        self.item_input = discord.ui.TextInput(label="Itemname", required=True, max_length=100)
-        self.char_name = discord.ui.TextInput(label="Charaktername", default=default_char[:50], required=True, max_length=50)
-        self.player_login = discord.ui.TextInput(
-            label="LichtLoot Spielerlogin",
-            placeholder="dein Spielerlogin/PIN aus LichtLoot",
-            required=True,
-            max_length=80,
-        )
-        self.add_item(self.item_input)
-        self.add_item(self.char_name)
-        self.add_item(self.player_login)
-
-    async def on_submit(self, interaction):
-        self.item_name = clean(self.item_input.value)
-        await PoEntryModal.on_submit(self, interaction)
-
-
-class PoManualButton(discord.ui.Button):
-    def __init__(self, payload):
-        super().__init__(
-            custom_id=f"po-manual:{payload['postKey']}",
-            label="2. Eigenes Item eintragen",
-            style=discord.ButtonStyle.primary,
-        )
-        self.payload = payload
-
-    async def callback(self, interaction):
-        class_name = selected_class(self.payload["postKey"], interaction.user.id)
-        default_char = clean(interaction.user.display_name).split("/")[0].strip()
-        await interaction.response.send_modal(ManualItemModal(self.payload, class_name, default_char))
 
 
 class PoReviewSelect(discord.ui.Select):
@@ -1304,7 +1415,6 @@ class PoView(discord.ui.View):
         super().__init__(timeout=None)
         self.add_item(PoClassSelect(payload))
         self.add_item(PoSearchButton(payload))
-        self.add_item(PoManualButton(payload))
         self.add_item(PoDeleteButton(payload))
         self.add_item(PoReviewSelect(payload, entries or []))
 
