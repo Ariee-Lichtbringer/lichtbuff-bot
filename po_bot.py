@@ -497,6 +497,49 @@ def save_state(state):
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), "utf-8")
 
 
+def po_variant_state_key(payload, player, item_name):
+    post_key = clean((payload or {}).get("postKey") or (payload or {}).get("poPostKey") or (payload or {}).get("postId"))
+    return "|".join([post_key, slug(player), slug(item_name)])
+
+
+def remember_po_item_variant(payload, player, item):
+    item_id = po_item_id_value(item)
+    item_slot = clean(item.get("slot") or item.get("Slot")) if isinstance(item, dict) else ""
+    item_boss = clean(item.get("boss") or item.get("Boss")) if isinstance(item, dict) else ""
+    item_name = po_item_name_value(item)
+    key = po_variant_state_key(payload, player, item_name)
+    if not key or not item_name or not (item_id or item_slot or item_boss):
+        return
+
+    state = load_state()
+    variants = state.setdefault("_poItemVariants", {})
+    variants[key] = {
+        "itemId": item_id,
+        "itemSlot": item_slot,
+        "itemBoss": item_boss,
+    }
+    save_state(state)
+
+
+def apply_po_item_variants(payload, entries):
+    variants = (load_state().get("_poItemVariants") or {})
+    result = []
+    for entry in entries or []:
+        patched = dict(entry or {})
+        if po_entry_item_id(patched) or po_entry_item_slot(patched) or po_entry_item_boss(patched):
+            result.append(patched)
+            continue
+
+        key = po_variant_state_key(payload, patched.get("player"), po_entry_item_name(patched))
+        stored = variants.get(key) or {}
+        if stored:
+            patched["itemId"] = clean(stored.get("itemId"))
+            patched["itemSlot"] = clean(stored.get("itemSlot"))
+            patched["itemBoss"] = clean(stored.get("itemBoss"))
+        result.append(patched)
+    return result
+
+
 async def load_raid_items(raid):
     try:
         result = await asyncio.to_thread(api_get, {"action": "getLootItems", "raid": normalize_raid(raid)})
@@ -746,7 +789,7 @@ async def load_entries(payload):
         "targetChannelId": payload_target_channel_id(payload),
         "includeArchived": "false",
     })
-    return result.get("entries") or []
+    return apply_po_item_variants(payload, result.get("entries") or [])
 
 
 def message_matches_post_key(message, post_key):
@@ -1206,6 +1249,12 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
     saved_entry = result.get("entry") or {}
     saved_player = clean(saved_entry.get("player")) or char_name
     saved_item = clean(saved_entry.get("item")) or item_name
+    remember_po_item_variant(payload, saved_player, {
+        "name": saved_item,
+        "itemId": item_id,
+        "slot": item_slot,
+        "boss": item_boss,
+    })
     await interaction.followup.send(
         f"✅ Deine PO wurde im Discord gespeichert: **{saved_player}** → **{saved_item}**.\n"
         "Der PO-Post wird gleich aktualisiert.",
