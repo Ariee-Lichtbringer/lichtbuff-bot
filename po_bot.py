@@ -643,8 +643,19 @@ def po_entry_item_group_key(entry):
     ])
 
 
+def is_hakkari_blade_variant(entry):
+    item_id = po_entry_item_id(entry)
+    if item_id in {"19865", "19866"}:
+        return True
+    return slug(po_entry_item_name(entry)) == "kriegsklinge-der-hakkari" and (
+        po_entry_item_slot(entry) or po_entry_item_boss(entry)
+    )
+
+
 def po_entry_item_display(entry):
     name = po_entry_item_name(entry)
+    if not is_hakkari_blade_variant(entry):
+        return name
     parts = [
         po_entry_item_slot(entry),
         po_entry_item_boss(entry),
