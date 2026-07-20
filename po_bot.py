@@ -744,10 +744,13 @@ async def fresh_entries_for_payload(payload):
         return []
 
 
-async def review_entry(payload, entry, user):
+async def review_entry(payload, entry, user, master_code):
+    master_code = clean(master_code)
+    if not master_code:
+        raise RuntimeError("Master-Code fehlt.")
     result = await asyncio.to_thread(api_post, {
         "action": "reviewPoPostEntry",
-        "queueToken": QUEUE_TOKEN,
+        "masterCode": master_code,
         "postKey": payload["postKey"],
         "sourceChannelId": payload_source_channel_id(payload),
         "targetChannelId": payload_target_channel_id(payload),
@@ -1123,17 +1126,40 @@ class PoReviewSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction):
-        await interaction.response.defer(ephemeral=True)
         try:
             if not self.values or self.values[0] == "none":
-                await interaction.followup.send("Es gibt gerade keinen offenen PO-Eintrag zum Freigeben.", ephemeral=True)
+                await interaction.response.send_message("Es gibt gerade keinen offenen PO-Eintrag zum Freigeben.", ephemeral=True)
                 return
             entry = self.entries[int(self.values[0])]
-            result = await review_entry(self.payload, entry, interaction.user)
-            saved = result.get("entry") or entry
+            await interaction.response.send_modal(PoReviewMasterCodeModal(self.payload, entry))
+        except Exception as error:
+            if interaction.response.is_done():
+                await interaction.followup.send(f"⚠️ Freigabe konnte nicht geöffnet werden: `{error}`", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"⚠️ Freigabe konnte nicht geöffnet werden: `{error}`", ephemeral=True)
+
+
+class PoReviewMasterCodeModal(discord.ui.Modal):
+    def __init__(self, payload, entry):
+        super().__init__(title="Item freigeben")
+        self.payload = payload
+        self.entry = entry
+        self.master_code = discord.ui.TextInput(
+            label="Master-Code",
+            placeholder="Master-Code der Gildenleitung",
+            required=True,
+            max_length=100,
+        )
+        self.add_item(self.master_code)
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            result = await review_entry(self.payload, self.entry, interaction.user, self.master_code.value)
+            saved = result.get("entry") or self.entry
             await refresh_po_message(interaction.client, self.payload)
             await interaction.followup.send(
-                f"✅ Freigegeben: **{saved.get('player') or entry.get('player')}** → **{saved.get('item') or entry.get('item')}**.",
+                f"✅ Freigegeben: **{saved.get('player') or self.entry.get('player')}** → **{saved.get('item') or self.entry.get('item')}**.",
                 ephemeral=True,
             )
         except Exception as error:
