@@ -433,7 +433,7 @@ def payload_with_saved_lichtloot_id(payload):
     return payload_with_lichtloot_id_from_sources(payload, stored)
 
 
-def save_po_signup_prio(payload, player, class_name, item, player_login=""):
+def save_po_signup_prio(payload, player, class_name, item, player_login="", item_id=""):
     raid_pin = payload_lichtloot_raid_pin(payload)
     if not raid_pin:
         return None
@@ -451,6 +451,7 @@ def save_po_signup_prio(payload, player, class_name, item, player_login=""):
         "server": clean(payload.get("server")) or "Everlook",
         "className": class_name,
         "item": item,
+        "itemId": clean(item_id),
     })
 
 
@@ -525,17 +526,75 @@ async def load_raid_item_rows(raid):
     rows = []
     for row in result.get("items") or []:
         name = clean(row.get("name") or row.get("item"))
-        key = slug(name)
+        item_id = clean(row.get("itemId") or row.get("ItemID") or row.get("item_id"))
+        slot = clean(row.get("slot") or row.get("Slot"))
+        boss = clean(row.get("boss") or row.get("Boss"))
+        key = f"{slug(name)}|{item_id}|{slug(slot)}|{slug(boss)}"
         if not name or key in seen:
             continue
         seen.add(key)
         rows.append({
             "name": name,
-            "icon": clean(row.get("icon") or row.get("iconName") or row.get("IconName")),
-            "itemId": clean(row.get("itemId") or row.get("ItemID")),
+            "icon": clean(row.get("icon") or row.get("iconName") or row.get("IconName") or row.get("icon_url")),
+            "itemId": item_id,
+            "slot": slot,
+            "boss": boss,
         })
-    rows.sort(key=lambda value: value["name"].lower())
+    rows.sort(key=lambda value: (value["name"].lower(), value.get("slot", "").lower(), value.get("itemId", "")))
     return rows
+
+
+def po_item_name_value(item):
+    if isinstance(item, dict):
+        return clean(item.get("name") or item.get("item") or item.get("itemName"))
+    return clean(item)
+
+
+def po_item_id_value(item):
+    if isinstance(item, dict):
+        return clean(item.get("itemId") or item.get("ItemID") or item.get("item_id"))
+    return ""
+
+
+def po_item_option_description(item):
+    if not isinstance(item, dict):
+        return ""
+    parts = [
+        clean(item.get("slot") or item.get("Slot")),
+        clean(item.get("boss") or item.get("Boss")),
+        f"ID {po_item_id_value(item)}" if po_item_id_value(item) else "",
+    ]
+    return " · ".join(part for part in parts if part)[:100]
+
+
+def po_item_display_text(item):
+    name = po_item_name_value(item)
+    description = po_item_option_description(item)
+    return f"{name} ({description})" if description else name
+
+
+def po_item_option_label(item):
+    return po_item_name_value(item)[:100]
+
+
+def po_item_option_key(item, index=0):
+    if isinstance(item, dict):
+        item_id = po_item_id_value(item)
+        if item_id:
+            return f"id:{item_id}"[:100]
+        return f"idx:{index}:{slug(po_item_name_value(item))}"[:100]
+    return po_item_name_value(item)[:100]
+
+
+def resolve_po_item_selection(items, selected_value):
+    selected = clean(selected_value)
+    for index, item in enumerate(items or []):
+        if po_item_option_key(item, index) == selected:
+            return item
+    for item in items or []:
+        if po_item_name_value(item)[:100] == selected:
+            return item
+    return {"name": selected}
 
 
 def download_item_icon(icon_name):
@@ -556,7 +615,12 @@ async def search_raid_items(raid, query, limit=25):
         return []
     matches = []
     for item in await load_raid_items(raid):
-        item_key = slug(item)
+        item_key = slug(" ".join([
+            po_item_name_value(item),
+            clean(item.get("slot") or "") if isinstance(item, dict) else "",
+            clean(item.get("boss") or "") if isinstance(item, dict) else "",
+            po_item_id_value(item),
+        ]))
         if all(word in item_key for word in words):
             matches.append(item)
             if len(matches) >= limit:
@@ -1047,7 +1111,8 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
     raid_pin = payload_lichtloot_raid_pin(payload)
     char_name = clean(char_name)
     player_login = clean(player_login)
-    item_name = clean(item_name)
+    item_id = po_item_id_value(item_name)
+    item_name = po_item_name_value(item_name)
     class_name = clean(class_name)
     server = clean(server) or "Everlook"
 
@@ -1079,6 +1144,7 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
             "server": server,
             "className": class_name,
             "item": item_name,
+            "itemId": item_id,
             "playerPin": player_login,
             "spielerLogin": player_login,
             "discordUserId": str(interaction.user.id),
@@ -1105,7 +1171,7 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
     asyncio.create_task(refresh_po_message_safely(interaction.client, payload))
     prio_result = None
     try:
-        prio_result = await asyncio.to_thread(save_po_signup_prio, {**payload, "server": server}, saved_player, class_name, saved_item, player_login)
+        prio_result = await asyncio.to_thread(save_po_signup_prio, {**payload, "server": server}, saved_player, class_name, saved_item, player_login, item_id)
     except Exception as error:
         prio_result = {"success": False, "error": str(error)}
     if prio_result and not prio_result.get("success"):
@@ -1220,15 +1286,16 @@ class PoOtherCharacterView(discord.ui.View):
 async def open_po_entry_flow(interaction, payload, item_name, class_name, default_char=""):
     await interaction.response.defer(ephemeral=True)
     characters = await load_po_linked_characters(interaction.user.id)
+    item_display = po_item_display_text(item_name)
     if characters:
         await interaction.followup.send(
-            f"Item gewählt: **{item_name}**.\nWähle deinen Charakter oder trage einen anderen ein.",
+            f"Item gewählt: **{item_display}**.\nWähle deinen Charakter oder trage einen anderen ein.",
             view=PoKnownCharacterView(payload, item_name, class_name, characters, default_char),
             ephemeral=True,
         )
         return
     await interaction.followup.send(
-        f"Item gewählt: **{item_name}**.\nFür dich ist noch kein Charakter gespeichert.",
+        f"Item gewählt: **{item_display}**.\nFür dich ist noch kein Charakter gespeichert.",
         view=PoOtherCharacterView(payload, item_name, class_name, default_char),
         ephemeral=True,
     )
@@ -1261,9 +1328,15 @@ class PoClassSelect(discord.ui.Select):
 class PoItemSelect(discord.ui.Select):
     def __init__(self, payload, items):
         self.payload = payload
+        self.items = list(items or [])[:25]
         options = [
-            discord.SelectOption(label=item[:100], value=item[:100], emoji=item_select_emoji(item))
-            for item in items[:25]
+            discord.SelectOption(
+                label=po_item_option_label(item),
+                value=po_item_option_key(item, index),
+                description=po_item_option_description(item) or None,
+                emoji=item_select_emoji(po_item_name_value(item))
+            )
+            for index, item in enumerate(self.items)
         ]
         super().__init__(
             custom_id=f"po-item:{payload['postKey']}",
@@ -1276,7 +1349,7 @@ class PoItemSelect(discord.ui.Select):
     async def callback(self, interaction):
         class_name = selected_class(self.payload["postKey"], interaction.user.id)
         default_char = clean(interaction.user.display_name).split("/")[0].strip()
-        await open_po_entry_flow(interaction, self.payload, self.values[0], class_name, default_char)
+        await open_po_entry_flow(interaction, self.payload, resolve_po_item_selection(self.items, self.values[0]), class_name, default_char)
 
 
 class PoItemSearchResultSelect(discord.ui.Select):
@@ -1284,9 +1357,15 @@ class PoItemSearchResultSelect(discord.ui.Select):
         self.payload = payload
         self.class_name = class_name
         self.default_char = default_char
+        self.items = list(items or [])[:25]
         options = [
-            discord.SelectOption(label=item[:100], value=item[:100], emoji=item_select_emoji(item))
-            for item in items[:25]
+            discord.SelectOption(
+                label=po_item_option_label(item),
+                value=po_item_option_key(item, index),
+                description=po_item_option_description(item) or None,
+                emoji=item_select_emoji(po_item_name_value(item))
+            )
+            for index, item in enumerate(self.items)
         ]
         super().__init__(
             custom_id=f"po-search-result:{payload['postKey'][:55]}",
@@ -1298,7 +1377,7 @@ class PoItemSearchResultSelect(discord.ui.Select):
 
     async def callback(self, interaction):
         class_name = selected_class(self.payload["postKey"], interaction.user.id) or self.class_name
-        await open_po_entry_flow(interaction, self.payload, self.values[0], class_name, self.default_char)
+        await open_po_entry_flow(interaction, self.payload, resolve_po_item_selection(self.items, self.values[0]), class_name, self.default_char)
 
 
 class PoItemSearchResultView(discord.ui.View):
