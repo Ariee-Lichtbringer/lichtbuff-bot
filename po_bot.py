@@ -1119,6 +1119,13 @@ def make_embed(payload, entries, p0plus_labels=None):
     if note:
         header_lines.extend(note.splitlines())
         header_lines.append("")
+    lichtloot_id = payload_lichtloot_raid_pin(payload)
+    static_lines = ["**LichtLoot**"]
+    if lichtloot_id:
+        static_lines.append(f"ID: `{lichtloot_id}`")
+    static_lines.append("PO wird mit LichtLoot synchronisiert.")
+    header_lines.extend(static_lines)
+    header_lines.append("")
 
     grouped = {}
     for entry in entries:
@@ -1172,8 +1179,13 @@ async def send_po_message(channel, embed, view):
 
 async def edit_po_message(message, embed, view):
     file = po_help_image_file()
-    if file and not po_message_has_help_image(message):
-        await message.edit(embed=embed, view=view, attachments=[*message.attachments, file])
+    if file:
+        attachments = [
+            attachment
+            for attachment in getattr(message, "attachments", []) or []
+            if str(getattr(attachment, "filename", "") or "") != PO_HELP_IMAGE_FILENAME
+        ]
+        await message.edit(embed=embed, view=view, attachments=[*attachments, file])
         return
     await message.edit(embed=embed, view=view)
 
