@@ -448,7 +448,7 @@ def save_po_signup_prio(payload, player, class_name, item, player_login="", item
         "playerPin": login,
         "spielerLogin": login,
         "player": player,
-        "server": clean(payload.get("server")) or "Everlook",
+        "server": clean(payload.get("server")),
         "className": class_name,
         "item": item,
         "itemId": clean(item_id),
@@ -479,7 +479,7 @@ async def load_po_linked_characters(discord_user_id):
         seen.add(key)
         chars.append({
             "name": name,
-            "server": clean(row.get("server")) or "Everlook",
+            "server": clean(row.get("server")),
             "className": clean(row.get("className") or row.get("class_name")),
             "playerPin": pin,
         })
@@ -1114,7 +1114,7 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
     item_id = po_item_id_value(item_name)
     item_name = po_item_name_value(item_name)
     class_name = clean(class_name)
-    server = clean(server) or "Everlook"
+    server = clean(server)
 
     if not class_name:
         await interaction.followup.send("⚠️ Bitte zuerst eine Klasse wählen.", ephemeral=True)
