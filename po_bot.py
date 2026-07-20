@@ -6,6 +6,7 @@ import re
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -335,8 +336,17 @@ def api_post(payload):
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return parse_api_response(response, "POST", API_URL)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return parse_api_response(response, "POST", API_URL)
+    except urllib.error.HTTPError as error:
+        try:
+            raw = error.read().decode("utf-8")
+            parsed = json.loads(raw)
+            detail = parsed.get("error") or raw
+        except Exception:
+            detail = error.reason or str(error)
+        raise RuntimeError(f"HTTP Error {error.code}: {detail}") from error
 
 
 def parse_api_response(response, method, url):
@@ -352,7 +362,23 @@ def payload_lichtloot_raid_pin(payload):
         payload.get("lichtlootPlayerPin")
         or payload.get("playerPin")
         or payload.get("lichtlootRaidId")
+        or payload.get("raidPin")
+        or payload.get("prioPin")
     )
+
+
+def payload_with_lichtloot_id(payload):
+    raid_pin = payload_lichtloot_raid_pin(payload)
+    if not raid_pin:
+        return dict(payload or {})
+    return {
+        **(payload or {}),
+        "lichtlootPlayerPin": raid_pin,
+        "playerPin": raid_pin,
+        "lichtlootRaidId": raid_pin,
+        "raidPin": raid_pin,
+        "prioPin": raid_pin,
+    }
 
 
 def save_po_signup_prio(payload, player, class_name, item, player_login=""):
@@ -370,6 +396,7 @@ def save_po_signup_prio(payload, player, class_name, item, player_login=""):
         "playerPin": login,
         "spielerLogin": login,
         "player": player,
+        "server": clean(payload.get("server")) or "Everlook",
         "className": class_name,
         "item": item,
     })
@@ -827,6 +854,9 @@ def make_embed(payload, entries, p0plus_labels=None):
         color=discord.Color.gold(),
     )
     embed.add_field(name="Post-ID", value=f"`{payload['postKey']}`", inline=False)
+    lichtloot_id = payload_lichtloot_raid_pin(payload)
+    if lichtloot_id:
+        embed.add_field(name="LichtLoot-ID", value=f"`{lichtloot_id}`", inline=False)
     embed.add_field(name="Raid", value=display_raid(payload["raid"]), inline=True)
     if payload.get("date") or payload.get("time"):
         embed.add_field(name="Termin", value=f"{payload.get('date') or '-'} · {payload.get('time') or '-'} Uhr", inline=True)
@@ -879,10 +909,11 @@ def selected_class(post_key, user_id):
 
 def po_signup_error_message(error, char_name=""):
     message = str(error or "unbekannt")
-    if "passt nicht zu diesem charakter" in message.casefold():
+    folded = message.casefold()
+    if "passt nicht zu diesem charakter" in folded or "spielerlogin" in folded or "spielerlogin/pin" in folded:
         wanted = clean(char_name)
         suffix = f" für **{wanted}**" if wanted else ""
-        return f"SpielerLogin/PIN falsch{suffix}. Bitte prüfe deinen SpielerLogin in LichtLoot."
+        return f"SpielerLogin/PIN oder Charaktername falsch{suffix}. Bitte prüfe genau deinen LichtLoot-Spielerlogin und den Charakternamen."
     return message
 
 
@@ -919,7 +950,7 @@ class PoEntryModal(discord.ui.Modal):
         if not player_login:
             await interaction.followup.send("⚠️ Bitte deinen LichtLoot Spielerlogin eintragen.", ephemeral=True)
             return
-        payload = self.payload
+        payload = payload_with_lichtloot_id(self.payload)
         raid_pin = payload_lichtloot_raid_pin(payload)
         result = await asyncio.to_thread(api_post, {
             "action": "lichtbotSavePoPostEntry",
@@ -957,7 +988,7 @@ class PoEntryModal(discord.ui.Modal):
         asyncio.create_task(refresh_po_message_safely(interaction.client, payload))
         prio_result = None
         try:
-            prio_result = await asyncio.to_thread(save_po_signup_prio, payload, char_name, class_name, self.item_name, player_login)
+            prio_result = await asyncio.to_thread(save_po_signup_prio, payload, saved_player, class_name, saved_item, player_login)
         except Exception as error:
             prio_result = {"success": False, "error": str(error)}
         if prio_result and not prio_result.get("success"):
@@ -1279,6 +1310,7 @@ class PoView(discord.ui.View):
 
 
 async def refresh_po_message(client, payload):
+    payload = payload_with_lichtloot_id(payload)
     target_channel_id = payload_target_channel_id(payload)
     channel = client.get_channel(int(target_channel_id)) or await client.fetch_channel(int(target_channel_id))
     message = await channel.fetch_message(int(payload["messageId"]))
@@ -1321,6 +1353,7 @@ async def post_or_update_from_queue(client, payload):
         "channelId": str(target_channel_id),
         "messageId": clean(stored.get("messageId") or payload.get("messageId") or payload.get("discordMessageId")),
     }
+    normalized = payload_with_lichtloot_id(normalized)
     if not normalized.get("messageId"):
         normalized["messageId"] = await find_existing_message_id(client, normalized)
 
@@ -1480,7 +1513,9 @@ async def po_anmelder(interaction, raid: str, datum: str, uhrzeit: str, titel: s
         "sourceChannelId": str(interaction.channel_id),
         "targetChannelId": str(interaction.channel_id),
         "messageId": "",
+        "server": "Everlook",
     }
+    payload = payload_with_lichtloot_id(payload)
     items = await items_for_payload(payload)
     embed = make_embed(payload, [])
     message = await interaction.channel.send(embed=embed, view=PoView(payload, items, []), silent=True)
