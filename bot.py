@@ -1335,7 +1335,7 @@ def get_worldbuff_rows_from_apps_script(days=14):
             return list(WORLDBUFF_API_CACHE_ROWS)
 
     try:
-        result = lichtloot_apps_script_get({
+        result = lichtloot_get({
             "action": "guildGetWorldbuffs",
             "source": "railway",
             "days": days,
@@ -1661,6 +1661,24 @@ def merge_buffs_into_data(data, new_buffs):
     return added
 
 
+def merge_ticker_buffs_preserving_railway(data, ticker_buffs):
+    railway_lichtbringer_slots = {
+        make_overview_dedupe_key(buff)
+        for buff in data
+        if isinstance(buff, dict) and is_lichtbringer_buff(buff)
+    }
+    allowed_ticker_buffs = []
+    for buff in ticker_buffs:
+        if not isinstance(buff, dict) or is_deleted_worldbuff(buff):
+            continue
+        if is_lichtbringer_buff(buff) and make_overview_dedupe_key(buff) in railway_lichtbringer_slots:
+            continue
+        allowed_ticker_buffs.append(buff)
+    if allowed_ticker_buffs:
+        return merge_buffs_into_data(data, allowed_ticker_buffs)
+    return 0
+
+
 def discord_message_search_text(message):
     parts = [message.content or ""]
 
@@ -1690,10 +1708,10 @@ def build_overview():
     data = list(sheet_buffs)
     local_ticker_buffs = [
         buff for buff in load_json(worldbuff_file(), [])
-        if isinstance(buff, dict) and not is_lichtbringer_buff(buff) and not is_deleted_worldbuff(buff)
+        if isinstance(buff, dict) and not is_deleted_worldbuff(buff)
     ]
     if local_ticker_buffs:
-        merge_buffs_into_data(data, local_ticker_buffs)
+        merge_ticker_buffs_preserving_railway(data, local_ticker_buffs)
 
     werfer = import_werfer_aus_sheet()
 
@@ -1801,10 +1819,10 @@ def current_worldbuff_announcement_block(max_lines=8):
     data = list(sheet_buffs)
     local_ticker_buffs = [
         buff for buff in load_json(worldbuff_file(), [])
-        if isinstance(buff, dict) and not is_lichtbringer_buff(buff) and not is_deleted_worldbuff(buff)
+        if isinstance(buff, dict) and not is_deleted_worldbuff(buff)
     ]
     if local_ticker_buffs:
-        merge_buffs_into_data(data, local_ticker_buffs)
+        merge_ticker_buffs_preserving_railway(data, local_ticker_buffs)
 
     if not data:
         return ""
@@ -2039,21 +2057,21 @@ async def sync_recent_ticker_messages(limit=500):
             print(f"Ticker-Historie {channel_id} konnte nicht gelesen werden:", e)
             continue
 
-    found_buffs = [
-        buff for buff in found_buffs
-        if not is_lichtbringer_buff(buff) and not is_deleted_worldbuff(buff)
-    ]
+    found_buffs = [buff for buff in found_buffs if not is_deleted_worldbuff(buff)]
 
     if not found_buffs:
         return 0
 
-    added = merge_buffs_into_data(data, found_buffs)
+    railway_rows = await asyncio.to_thread(import_buffs_aus_sheet)
+    added = merge_ticker_buffs_preserving_railway(railway_rows, found_buffs)
 
-    if added:
-        await asyncio.to_thread(save_json, worldbuff_file(), data)
+    await asyncio.to_thread(save_json, worldbuff_file(), [
+        buff for buff in railway_rows
+        if not is_lichtbringer_buff(buff)
+    ])
 
     await asyncio.to_thread(sync_worldbuff_ticker_cache_to_sheet, [
-        buff for buff in data
+        buff for buff in railway_rows
         if not is_lichtbringer_buff(buff)
     ])
 
