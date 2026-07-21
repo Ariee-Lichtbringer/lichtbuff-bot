@@ -102,6 +102,18 @@ CLASS_EMOJI_NAME_ALIASES = {
     "shaman": ["schamane", "shaman", "classicon_shaman"],
 }
 
+CLASS_LABELS_DE = {
+    "warrior": "Krieger",
+    "druid": "Druide",
+    "paladin": "Paladin",
+    "rogue": "Schurke",
+    "hunter": "Jäger",
+    "priest": "Priester",
+    "mage": "Magier",
+    "warlock": "Hexenmeister",
+    "shaman": "Schamane",
+}
+
 PO_ITEM_EMOJI_ALIASES = {
     "amulett von veknilash": ["amulett_von_veknilash"],
     "auge von c'thun": ["auge_von_cthun_"],
@@ -217,6 +229,11 @@ def class_key(class_name):
         "schamane": "shaman",
     }
     return aliases.get(key, key)
+
+
+def class_display_name(class_name):
+    key = class_key(class_name)
+    return CLASS_LABELS_DE.get(key, clean(class_name))
 
 
 def normalize_emoji_name(value):
@@ -546,6 +563,7 @@ def save_po_signup_prio(payload, player, class_name, item, player_login="", item
         return None
 
     login = clean(player_login)
+    class_name = class_display_name(class_name)
     return api_post({
         "action": "lichtbotSavePoSignupPrio",
         "queueToken": QUEUE_TOKEN,
@@ -587,7 +605,7 @@ async def load_po_linked_characters(discord_user_id):
         chars.append({
             "name": name,
             "server": clean(row.get("server")),
-            "className": clean(row.get("className") or row.get("class_name")),
+            "className": class_display_name(row.get("className") or row.get("class_name")),
             "playerPin": pin,
         })
     return chars[:3]
@@ -1241,7 +1259,7 @@ def make_embed(payload, entries, p0plus_labels=None):
         lines.append(f"{item_icon(item_name)} **{item_label}**")
         players = []
         for row in sorted(rows, key=lambda entry: clean(entry.get("player")).lower()):
-            class_name = clean(row.get("className") or row.get("Klasse"))
+            class_name = class_display_name(row.get("className") or row.get("Klasse"))
             icon = class_icon(class_name)
             approved = " ✅" if row.get("approved") or row.get("approvalStatus") == "approved" else ""
             players.append(f"{icon} {clean(row.get('player'))}{approved}")
@@ -1275,7 +1293,7 @@ async def edit_po_message(message, embed, view):
 def class_options():
     return [
         discord.SelectOption(label=name, value=name, emoji=class_select_emoji(name))
-        for name in ["Warrior", "Druid", "Paladin", "Rogue", "Hunter", "Priest", "Mage", "Warlock", "Shaman"]
+        for name in ["Krieger", "Druide", "Paladin", "Schurke", "Jäger", "Priester", "Magier", "Hexenmeister", "Schamane"]
     ]
 
 
@@ -1302,7 +1320,7 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
     item_slot = clean(item_name.get("slot") or item_name.get("Slot")) if isinstance(item_name, dict) else ""
     item_boss = clean(item_name.get("boss") or item_name.get("Boss")) if isinstance(item_name, dict) else ""
     item_name = po_item_name_value(item_name)
-    class_name = clean(class_name)
+    class_name = class_display_name(class_name)
     server = clean(server)
 
     if not class_name:
@@ -1405,7 +1423,7 @@ class PoEntryModal(discord.ui.Modal):
         await interaction.response.defer(ephemeral=True)
         char_name = clean(self.char_name.value)
         player_login = clean(self.player_login.value)
-        class_name = clean(self.class_name)
+        class_name = class_display_name(self.class_name)
         await submit_po_entry(interaction, self.payload, self.item_name, class_name, char_name, player_login)
 
 
@@ -1437,7 +1455,7 @@ class PoKnownCharacterSelect(discord.ui.Select):
         except Exception:
             await interaction.followup.send("⚠️ Charakterauswahl konnte nicht gelesen werden.", ephemeral=True)
             return
-        class_name = clean(char.get("className")) or clean(self.class_name)
+        class_name = class_display_name(char.get("className") or self.class_name)
         await submit_po_entry(
             interaction,
             self.payload,
@@ -1512,7 +1530,7 @@ class PoClassSelect(discord.ui.Select):
     async def callback(self, interaction):
         try:
             await interaction.response.defer(ephemeral=True)
-            class_name = self.values[0]
+            class_name = class_display_name(self.values[0])
             user_classes[f"{self.payload['postKey']}:{interaction.user.id}"] = class_name
             await interaction.followup.send(
                 f"{class_icon(class_name)} Klasse gespeichert: **{class_name}**. Jetzt Item auswählen.",
