@@ -980,9 +980,21 @@ def is_lichtbringer(gilde):
     return any(name.lower() in gilde.lower() for name in LICHTBRINGER_GILDEN)
 
 
+def is_own_worldbuff_guild(gilde):
+    value = re.sub(r"\s+", " ", str(gilde or "").strip()).casefold()
+    return value in {"lichtbringer", "lichtloot"}
+
+
 def is_lichtbringer_buff(buff_data):
     try:
         return is_lichtbringer(str((buff_data or {}).get("gilde", "")))
+    except Exception:
+        return False
+
+
+def is_own_worldbuff(buff_data):
+    try:
+        return is_own_worldbuff_guild((buff_data or {}).get("gilde", ""))
     except Exception:
         return False
 
@@ -993,7 +1005,7 @@ def make_buff_key(buff_data):
     buff = normalize_buff(buff_data["buff"])
     gilde = buff_data["gilde"]
 
-    if is_lichtbringer(gilde):
+    if is_own_worldbuff_guild(gilde):
         return f"{datum}|{zeit}|{buff}|LICHTBRINGER"
 
     return f"{datum}|{zeit}|{buff}|{gilde}"
@@ -1081,7 +1093,7 @@ def normalize_guild_for_overview(gilde):
     value = str(gilde or "").strip()
     lower = value.lower()
 
-    if is_lichtbringer(value):
+    if is_own_worldbuff_guild(value):
         return "LICHTBRINGER"
     if "horde" in lower:
         return "HORDE"
@@ -1665,13 +1677,13 @@ def merge_ticker_buffs_preserving_railway(data, ticker_buffs):
     railway_lichtbringer_slots = {
         make_overview_dedupe_key(buff)
         for buff in data
-        if isinstance(buff, dict) and is_lichtbringer_buff(buff)
+        if isinstance(buff, dict) and is_own_worldbuff(buff)
     }
     allowed_ticker_buffs = []
     for buff in ticker_buffs:
         if not isinstance(buff, dict) or is_deleted_worldbuff(buff):
             continue
-        if is_lichtbringer_buff(buff) and make_overview_dedupe_key(buff) in railway_lichtbringer_slots:
+        if is_own_worldbuff(buff) and make_overview_dedupe_key(buff) in railway_lichtbringer_slots:
             continue
         allowed_ticker_buffs.append(buff)
     if allowed_ticker_buffs:
@@ -2067,12 +2079,12 @@ async def sync_recent_ticker_messages(limit=500):
 
     await asyncio.to_thread(save_json, worldbuff_file(), [
         buff for buff in railway_rows
-        if not is_lichtbringer_buff(buff)
+        if not is_own_worldbuff(buff)
     ])
 
     await asyncio.to_thread(sync_worldbuff_ticker_cache_to_sheet, [
         buff for buff in railway_rows
-        if not is_lichtbringer_buff(buff)
+        if not is_own_worldbuff(buff)
     ])
 
     print(f"Ticker-Historie geprüft: {len(found_buffs)} Buff-Zeilen gefunden, {added} neu gespeichert.")
