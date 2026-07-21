@@ -1681,21 +1681,32 @@ def merge_buffs_into_data(data, new_buffs):
 
 
 def merge_ticker_buffs_preserving_railway(data, ticker_buffs):
-    railway_lichtbringer_slots = {
-        make_buff_time_key(buff)
-        for buff in data
-        if isinstance(buff, dict) and is_own_worldbuff(buff)
-    }
     allowed_ticker_buffs = []
     for buff in ticker_buffs:
         if not isinstance(buff, dict) or is_deleted_worldbuff(buff):
-            continue
-        if is_lichtbringer_buff(buff) and make_buff_time_key(buff) in railway_lichtbringer_slots:
             continue
         allowed_ticker_buffs.append(buff)
     if allowed_ticker_buffs:
         return merge_buffs_into_data(data, allowed_ticker_buffs)
     return 0
+
+
+def remove_shadowed_lichtbringer_ticker_buffs(rows):
+    own_slots = {
+        make_buff_time_key(buff)
+        for buff in rows
+        if isinstance(buff, dict) and is_own_worldbuff(buff)
+    }
+
+    return [
+        buff for buff in rows
+        if not (
+            isinstance(buff, dict)
+            and is_lichtbringer_buff(buff)
+            and not is_own_worldbuff(buff)
+            and make_buff_time_key(buff) in own_slots
+        )
+    ]
 
 
 def discord_message_search_text(message):
@@ -1761,7 +1772,7 @@ def build_overview():
         f"- {len(gefiltert)} Termine, davon heute {heutige_buffs}."
     )
 
-    data = gefiltert
+    data = remove_shadowed_lichtbringer_ticker_buffs(gefiltert)
 
     if not data:
         return "📢 **Worldbuff Übersicht**\n\nKeine kommenden Worldbuffs in den nächsten 7 Tagen gefunden."
@@ -1865,6 +1876,7 @@ def current_worldbuff_announcement_block(max_lines=8):
         seen.add(key)
         rows.append(buff)
 
+    rows = remove_shadowed_lichtbringer_ticker_buffs(rows)
     rows.sort(key=lambda item: (datetime.strptime(item["datum"], "%d.%m.%Y"), item.get("uhrzeit", "")))
     if not rows:
         return ""
