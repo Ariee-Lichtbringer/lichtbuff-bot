@@ -63,6 +63,8 @@ POST_CHANNEL_ID = 1281152286772695071
 HORDENBUFF_CHANNEL_ID = 1510764309062615220
 PANEM_HORDENBUFF_CHANNEL_ID = 1518153802983669810
 LOG_ANALYSIS_CHANNEL_ID = 1279032487628242995
+WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_ID = int(os.getenv("WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_ID", str(TICKER_CHANNEL_ID)) or TICKER_CHANNEL_ID)
+WORLDBUFF_REPLACEMENT_WORLDBUFF_CHANNEL_ID = int(os.getenv("WORLDBUFF_REPLACEMENT_WORLDBUFF_CHANNEL_ID", str(POST_CHANNEL_ID)) or POST_CHANNEL_ID)
 WORLDBUFF_POSTER_MESSAGE_IDS = {
     value.strip()
     for value in os.getenv("WORLDBUFF_POSTER_MESSAGE_IDS", "1526256966027055114").split(",")
@@ -418,6 +420,18 @@ def ticker_channel_ids_for_current_guild():
     if current_guild_slug() == PANEM_GUILD_SLUG:
         return {PANEM_TICKER_CHANNEL_ID}
     return {TICKER_CHANNEL_ID, POST_CHANNEL_ID}
+
+
+def worldbuff_replacement_channel_ids(target):
+    raw = str(target or "both").strip().lower()
+    channel_ids = []
+    if raw in {"guild", "intern", "internal", "gildenintern", "both", "beide", "all", "alle"}:
+        channel_ids.append(WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_ID)
+    if raw in {"worldbuff", "worldbuffs", "world", "both", "beide", "all", "alle"}:
+        channel_ids.append(WORLDBUFF_REPLACEMENT_WORLDBUFF_CHANNEL_ID)
+    if not channel_ids:
+        channel_ids = [WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_ID, WORLDBUFF_REPLACEMENT_WORLDBUFF_CHANNEL_ID]
+    return list(dict.fromkeys(int(channel_id) for channel_id in channel_ids if channel_id))
 
 
 def can_post_worldbuff_overview():
@@ -3168,6 +3182,44 @@ async def post_log_analysis_from_queue(payload):
         view=build_log_analysis_post_view(payload)
     )
     print(f"Loganalyse gepostet: {payload.get('analysisType')} {raid} in {channel_id}")
+
+
+def build_worldbuff_replacement_text(payload):
+    buff = str(payload.get("buff") or "Worldbuff").strip() or "Worldbuff"
+    datum = str(payload.get("datum") or payload.get("date") or "").strip()
+    uhrzeit = str(payload.get("uhrzeit") or payload.get("time") or "").strip()
+    gilde = str(payload.get("gilde") or payload.get("guild") or "").strip()
+    charakter = str(payload.get("charakter") or payload.get("caster") or "").strip()
+    note = str(payload.get("note") or "").strip()
+
+    lines = [
+        "🔔 **Ersatz für Worldbuff gesucht**",
+        "",
+        f"Für **{buff}** am **{datum or '-'}** um **{uhrzeit or '-'} Uhr** wird ein Werfer gesucht.",
+    ]
+    if gilde:
+        lines.append(f"🏰 Gilde: **{gilde}**")
+    if charakter:
+        lines.append(f"🧙 Eingetragener Werfer: **{charakter}**")
+    if note:
+        lines.extend(["", f"📝 {note}"])
+    lines.extend(["", "Bitte direkt melden, wenn ihr den Termin übernehmen könnt."])
+    return "\n".join(lines)
+
+
+async def post_worldbuff_replacement_from_queue(payload):
+    text = build_worldbuff_replacement_text(payload)
+    sent = 0
+    for channel_id in worldbuff_replacement_channel_ids(payload.get("target")):
+        try:
+            channel = client.get_channel(channel_id) or await client.fetch_channel(channel_id)
+            await send_silent(channel, text)
+            sent += 1
+        except Exception as error:
+            print(f"Worldbuff-Ersatzsuche konnte nicht in Channel {channel_id} gepostet werden: {error}")
+    if not sent:
+        raise RuntimeError(f"Worldbuff-Ersatzsuche konnte in keinen Zielchannel gepostet werden: {payload}")
+    print(f"Worldbuff-Ersatzsuche gepostet: {sent} Channel(s).")
 
 
 def format_raid_announcement_date(value):
@@ -6276,6 +6328,8 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             print(f"P0+-Post nach Freigabe aktualisiert: {context.get('raidId') or raid}")
         elif update_type == "log_analysis_post":
             await post_log_analysis_from_queue(payload)
+        elif update_type == "worldbuff_replacement":
+            await post_worldbuff_replacement_from_queue(payload)
         elif update_type == "worldbuff_update":
             await update_worldbuff_overview_from_all_guilds()
         elif update_type == "hordenbuff_update":
