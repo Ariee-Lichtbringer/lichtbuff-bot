@@ -1113,6 +1113,13 @@ def make_overview_dedupe_key(buff_data):
     return f"{datum}|{zeit}|{buff}|{gilde}"
 
 
+def make_buff_time_key(buff_data):
+    datum = buff_data.get("datum", "")
+    zeit = buff_data.get("uhrzeit", "")
+    buff = normalize_buff(buff_data.get("buff", ""))
+    return f"{datum}|{zeit}|{buff}"
+
+
 def save_json(filename, data):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -1675,7 +1682,7 @@ def merge_buffs_into_data(data, new_buffs):
 
 def merge_ticker_buffs_preserving_railway(data, ticker_buffs):
     railway_lichtbringer_slots = {
-        make_overview_dedupe_key(buff)
+        make_buff_time_key(buff)
         for buff in data
         if isinstance(buff, dict) and is_own_worldbuff(buff)
     }
@@ -1683,7 +1690,7 @@ def merge_ticker_buffs_preserving_railway(data, ticker_buffs):
     for buff in ticker_buffs:
         if not isinstance(buff, dict) or is_deleted_worldbuff(buff):
             continue
-        if is_own_worldbuff(buff) and make_overview_dedupe_key(buff) in railway_lichtbringer_slots:
+        if is_lichtbringer_buff(buff) and make_buff_time_key(buff) in railway_lichtbringer_slots:
             continue
         allowed_ticker_buffs.append(buff)
     if allowed_ticker_buffs:
