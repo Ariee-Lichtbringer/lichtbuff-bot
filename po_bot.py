@@ -925,7 +925,12 @@ async def load_entries(payload):
         "targetChannelId": payload_target_channel_id(payload),
         "includeArchived": "false",
     })
-    return apply_po_item_variants(payload, result.get("entries") or [])
+    entries = [
+        entry for entry in (result.get("entries") or [])
+        if not entry.get("configOnly")
+        and (clean(entry.get("player")) or clean(entry.get("item") or entry.get("itemName")))
+    ]
+    return apply_po_item_variants(payload, entries)
 
 
 def message_matches_post_key(message, post_key):
@@ -984,6 +989,10 @@ async def remember_po_message(payload):
             "discordMessageId": message_id,
             "raid": payload.get("raid") or "",
             "title": payload.get("title") or "PO-Anmelder",
+            "raidDate": payload.get("raidDate") or payload.get("date") or "",
+            "raidTime": payload.get("raidTime") or payload.get("time") or "",
+            "mode": payload.get("mode") or "signup",
+            "raidPin": payload_lichtloot_raid_pin(payload),
         })
     except Exception as error:
         print(f"PO-Anmelder Nachricht-ID konnte nicht in LichtLoot gespeichert werden ({payload.get('postKey')}): {error}")
@@ -1017,6 +1026,9 @@ async def load_payloads_from_api_entries():
             "targetChannelId": target_channel_id,
             "channelId": target_channel_id,
             "messageId": message_id,
+            "date": clean(entry.get("raidDate") or entry.get("date")),
+            "time": clean(entry.get("raidTime") or entry.get("time")),
+            "mode": clean(entry.get("mode")) or "signup",
             "raidPin": clean(entry.get("raidPin") or entry.get("prioPin") or entry.get("lichtlootPlayerPin") or entry.get("lichtlootRaidId")),
             "prioPin": clean(entry.get("prioPin") or entry.get("raidPin") or entry.get("lichtlootPlayerPin") or entry.get("lichtlootRaidId")),
             "lichtlootRaidId": clean(entry.get("lichtlootRaidId") or entry.get("raidPin") or entry.get("prioPin") or entry.get("lichtlootPlayerPin")),
@@ -1962,6 +1974,7 @@ async def on_ready():
     for payload in state.values():
         try:
             await restore_po_view_fast(client, payload)
+            await remember_po_message(payload)
             await refresh_po_message(client, payload)
         except Exception as error:
             print(f"PO View konnte nicht wiederhergestellt werden ({payload.get('postKey')}): {error}")
@@ -2012,6 +2025,7 @@ async def po_anmelder(interaction, raid: str, datum: str, uhrzeit: str, titel: s
     embed = make_embed(payload, [])
     message = await send_po_message(interaction.channel, embed, PoView(payload, items, []))
     payload["messageId"] = str(message.id)
+    await remember_po_message(payload)
     state = load_state()
     state[post_key] = payload
     save_state(state)
