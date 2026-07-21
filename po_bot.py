@@ -64,6 +64,7 @@ QUEUE_CHECK_SECONDS = int(os.getenv("PO_BOT_QUEUE_CHECK_SECONDS", "10") or "10")
 PRIO_SERVER = os.getenv("PO_BOT_PRIO_SERVER", "Lichtbringer")
 PO_HELP_IMAGE_FILENAME = "po-anmelder-hinweis.png"
 PO_HELP_IMAGE_PATH = Path(os.getenv("PO_BOT_HELP_IMAGE", str(Path(__file__).with_name(PO_HELP_IMAGE_FILENAME))))
+LICHTLOOT_PRIO_URL = os.getenv("LICHTLOOT_PRIO_URL", f"https://lichtloot.de/index.html?guild={GUILD_SLUG}")
 
 CLASS_EMOJI_FALLBACKS = {
     "warrior": "⚔️",
@@ -430,7 +431,113 @@ def payload_with_saved_lichtloot_id(payload):
     stored = {}
     if post_key:
         stored = load_state().get(post_key) or {}
-    return payload_with_lichtloot_id_from_sources(payload, stored)
+    result = payload_with_lichtloot_id_from_sources(payload, stored)
+    for key in ("raid", "date", "time", "title", "guildName", "guild", "createdBy", "created_by"):
+        if not clean(result.get(key)) and clean(stored.get(key)):
+            result[key] = stored.get(key)
+    for target, sources in {
+        "date": ("raidDate", "datum"),
+        "time": ("raidTime", "uhrzeit"),
+        "guildName": ("displayGuild", "gilde"),
+        "createdBy": ("erstelltVon", "creator"),
+    }.items():
+        if clean(result.get(target)):
+            continue
+        for source in sources:
+            if clean((payload or {}).get(source)):
+                result[target] = payload.get(source)
+                break
+            if clean(stored.get(source)):
+                result[target] = stored.get(source)
+                break
+    return result
+
+
+def normalize_post_date(value):
+    text = clean(value)
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", text):
+        year, month, day = text.split("-")
+        return f"{day}.{month}.{year}"
+    return text
+
+
+def normalize_post_time(value):
+    text = clean(value)
+    return re.sub(r"\s*Uhr\s*$", "", text, flags=re.I)
+
+
+def lichtloot_prio_url():
+    return clean(LICHTLOOT_PRIO_URL) or f"https://lichtloot.de/index.html?guild={GUILD_SLUG}"
+
+
+def build_fixed_po_header(payload):
+    raid_name = display_raid(payload.get("raid") or "")
+    date = normalize_post_date(payload.get("date") or payload.get("raidDate") or payload.get("datum"))
+    time_value = normalize_post_time(payload.get("time") or payload.get("raidTime") or payload.get("uhrzeit"))
+    guild_name = clean(payload.get("guildName") or payload.get("guild") or payload.get("gilde")) or "Lichtbringer"
+    created_by = clean(payload.get("createdBy") or payload.get("created_by") or payload.get("erstelltVon")) or "Gildenleitung"
+    lichtloot_id = payload_lichtloot_raid_pin(payload)
+    lines = [
+        f"📣 Neuer Raid: {raid_name}",
+        f"🗓️ Datum: {date or '-'}",
+        f"⏰ Start: {time_value or '-'} Uhr",
+        f"🏰 Gilde: {guild_name}",
+        f"👤 Erstellt von: {created_by}",
+        "",
+        f"🔑 Prio-PIN: {lichtloot_id or '-'}",
+        f"➡️ Prios eintragen: {lichtloot_prio_url()}",
+        "",
+        "Bitte tragt eure Prios rechtzeitig ein.",
+        "",
+        "**LichtLoot**",
+    ]
+    if lichtloot_id:
+        lines.append(f"ID: `{lichtloot_id}`")
+    lines.append("PO wird mit LichtLoot synchronisiert.")
+    lines.append("")
+    return lines
+
+
+def generated_pin(seed, length):
+    chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    digest = hashlib.sha256(f"{seed}-{time.time()}".encode("utf-8")).hexdigest()
+    value = int(digest, 16)
+    return "".join(chars[(value >> (index * 5)) % len(chars)] for index in range(length))
+
+
+def ensure_payload_lichtloot_raid(payload):
+    payload = payload_with_saved_lichtloot_id(payload)
+    if payload_lichtloot_raid_pin(payload):
+        return payload
+    prio_pin = generated_pin(payload.get("postKey") or payload.get("raid") or "po", 3)
+    lead_pin = generated_pin((payload.get("postKey") or "") + "-lead", 4)
+    result = api_post({
+        "action": "lichtbotCreateRaid",
+        "queueToken": QUEUE_TOKEN,
+        "raid": payload.get("raid") or "",
+        "raidName": display_raid(payload.get("raid") or ""),
+        "raidDate": payload.get("date") or payload.get("raidDate") or payload.get("datum") or "",
+        "raidTime": payload.get("time") or payload.get("raidTime") or payload.get("uhrzeit") or "",
+        "playerPin": prio_pin,
+        "prioPin": prio_pin,
+        "leadPin": lead_pin,
+        "guildName": payload.get("guildName") or payload.get("guild") or payload.get("gilde") or "Lichtbringer",
+        "createdBy": payload.get("createdBy") or payload.get("created_by") or payload.get("erstelltVon") or "Gildenleitung",
+        "status": "geschlossen",
+        "p0PlusFreigabe": "geöffnet",
+        "raidHelperEnabled": "false",
+        "raidId": payload.get("postKey") or "",
+    })
+    raid_pin = clean(result.get("playerPin") or result.get("prioPin") or prio_pin)
+    return payload_with_lichtloot_id_from_sources({
+        **payload,
+        "raidPin": raid_pin,
+        "prioPin": raid_pin,
+        "lichtlootRaidId": raid_pin,
+        "lichtlootPlayerPin": raid_pin,
+        "lichtlootLeadPin": clean(result.get("leadPin") or lead_pin),
+        "leadPin": clean(result.get("leadPin") or lead_pin),
+    }, result)
 
 
 def save_po_signup_prio(payload, player, class_name, item, player_login="", item_id=""):
@@ -1100,32 +1207,19 @@ async def luck_entry(payload, entry, user):
 
 
 def make_embed(payload, entries, p0plus_labels=None):
+    payload = payload_with_saved_lichtloot_id(payload)
     embed = discord.Embed(
-        title=f"📋 {display_raid(payload['raid'])} PO-Anmelder",
+        title=f"📋 {display_raid(payload.get('raid') or '')} PO-Anmelder",
         color=discord.Color.gold(),
     )
-    if PO_HELP_IMAGE_PATH.exists():
-        embed.set_image(url=f"attachment://{PO_HELP_IMAGE_FILENAME}")
-    embed.add_field(name="Post-ID", value=f"`{payload['postKey']}`", inline=False)
-    lichtloot_id = payload_lichtloot_raid_pin(payload)
-    if lichtloot_id:
-        embed.add_field(name="LichtLoot-ID", value=f"`{lichtloot_id}`", inline=False)
-    embed.add_field(name="Raid", value=display_raid(payload["raid"]), inline=True)
-    if payload.get("date") or payload.get("time"):
-        embed.add_field(name="Termin", value=f"{payload.get('date') or '-'} · {payload.get('time') or '-'} Uhr", inline=True)
+    if clean(payload.get("postKey")):
+        embed.set_footer(text=f"Post-ID: {payload.get('postKey')}")
 
     note = clean(payload.get("note") or payload.get("message") or payload.get("description"))
-    header_lines = []
+    header_lines = build_fixed_po_header(payload)
     if note:
-        header_lines.extend(note.splitlines())
+        header_lines = note.splitlines() + [""] + header_lines
         header_lines.append("")
-    lichtloot_id = payload_lichtloot_raid_pin(payload)
-    static_lines = ["**LichtLoot**"]
-    if lichtloot_id:
-        static_lines.append(f"ID: `{lichtloot_id}`")
-    static_lines.append("PO wird mit LichtLoot synchronisiert.")
-    header_lines.extend(static_lines)
-    header_lines.append("")
 
     grouped = {}
     for entry in entries:
@@ -1171,22 +1265,10 @@ def po_message_has_help_image(message):
 
 
 async def send_po_message(channel, embed, view):
-    file = po_help_image_file()
-    if file:
-        return await channel.send(embed=embed, view=view, file=file, silent=True)
     return await channel.send(embed=embed, view=view, silent=True)
 
 
 async def edit_po_message(message, embed, view):
-    file = po_help_image_file()
-    if file:
-        attachments = [
-            attachment
-            for attachment in getattr(message, "attachments", []) or []
-            if str(getattr(attachment, "filename", "") or "") != PO_HELP_IMAGE_FILENAME
-        ]
-        await message.edit(embed=embed, view=view, attachments=[*attachments, file])
-        return
     await message.edit(embed=embed, view=view)
 
 
@@ -1743,6 +1825,7 @@ async def post_or_update_from_queue(client, payload):
         "messageId": clean(stored.get("messageId") or payload.get("messageId") or payload.get("discordMessageId")),
     }
     normalized = payload_with_lichtloot_id_from_sources(normalized, stored)
+    normalized = await asyncio.to_thread(ensure_payload_lichtloot_raid, normalized)
     if not normalized.get("messageId"):
         normalized["messageId"] = await find_existing_message_id(client, normalized)
 
@@ -1903,8 +1986,10 @@ async def po_anmelder(interaction, raid: str, datum: str, uhrzeit: str, titel: s
         "targetChannelId": str(interaction.channel_id),
         "messageId": "",
         "server": "Everlook",
+        "guildName": "Lichtbringer",
+        "createdBy": "Gildenleitung",
     }
-    payload = payload_with_lichtloot_id(payload)
+    payload = await asyncio.to_thread(ensure_payload_lichtloot_raid, payload)
     items = await items_for_payload(payload)
     embed = make_embed(payload, [])
     message = await send_po_message(interaction.channel, embed, PoView(payload, items, []))
