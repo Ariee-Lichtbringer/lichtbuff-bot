@@ -3274,6 +3274,9 @@ async def post_log_analysis_from_queue(payload):
 
 
 def build_p0plus_transfer_export_text(payload):
+    if str(payload.get("backupKind") or "").strip().lower() == "worldbuff":
+        return build_worldbuff_backup_export_text(payload)
+
     raid = normalize_raid_name(payload.get("raid") or payload.get("raidName") or "")
     raid_label = raid or str(payload.get("raidName") or "Raid").strip() or "Raid"
     raid_date = format_log_analysis_post_date(payload.get("raidDate") or "")
@@ -3475,6 +3478,48 @@ async def post_worldbuff_replacement_from_queue(payload):
     if not sent:
         raise RuntimeError(f"Worldbuff-Ersatzsuche konnte in keinen Zielchannel gepostet werden: {payload}")
     print(f"Worldbuff-Ersatzsuche gepostet: {sent} Channel(s).")
+
+
+def build_boss_token_notice_text(payload):
+    raid = normalize_raid_name(payload.get("raid") or payload.get("raidName") or "")
+    raid_label = raid or str(payload.get("raidName") or "Raid").strip() or "Raid"
+    player = str(payload.get("player") or payload.get("charakter") or "Spieler").strip() or "Spieler"
+    server = str(payload.get("server") or "").strip()
+    token = str(payload.get("token") or "").strip()
+    if not token:
+        if raid == "BWL":
+            token = "Kopf von Nefarian"
+        elif raid == "ONY":
+            token = "Kopf von Onyxia"
+        elif raid == "ZG":
+            token = "Herz von Hakkar"
+        else:
+            token = "Boss-Item"
+    player_label = f"{player}-{server}" if server else player
+    raid_date = str(payload.get("raidDate") or "").strip()
+    raid_time = str(payload.get("raidTime") or "").strip()
+    lines = [
+        "📣 **Worldbuff-Hinweis**",
+        "",
+        f"**{player_label}** hat den **{token}** erhalten.",
+        f"**Raid:** {raid_label}"
+    ]
+    if raid_date or raid_time:
+        lines.append(f"**Termin:** {raid_date}" + (f" · {raid_time} Uhr" if raid_time else ""))
+    lines.extend(["", "Bitte für die Worldbuff-Planung beachten."])
+    return "\n".join(lines)
+
+
+async def post_boss_token_notice_from_queue(payload):
+    channel_id = str(payload.get("channelId") or POST_CHANNEL_ID).strip()
+    if not channel_id:
+        print("Bosskopf-/Herz-Meldung ohne ChannelId uebersprungen.")
+        return
+    channel = client.get_channel(int(channel_id))
+    if channel is None:
+        channel = await client.fetch_channel(int(channel_id))
+    await send_silent(channel, build_boss_token_notice_text(payload))
+    print(f"Bosskopf-/Herz-Meldung gepostet in {channel_id}: {payload.get('player')} {payload.get('token')}")
 
 
 def format_raid_announcement_date(value):
@@ -6476,6 +6521,8 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             await post_worldbuff_backup_export_from_queue(payload)
         elif update_type == "worldbuff_replacement":
             await post_worldbuff_replacement_from_queue(payload)
+        elif update_type == "boss_token_notice":
+            await post_boss_token_notice_from_queue(payload)
         elif update_type == "worldbuff_update":
             clear_worldbuff_csv_cache()
             await update_worldbuff_overview_from_all_guilds()
