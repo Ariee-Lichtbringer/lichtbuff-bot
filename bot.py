@@ -3272,6 +3272,51 @@ async def post_log_analysis_from_queue(payload):
     print(f"Loganalyse gepostet: {payload.get('analysisType')} {raid} in {channel_id}")
 
 
+def build_p0plus_transfer_export_text(payload):
+    raid = normalize_raid_name(payload.get("raid") or payload.get("raidName") or "")
+    raid_label = raid or str(payload.get("raidName") or "Raid").strip() or "Raid"
+    raid_date = format_log_analysis_post_date(payload.get("raidDate") or "")
+    raid_time = str(payload.get("raidTime") or "").strip()
+    awarded = str(payload.get("awarded") or "0").strip()
+    skipped = str(payload.get("skipped") or "0").strip()
+    raid_id = str(payload.get("raidId") or "").strip()
+    lines = [
+        "📄 **PO+ Übertragung exportiert**",
+        "",
+        f"**Raid:** {raid_label}",
+        f"**Datum:** {raid_date}" + (f" · {raid_time} Uhr" if raid_time else ""),
+        f"**Übertragen:** {awarded}",
+        f"**Übersprungen:** {skipped}",
+    ]
+    if raid_id:
+        lines.append(f"**Raid-ID:** `{raid_id}`")
+    lines.extend(["", "Die CSV enthält die Übertragung und den aktuellen PO+-Stand."])
+    return "\n".join(lines)
+
+
+async def post_p0plus_transfer_export_from_queue(payload):
+    channel_id = str(payload.get("channelId") or "").strip()
+    csv_text = str(payload.get("csv") or "").strip()
+    if not channel_id:
+        print("PO+-Export ohne ChannelId uebersprungen.")
+        return
+    if not csv_text:
+        print("PO+-Export ohne CSV-Inhalt uebersprungen.")
+        return
+
+    filename = str(payload.get("filename") or "po-plus-export.csv").strip()
+    if not filename.lower().endswith(".csv"):
+        filename += ".csv"
+    safe_filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", filename).strip(".-") or "po-plus-export.csv"
+    channel = client.get_channel(int(channel_id))
+    if channel is None:
+        channel = await client.fetch_channel(int(channel_id))
+    data = csv_text.encode("utf-8-sig")
+    file = discord.File(BytesIO(data), filename=safe_filename)
+    await send_silent(channel, build_p0plus_transfer_export_text(payload), file=file)
+    print(f"PO+-Transfer-Export gepostet: {safe_filename} in {channel_id}")
+
+
 def build_worldbuff_replacement_text(payload):
     buff = str(payload.get("buff") or "Worldbuff").strip() or "Worldbuff"
     datum = str(payload.get("datum") or payload.get("date") or "").strip()
@@ -6303,6 +6348,8 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             print(f"P0+-Post nach Freigabe aktualisiert: {context.get('raidId') or raid}")
         elif update_type == "log_analysis_post":
             await post_log_analysis_from_queue(payload)
+        elif update_type == "p0plus_transfer_export":
+            await post_p0plus_transfer_export_from_queue(payload)
         elif update_type == "worldbuff_replacement":
             await post_worldbuff_replacement_from_queue(payload)
         elif update_type == "worldbuff_update":
