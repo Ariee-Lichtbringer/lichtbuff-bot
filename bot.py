@@ -12,6 +12,7 @@ import time
 import threading
 import contextvars
 import sys
+import zipfile
 from io import StringIO, BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -3290,29 +3291,113 @@ def build_p0plus_transfer_export_text(payload):
     ]
     if raid_id:
         lines.append(f"**Raid-ID:** `{raid_id}`")
-    lines.extend(["", "Die CSV enthält die Übertragung und den aktuellen PO+-Stand."])
+    lines.extend(["", "Die Excel-Datei enthält den Pre-Raid-Stand, den aktuellen PO+-Stand und Items erhalten."])
     return "\n".join(lines)
+
+
+def xlsx_col_name(index):
+    name = ""
+    while index:
+        index, rem = divmod(index - 1, 26)
+        name = chr(65 + rem) + name
+    return name or "A"
+
+
+def xlsx_xml_escape(value):
+    return (
+        str(value if value is not None else "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def build_xlsx_file(sheets):
+    normalized_sheets = []
+    for idx, sheet in enumerate(sheets or []):
+        name = str(sheet.get("name") or f"Tabelle {idx + 1}").strip()[:31] or f"Tabelle {idx + 1}"
+        name = re.sub(r"[\[\]\*:/\\?]", "-", name)
+        rows = sheet.get("rows") if isinstance(sheet.get("rows"), list) else []
+        normalized_sheets.append({"name": name, "rows": rows})
+    if not normalized_sheets:
+        normalized_sheets = [{"name": "PO+ aktuell", "rows": [["Keine Daten"]]}]
+
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+""" + "".join(
+            f'  <Override PartName="/xl/worksheets/sheet{i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>\n'
+            for i in range(len(normalized_sheets))
+        ) + "</Types>")
+        zf.writestr("_rels/.rels", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>""")
+        zf.writestr("xl/workbook.xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+""" + "".join(
+            f'    <sheet name="{xlsx_xml_escape(sheet["name"])}" sheetId="{i + 1}" r:id="rId{i + 1}"/>\n'
+            for i, sheet in enumerate(normalized_sheets)
+        ) + "  </sheets>\n</workbook>")
+        zf.writestr("xl/_rels/workbook.xml.rels", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+""" + "".join(
+            f'  <Relationship Id="rId{i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i + 1}.xml"/>\n'
+            for i in range(len(normalized_sheets))
+        ) + "</Relationships>")
+        for sheet_index, sheet in enumerate(normalized_sheets, start=1):
+            rows_xml = []
+            for row_index, row in enumerate(sheet["rows"], start=1):
+                values = row if isinstance(row, list) else [row]
+                cells = []
+                for col_index, value in enumerate(values, start=1):
+                    ref = f"{xlsx_col_name(col_index)}{row_index}"
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        cells.append(f'<c r="{ref}"><v>{value}</v></c>')
+                    else:
+                        cells.append(f'<c r="{ref}" t="inlineStr"><is><t>{xlsx_xml_escape(value)}</t></is></c>')
+                rows_xml.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+            zf.writestr(f"xl/worksheets/sheet{sheet_index}.xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+""" + "\n".join(rows_xml) + "\n  </sheetData>\n</worksheet>")
+    out.seek(0)
+    return out
 
 
 async def post_p0plus_transfer_export_from_queue(payload):
     channel_id = str(payload.get("channelId") or "").strip()
+    sheets = payload.get("sheets") if isinstance(payload.get("sheets"), list) else []
     csv_text = str(payload.get("csv") or "").strip()
     if not channel_id:
         print("PO+-Export ohne ChannelId uebersprungen.")
         return
-    if not csv_text:
-        print("PO+-Export ohne CSV-Inhalt uebersprungen.")
+    if not sheets and not csv_text:
+        print("PO+-Export ohne Tabelleninhalt uebersprungen.")
         return
 
-    filename = str(payload.get("filename") or "po-plus-export.csv").strip()
-    if not filename.lower().endswith(".csv"):
+    filename = str(payload.get("filename") or "po-plus-export.xlsx").strip()
+    if sheets and not filename.lower().endswith(".xlsx"):
+        filename = re.sub(r"\.[^.]+$", "", filename) + ".xlsx"
+    elif csv_text and not filename.lower().endswith(".csv"):
         filename += ".csv"
     safe_filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", filename).strip(".-") or "po-plus-export.csv"
     channel = client.get_channel(int(channel_id))
     if channel is None:
         channel = await client.fetch_channel(int(channel_id))
-    data = csv_text.encode("utf-8-sig")
-    file = discord.File(BytesIO(data), filename=safe_filename)
+    if sheets:
+        data = build_xlsx_file(sheets)
+        fallback_name = "po-plus-export.xlsx"
+    else:
+        data = BytesIO(csv_text.encode("utf-8-sig"))
+        fallback_name = "po-plus-export.csv"
+    file = discord.File(data, filename=safe_filename or fallback_name)
     await send_silent(channel, build_p0plus_transfer_export_text(payload), file=file)
     print(f"PO+-Transfer-Export gepostet: {safe_filename} in {channel_id}")
 
