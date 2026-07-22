@@ -3295,6 +3295,20 @@ def build_p0plus_transfer_export_text(payload):
     return "\n".join(lines)
 
 
+def build_worldbuff_backup_export_text(payload):
+    days = str(payload.get("days") or "all").strip()
+    count = str(payload.get("count") or "0").strip()
+    label = "alle offenen Termine" if days == "all" else f"naechste {days} Tage"
+    return "\n".join([
+        "📄 **Worldbuff-Sicherung exportiert**",
+        "",
+        f"**Zeitraum:** {label}",
+        f"**Termine:** {count}",
+        "",
+        "Die Excel-Datei enthält den aktuellen Worldbuff-Stand aus Railway."
+    ])
+
+
 def xlsx_col_name(index):
     name = ""
     while index:
@@ -3400,6 +3414,29 @@ async def post_p0plus_transfer_export_from_queue(payload):
     file = discord.File(data, filename=safe_filename or fallback_name)
     await send_silent(channel, build_p0plus_transfer_export_text(payload), file=file)
     print(f"PO+-Transfer-Export gepostet: {safe_filename} in {channel_id}")
+
+
+async def post_worldbuff_backup_export_from_queue(payload):
+    channel_id = str(payload.get("channelId") or "").strip()
+    sheets = payload.get("sheets") if isinstance(payload.get("sheets"), list) else []
+    if not channel_id:
+        print("Worldbuff-Sicherung ohne ChannelId uebersprungen.")
+        return
+    if not sheets:
+        print("Worldbuff-Sicherung ohne Tabelleninhalt uebersprungen.")
+        return
+
+    filename = str(payload.get("filename") or "worldbuff-sicherung.xlsx").strip()
+    if not filename.lower().endswith(".xlsx"):
+        filename = re.sub(r"\.[^.]+$", "", filename) + ".xlsx"
+    safe_filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", filename).strip(".-") or "worldbuff-sicherung.xlsx"
+    channel = client.get_channel(int(channel_id))
+    if channel is None:
+        channel = await client.fetch_channel(int(channel_id))
+    data = build_xlsx_file(sheets)
+    file = discord.File(data, filename=safe_filename)
+    await send_silent(channel, build_worldbuff_backup_export_text(payload), file=file)
+    print(f"Worldbuff-Sicherung gepostet: {safe_filename} in {channel_id}")
 
 
 def build_worldbuff_replacement_text(payload):
@@ -6435,6 +6472,8 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             await post_log_analysis_from_queue(payload)
         elif update_type == "p0plus_transfer_export":
             await post_p0plus_transfer_export_from_queue(payload)
+        elif update_type == "worldbuff_backup_export":
+            await post_worldbuff_backup_export_from_queue(payload)
         elif update_type == "worldbuff_replacement":
             await post_worldbuff_replacement_from_queue(payload)
         elif update_type == "worldbuff_update":
