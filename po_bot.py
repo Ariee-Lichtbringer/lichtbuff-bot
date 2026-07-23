@@ -1746,7 +1746,9 @@ class PoDeleteEntrySelect(discord.ui.Select):
         await interaction.response.defer(ephemeral=True)
         try:
             entry = self.entries[int(self.values[0])]
-            if str(entry.get("discordUserId") or entry.get("discord_user_id") or "").strip() != str(interaction.user.id):
+            can_delete_all = await reviewer_allowed(interaction.user)
+            is_own_entry = str(entry.get("discordUserId") or entry.get("discord_user_id") or "").strip() == str(interaction.user.id)
+            if not can_delete_all and not is_own_entry:
                 await interaction.followup.send("⚠️ Du kannst nur deinen eigenen PO-Eintrag löschen.", ephemeral=True)
                 return
             await delete_entry(self.payload, entry, interaction.user)
@@ -1777,15 +1779,20 @@ class PoDeleteButton(discord.ui.Button):
     async def callback(self, interaction):
         await interaction.response.defer(ephemeral=True)
         user_id = str(interaction.user.id)
-        entries = [
-            entry for entry in await fresh_entries_for_payload(self.payload)
+        all_entries = await fresh_entries_for_payload(self.payload)
+        can_delete_all = await reviewer_allowed(interaction.user)
+        entries = all_entries if can_delete_all else [
+            entry for entry in all_entries
             if str(entry.get("discordUserId") or entry.get("discord_user_id") or "").strip() == user_id
         ]
         if not po_entry_options(entries):
-            await interaction.followup.send("Es gibt gerade keinen eigenen PO-Eintrag zum Löschen.", ephemeral=True)
+            await interaction.followup.send(
+                "Es gibt gerade keinen PO-Eintrag zum Löschen." if can_delete_all else "Es gibt gerade keinen eigenen PO-Eintrag zum Löschen.",
+                ephemeral=True,
+            )
             return
         await interaction.followup.send(
-            "Wähle deinen PO-Eintrag aus, den du löschen möchtest.",
+            "Wähle den PO-Eintrag aus, den du löschen möchtest." if can_delete_all else "Wähle deinen PO-Eintrag aus, den du löschen möchtest.",
             view=PoDeleteEntryView(self.payload, entries),
             ephemeral=True,
         )
