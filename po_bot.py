@@ -515,6 +515,26 @@ def build_fixed_po_header(payload):
     return lines
 
 
+def looks_like_generated_po_header(text):
+    value = clean(text)
+    if not value:
+        return False
+    markers = [
+        "Neuer Raid:",
+        "Prios eintragen:",
+        "Prio-PIN:",
+        "Bitte tragt eure Prios rechtzeitig ein.",
+    ]
+    return sum(1 for marker in markers if marker in value) >= 2
+
+
+def po_post_note(payload):
+    note = clean(payload.get("note") or payload.get("message") or payload.get("description"))
+    if looks_like_generated_po_header(note):
+        return ""
+    return note
+
+
 def generated_pin(seed, length):
     chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     digest = hashlib.sha256(f"{seed}-{time.time()}".encode("utf-8")).hexdigest()
@@ -1245,7 +1265,7 @@ def make_embed(payload, entries, p0plus_labels=None):
     if clean(payload.get("postKey")):
         embed.set_footer(text=f"Post-ID: {payload.get('postKey')}")
 
-    note = clean(payload.get("note") or payload.get("message") or payload.get("description"))
+    note = po_post_note(payload)
     header_lines = build_fixed_po_header(payload)
     if note:
         header_lines = note.splitlines() + [""] + header_lines
