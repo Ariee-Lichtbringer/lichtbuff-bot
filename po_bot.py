@@ -61,6 +61,14 @@ def current_guild_slug():
     return normalize_guild_slug(CURRENT_GUILD_SLUG.get())
 
 
+def payload_guild_slug(payload):
+    return normalize_guild_slug(
+        (payload or {}).get("guildSlug")
+        or (payload or {}).get("guild")
+        or current_guild_slug()
+    )
+
+
 def guild_slug_for_discord_guild(discord_guild_id, fallback=""):
     return normalize_guild_slug(DISCORD_GUILD_SLUGS.get(str(discord_guild_id or "").strip()) or fallback)
 
@@ -238,6 +246,7 @@ item_emoji_cache = {}
 p0plus_cache = {}
 P0PLUS_CACHE_SECONDS = int(os.getenv("PO_BOT_P0PLUS_CACHE_SECONDS", "60") or "60")
 empty_queue_log_at = 0
+slash_commands_synced_for_guilds = False
 
 
 def clean(value):
@@ -1113,7 +1122,7 @@ async def load_payloads_from_api_entries():
         if not post_key or not message_id or not target_channel_id:
             continue
         payloads[post_key] = {
-            "guildSlug": current_guild_slug(),
+            "guildSlug": payload_guild_slug(entry),
             "postKey": post_key,
             "raid": normalize_raid(entry.get("raid")),
             "title": clean(entry.get("title")) or "PO-Anmelder",
@@ -1934,7 +1943,7 @@ async def refresh_po_message_safely(client, payload):
 
 async def post_or_update_from_queue(client, payload):
     payload = dict(payload or {})
-    payload.setdefault("guildSlug", current_guild_slug())
+    payload["guildSlug"] = payload_guild_slug(payload)
     post_key = clean(payload.get("postKey") or payload.get("poPostKey") or payload.get("postId"))
     if not post_key:
         raise RuntimeError("PO-Anmelder ohne Post-ID.")
@@ -1949,7 +1958,7 @@ async def post_or_update_from_queue(client, payload):
     normalized = {
         **stored,
         **payload,
-        "guildSlug": current_guild_slug(),
+        "guildSlug": payload_guild_slug(payload),
         "postKey": post_key,
         "raid": normalize_raid(payload.get("raid") or stored.get("raid")),
         "date": clean(payload.get("raidDate") or payload.get("date") or stored.get("date")),
@@ -2083,10 +2092,26 @@ class PoBot(discord.Client):
 client = PoBot()
 
 
+async def sync_po_commands_for_connected_guilds():
+    global slash_commands_synced_for_guilds
+    if slash_commands_synced_for_guilds:
+        return
+    slash_commands_synced_for_guilds = True
+    for guild in getattr(client, "guilds", []) or []:
+        try:
+            guild_object = discord.Object(id=int(guild.id))
+            client.tree.copy_global_to(guild=guild_object)
+            synced = await client.tree.sync(guild=guild_object)
+            print(f"PO Slash-Commands fuer Discord-Server {guild.name} ({guild.id}) synchronisiert: {len(synced)}")
+        except Exception as error:
+            print(f"PO Slash-Commands fuer Discord-Server {getattr(guild, 'id', '?')} konnten nicht synchronisiert werden: {error}")
+
+
 @client.event
 async def on_ready():
     print(f"PO Bot online als {client.user}")
     await refresh_guild_registry()
+    await sync_po_commands_for_connected_guilds()
     found_classes, found_items = refresh_emoji_cache()
     print(f"PO Klassenemojis gefunden: {', '.join(sorted(found_classes.keys())) or 'keine'}")
     print(f"PO Item-Emojis gefunden: {len(found_items)}")
