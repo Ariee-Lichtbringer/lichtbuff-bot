@@ -348,6 +348,12 @@ LICHTLOOT_URL = "https://lichtloot.de"
 DEFAULT_RAID_HELPER_CHANNEL_ID = "1508478036398571601"
 PUBLIC_API_CACHE_SECONDS = int(os.getenv("PUBLIC_API_CACHE_SECONDS", "45"))
 PUBLIC_API_PORT = int(os.getenv("PORT") or os.getenv("PUBLIC_API_PORT", "8000"))
+DELETE_WORLDBUFF_POSTER_SOURCE_MESSAGES = os.getenv("DELETE_WORLDBUFF_POSTER_SOURCE_MESSAGES", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "ja",
+}
 
 BERLIN_TZ = pytz.timezone("Europe/Berlin")
 
@@ -9286,7 +9292,11 @@ async def handle_ticker_update(message):
     if any(normalize_buff(b["buff"]) == "Rend" for b in new_buffs):
         await update_hordenbuff_post(force=True)
 
-    if not is_own_discord_message(message) and not is_worldbuff_poster_source_message(message):
+    if (
+        DELETE_WORLDBUFF_POSTER_SOURCE_MESSAGES
+        and not is_own_discord_message(message)
+        and not is_worldbuff_poster_source_message(message)
+    ):
         try:
             await message.delete()
             print(f"Worldbuff-Poster-Nachricht {message.id} aus Channel {message.channel.id} gelöscht.")
@@ -9296,6 +9306,10 @@ async def handle_ticker_update(message):
             pass
         except Exception as e:
             print(f"Worldbuff-Poster-Nachricht {message.id} konnte nicht gelöscht werden: {e}")
+    elif not is_own_discord_message(message):
+        print(
+            f"Worldbuff-Poster-Quelle {message.id} aus Channel {message.channel.id} gelesen und behalten."
+        )
 
 
 @client.event
