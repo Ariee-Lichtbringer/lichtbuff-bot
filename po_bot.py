@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import hashlib
 import json
 import os
@@ -27,6 +28,9 @@ TEST_GUILD_ID = str(os.getenv("PO_BOT_GUILD_ID", "") or "").strip()
 GUILD_SLUG = os.getenv("LICHTLOOT_GUILD", "") or os.getenv("LICHTLOOT_GUILD_SLUG", "") or "lichtloot"
 if GUILD_SLUG.strip().lower() == "lichtbringer":
     GUILD_SLUG = "lichtloot"
+CURRENT_GUILD_SLUG = contextvars.ContextVar("CURRENT_GUILD_SLUG", default=GUILD_SLUG)
+GUILD_REGISTRY = {}
+DISCORD_GUILD_SLUGS = {}
 RAILWAY_API_URL = "https://lichtloot-production.up.railway.app/api/apps-script"
 
 
@@ -44,6 +48,62 @@ API_URL = normalize_api_url(
     os.getenv("PO_BOT_API_URL", "") or os.getenv("LICHTLOOT_RAILWAY_API_URL", "") or RAILWAY_API_URL
 )
 QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
+
+
+def normalize_guild_slug(value):
+    slug_value = str(value or "").strip().lower()
+    if slug_value == "lichtbringer":
+        return "lichtloot"
+    return slug_value or GUILD_SLUG
+
+
+def current_guild_slug():
+    return normalize_guild_slug(CURRENT_GUILD_SLUG.get())
+
+
+def guild_slug_for_discord_guild(discord_guild_id, fallback=""):
+    return normalize_guild_slug(DISCORD_GUILD_SLUGS.get(str(discord_guild_id or "").strip()) or fallback)
+
+
+def fetch_bot_guilds():
+    if not QUEUE_TOKEN:
+        return []
+    params = urllib.parse.urlencode({
+        "action": "lichtbotListGuilds",
+        "queueToken": QUEUE_TOKEN,
+        "t": int(time.time()),
+    })
+    url = API_URL + "?" + params
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            result = parse_api_response(response, "Bot-Gilden", url)
+    except Exception as error:
+        print(f"PO-Bot Gildenliste konnte nicht geladen werden: {error}")
+        return []
+    if not result.get("success"):
+        print(f"PO-Bot Gildenliste Antwort: {result}")
+        return []
+    return result.get("guilds") or []
+
+
+async def refresh_guild_registry():
+    global GUILD_REGISTRY, DISCORD_GUILD_SLUGS
+    guilds = await asyncio.to_thread(fetch_bot_guilds)
+    registry = {}
+    discord_map = {}
+    for row in guilds:
+        slug_value = normalize_guild_slug(row.get("slug"))
+        registry[slug_value] = row
+        discord_guild_id = str(row.get("discordGuildId") or "").strip()
+        if discord_guild_id:
+            discord_map[discord_guild_id] = slug_value
+    if registry:
+        GUILD_REGISTRY = registry
+        DISCORD_GUILD_SLUGS = discord_map
+    print("PO-Bot Gilden geladen: " + (", ".join(f"{slug}#{data.get('discordGuildId') or '-'}" for slug, data in GUILD_REGISTRY.items()) or "keine"))
+    return GUILD_REGISTRY
+
+
 def normalize_role_name(value):
     text = re.sub(r"[^a-z0-9]+", "", str(value or "").strip().casefold())
     if text.startswith("po"):
@@ -64,7 +124,7 @@ QUEUE_CHECK_SECONDS = int(os.getenv("PO_BOT_QUEUE_CHECK_SECONDS", "10") or "10")
 PRIO_SERVER = os.getenv("PO_BOT_PRIO_SERVER", "Lichtbringer")
 PO_HELP_IMAGE_FILENAME = "po-anmelder-hinweis.png"
 PO_HELP_IMAGE_PATH = Path(os.getenv("PO_BOT_HELP_IMAGE", str(Path(__file__).with_name(PO_HELP_IMAGE_FILENAME))))
-LICHTLOOT_PRIO_URL = os.getenv("LICHTLOOT_PRIO_URL", f"https://lichtloot.de/index.html?guild={GUILD_SLUG}")
+LICHTLOOT_PRIO_URL = os.getenv("LICHTLOOT_PRIO_URL", "")
 
 CLASS_EMOJI_FALLBACKS = {
     "warrior": "⚔️",
@@ -349,7 +409,7 @@ def item_select_emoji(item_name):
 
 
 def api_get(params):
-    query = urllib.parse.urlencode({"guild": GUILD_SLUG, **params})
+    query = urllib.parse.urlencode({"guild": current_guild_slug(), **params})
     url = API_URL + "?" + query
     try:
         with urllib.request.urlopen(url, timeout=30) as response:
@@ -365,7 +425,7 @@ def api_get(params):
 
 
 def api_post(payload):
-    data = json.dumps({"guild": GUILD_SLUG, **payload}).encode("utf-8")
+    data = json.dumps({"guild": current_guild_slug(), **payload}).encode("utf-8")
     request = urllib.request.Request(
         API_URL,
         data=data,
@@ -484,7 +544,10 @@ def normalize_post_time(value):
 
 
 def lichtloot_prio_url():
-    return clean(LICHTLOOT_PRIO_URL) or f"https://lichtloot.de/index.html?guild={GUILD_SLUG}"
+    configured = clean(LICHTLOOT_PRIO_URL)
+    if configured and "guild=" in configured:
+        return configured
+    return configured or f"https://lichtloot.de/index.html?guild={current_guild_slug()}"
 
 
 def build_fixed_po_header(payload):
@@ -644,7 +707,18 @@ def save_state(state):
 
 def po_variant_state_key(payload, player, item_name):
     post_key = clean((payload or {}).get("postKey") or (payload or {}).get("poPostKey") or (payload or {}).get("postId"))
-    return "|".join([post_key, slug(player), slug(item_name)])
+    guild_key = normalize_guild_slug((payload or {}).get("guildSlug") or (payload or {}).get("guild"))
+    return "|".join([guild_key, post_key, slug(player), slug(item_name)])
+
+
+def po_post_state_key(payload_or_key):
+    if isinstance(payload_or_key, dict):
+        guild_key = normalize_guild_slug(payload_or_key.get("guildSlug") or payload_or_key.get("guild"))
+        post_key = clean(payload_or_key.get("postKey") or payload_or_key.get("poPostKey") or payload_or_key.get("postId"))
+    else:
+        guild_key = current_guild_slug()
+        post_key = clean(payload_or_key)
+    return f"{guild_key}:{post_key}" if post_key else ""
 
 
 def remember_po_item_variant(payload, player, item):
@@ -1039,6 +1113,7 @@ async def load_payloads_from_api_entries():
         if not post_key or not message_id or not target_channel_id:
             continue
         payloads[post_key] = {
+            "guildSlug": current_guild_slug(),
             "postKey": post_key,
             "raid": normalize_raid(entry.get("raid")),
             "title": clean(entry.get("title")) or "PO-Anmelder",
@@ -1858,6 +1933,8 @@ async def refresh_po_message_safely(client, payload):
 
 
 async def post_or_update_from_queue(client, payload):
+    payload = dict(payload or {})
+    payload.setdefault("guildSlug", current_guild_slug())
     post_key = clean(payload.get("postKey") or payload.get("poPostKey") or payload.get("postId"))
     if not post_key:
         raise RuntimeError("PO-Anmelder ohne Post-ID.")
@@ -1867,10 +1944,12 @@ async def post_or_update_from_queue(client, payload):
         raise RuntimeError("PO-Anmelder ohne Ziel-Channel.")
 
     state = load_state()
-    stored = state.get(post_key) or {}
+    state_key = po_post_state_key(payload)
+    stored = state.get(state_key) or state.get(post_key) or {}
     normalized = {
         **stored,
         **payload,
+        "guildSlug": current_guild_slug(),
         "postKey": post_key,
         "raid": normalize_raid(payload.get("raid") or stored.get("raid")),
         "date": clean(payload.get("raidDate") or payload.get("date") or stored.get("date")),
@@ -1903,7 +1982,9 @@ async def post_or_update_from_queue(client, payload):
     if message is None:
         message = await send_po_message(channel, embed, view)
         normalized["messageId"] = str(message.id)
-    state[post_key] = normalized
+    state[state_key] = normalized
+    if post_key in state and post_key != state_key:
+        state.pop(post_key, None)
     save_state(state)
     await remember_po_message(normalized)
     register_po_view(client, normalized, items, entries)
@@ -1929,8 +2010,9 @@ async def po_queue_loop():
     print(f"PO-Bot Queue aktiv: guild={GUILD_SLUG}, api={API_URL}, pruefe alle {QUEUE_CHECK_SECONDS} Sekunden.")
     while not client.is_closed():
         try:
+            await refresh_guild_registry()
             result = await asyncio.to_thread(api_get, {
-                "action": "lichtbotGetQueue",
+                "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": QUEUE_TOKEN,
                 "type": "po_post",
                 "limit": "50",
@@ -1941,7 +2023,12 @@ async def po_queue_loop():
                 po_items = [item for item in items if clean(item.get("type")) == "po_post"]
                 stale_delete_items = [item for item in items if clean(item.get("type")) == "po_post_delete"]
                 for item in stale_delete_items:
-                    await resolve_queue_item(item.get("rowNumber"))
+                    queue_guild_slug = normalize_guild_slug(item.get("guild") or item.get("guildSlug"))
+                    token = CURRENT_GUILD_SLUG.set(queue_guild_slug)
+                    try:
+                        await resolve_queue_item(item.get("rowNumber"))
+                    finally:
+                        CURRENT_GUILD_SLUG.reset(token)
                 if stale_delete_items:
                     print(f"PO-Bot Queue: {len(stale_delete_items)} alte po_post_delete-Auftraege erledigt markiert.")
                 if not po_items:
@@ -1951,18 +2038,23 @@ async def po_queue_loop():
                         print(f"PO-Bot Queue: kein po_post gefunden. Antwort-Typen: {queue_types}")
                         empty_queue_log_at = now
                 for item in po_items:
+                    queue_guild_slug = normalize_guild_slug(item.get("guild") or item.get("guildSlug"))
+                    token = CURRENT_GUILD_SLUG.set(queue_guild_slug)
                     payload = item.get("payload") or {}
+                    payload["guildSlug"] = queue_guild_slug
                     mode = clean(payload.get("mode")).lower() or "signup"
-                    if mode not in {"signup", "anmelder", "po_signup", "po-anmelder"}:
-                        await resolve_queue_item(item.get("rowNumber"))
-                        print(f"Alter PO-Post-Auftrag uebersprungen und erledigt markiert: {payload.get('postKey') or item.get('rowNumber')}")
-                        continue
                     try:
+                        if mode not in {"signup", "anmelder", "po_signup", "po-anmelder"}:
+                            await resolve_queue_item(item.get("rowNumber"))
+                            print(f"Alter PO-Post-Auftrag uebersprungen und erledigt markiert: {payload.get('postKey') or item.get('rowNumber')}")
+                            continue
                         normalized = await post_or_update_from_queue(client, payload)
                         await resolve_queue_item(item.get("rowNumber"))
-                        print(f"PO-Anmelder aus Gildenleitung gepostet: {normalized.get('postKey')}")
+                        print(f"PO-Anmelder aus Gildenleitung gepostet: {current_guild_slug()}:{normalized.get('postKey')}")
                     except Exception as error:
                         print(f"PO-Anmelder-Queue konnte nicht verarbeitet werden: {error}")
+                    finally:
+                        CURRENT_GUILD_SLUG.reset(token)
             else:
                 print(f"PO-Bot Queue Antwort: {result}")
         except Exception as error:
@@ -1994,29 +2086,43 @@ client = PoBot()
 @client.event
 async def on_ready():
     print(f"PO Bot online als {client.user}")
+    await refresh_guild_registry()
     found_classes, found_items = refresh_emoji_cache()
     print(f"PO Klassenemojis gefunden: {', '.join(sorted(found_classes.keys())) or 'keine'}")
     print(f"PO Item-Emojis gefunden: {len(found_items)}")
     state = load_state()
     for payload in state.values():
+        if not isinstance(payload, dict) or not payload.get("postKey"):
+            continue
+        token = CURRENT_GUILD_SLUG.set(normalize_guild_slug(payload.get("guildSlug") or payload.get("guild")))
         try:
             await restore_po_view_fast(client, payload)
             await remember_po_message(payload)
             await refresh_po_message(client, payload)
         except Exception as error:
             print(f"PO View konnte nicht wiederhergestellt werden ({payload.get('postKey')}): {error}")
+        finally:
+            CURRENT_GUILD_SLUG.reset(token)
     restored = 0
     known_posts = set(state.keys())
-    for payload in await load_payloads_from_api_entries():
-        if payload.get("postKey") in known_posts:
-            continue
+    restore_slugs = list(GUILD_REGISTRY.keys()) or [current_guild_slug()]
+    for guild_slug in restore_slugs:
+        token = CURRENT_GUILD_SLUG.set(normalize_guild_slug(guild_slug))
         try:
-            items, entries = await restore_po_view_fast(client, payload)
-            await refresh_po_view_only(client, payload)
-            state[payload["postKey"]] = payload
-            restored += 1
-        except Exception as error:
-            print(f"PO View konnte nicht aus LichtLoot wiederhergestellt werden ({payload.get('postKey')}): {error}")
+            for payload in await load_payloads_from_api_entries():
+                state_key = po_post_state_key(payload)
+                if state_key in known_posts:
+                    continue
+                try:
+                    items, entries = await restore_po_view_fast(client, payload)
+                    await refresh_po_view_only(client, payload)
+                    state[state_key] = payload
+                    known_posts.add(state_key)
+                    restored += 1
+                except Exception as error:
+                    print(f"PO View konnte nicht aus LichtLoot wiederhergestellt werden ({payload.get('postKey')}): {error}")
+        finally:
+            CURRENT_GUILD_SLUG.reset(token)
     if restored:
         save_state(state)
         print(f"PO Views aus LichtLoot wiederhergestellt: {restored}")
@@ -2030,35 +2136,44 @@ async def on_ready():
     titel="Optionaler Titel",
 )
 async def po_anmelder(interaction, raid: str, datum: str, uhrzeit: str, titel: str = ""):
-    await interaction.response.defer(ephemeral=True)
-    raid_key = normalize_raid(raid)
-    post_key = f"{slug(raid_key)}-po-{datetime.now().strftime('%Y%m%d-%H%M')}-{str(int(time.time()))[-4:]}"
-    payload = {
-        "postKey": post_key,
-        "raid": raid_key,
-        "date": clean(datum),
-        "time": clean(uhrzeit),
-        "title": clean(titel) or f"{display_raid(raid_key)} PO-Anmelder",
-        "channelId": str(interaction.channel_id),
-        "sourceChannelId": str(interaction.channel_id),
-        "targetChannelId": str(interaction.channel_id),
-        "messageId": "",
-        "server": "Everlook",
-        "guildName": "Lichtbringer",
-        "createdBy": "Gildenleitung",
-    }
-    payload = await asyncio.to_thread(ensure_payload_lichtloot_raid, payload)
-    items = await items_for_payload(payload)
-    embed = make_embed(payload, [])
-    message = await send_po_message(interaction.channel, embed, PoView(payload, items, []))
-    payload["messageId"] = str(message.id)
-    await remember_po_message(payload)
-    state = load_state()
-    state[post_key] = payload
-    save_state(state)
-    client.add_view(PoView(payload, items, []), message_id=message.id)
-    await edit_po_message(message, make_embed(payload, []), PoView(payload, items, []))
-    await interaction.followup.send(f"✅ PO-Anmelder erstellt: `{post_key}`", ephemeral=True)
+    await refresh_guild_registry()
+    token = CURRENT_GUILD_SLUG.set(
+        guild_slug_for_discord_guild(getattr(getattr(interaction, "guild", None), "id", ""), GUILD_SLUG)
+    )
+    try:
+        await interaction.response.defer(ephemeral=True)
+        raid_key = normalize_raid(raid)
+        post_key = f"{slug(raid_key)}-po-{datetime.now().strftime('%Y%m%d-%H%M')}-{str(int(time.time()))[-4:]}"
+        guild_info = GUILD_REGISTRY.get(current_guild_slug()) or {}
+        payload = {
+            "guildSlug": current_guild_slug(),
+            "postKey": post_key,
+            "raid": raid_key,
+            "date": clean(datum),
+            "time": clean(uhrzeit),
+            "title": clean(titel) or f"{display_raid(raid_key)} PO-Anmelder",
+            "channelId": str(interaction.channel_id),
+            "sourceChannelId": str(interaction.channel_id),
+            "targetChannelId": str(interaction.channel_id),
+            "messageId": "",
+            "server": clean(guild_info.get("server")) or "Everlook",
+            "guildName": clean(guild_info.get("name")) or current_guild_slug(),
+            "createdBy": "Gildenleitung",
+        }
+        payload = await asyncio.to_thread(ensure_payload_lichtloot_raid, payload)
+        items = await items_for_payload(payload)
+        embed = make_embed(payload, [])
+        message = await send_po_message(interaction.channel, embed, PoView(payload, items, []))
+        payload["messageId"] = str(message.id)
+        await remember_po_message(payload)
+        state = load_state()
+        state[po_post_state_key(payload)] = payload
+        save_state(state)
+        client.add_view(PoView(payload, items, []), message_id=message.id)
+        await edit_po_message(message, make_embed(payload, []), PoView(payload, items, []))
+        await interaction.followup.send(f"✅ PO-Anmelder erstellt: `{post_key}`", ephemeral=True)
+    finally:
+        CURRENT_GUILD_SLUG.reset(token)
 
 
 @client.tree.command(name="po_emojis_sync", description="Lädt fehlende Item-Emojis für einen Raid automatisch hoch.")

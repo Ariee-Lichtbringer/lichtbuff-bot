@@ -49,11 +49,18 @@ async def send_silent(channel, *args, **kwargs):
 
 TOKEN = os.getenv("DISCORD_TOKEN", "MTUxMDY3NzM0Njc4NzY1OTc3Nw.G_-vuz._ocUI4y-Nv7o9Kn0erGGra7cQfrHvFjKfBaeRc")
 LICHTBOT_QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
+def normalize_role_name(value):
+    text = re.sub(r"[^a-z0-9]+", "", str(value or "").strip().casefold())
+    if text.startswith("po"):
+        text = "p0" + text[2:]
+    return text
+
+
 PO_REVIEW_ROLE_NAMES = {
-    value.strip().casefold()
+    normalize_role_name(value)
     for value in os.getenv(
         "PO_REVIEW_ROLE_NAMES",
-        "PO-Freigabe,Gildenleitung,Gildenoffiziere,Raidoffiziere"
+        "PO-Freigabe,P0 Freigabe,P0-Freigabe,PO Freigabe,Gildenleitung,Gildenoffiziere,Raidoffiziere"
     ).split(",")
     if value.strip()
 }
@@ -279,6 +286,8 @@ WORLDBUFF_GUILD_SLUGS = [
     LICHTLOOT_GUILD_SLUG,
     PANEM_GUILD_SLUG
 ]
+GUILD_REGISTRY = {}
+DISCORD_GUILD_SLUGS = {}
 
 CHANNEL_GUILD_SLUGS = {
     PANEM_TICKER_CHANNEL_ID: PANEM_GUILD_SLUG,
@@ -378,8 +387,69 @@ spec_emoji_cache = {}
 item_emoji_cache = {}
 
 
+def normalize_guild_slug(value):
+    slug_value = str(value or "").strip().lower()
+    if slug_value == "lichtbringer":
+        return LICHTLOOT_GUILD_SLUG
+    return slug_value or LICHTLOOT_GUILD_SLUG
+
+
+def configured_worldbuff_guild_slugs():
+    slugs = [normalize_guild_slug(slug) for slug in WORLDBUFF_GUILD_SLUGS if normalize_guild_slug(slug)]
+    if GUILD_REGISTRY:
+        slugs.extend(normalize_guild_slug(slug) for slug in GUILD_REGISTRY.keys())
+    return list(dict.fromkeys(slugs))
+
+
+async def refresh_guild_registry():
+    global GUILD_REGISTRY, DISCORD_GUILD_SLUGS, WORLDBUFF_GUILD_SLUGS
+    if not LICHTBOT_QUEUE_TOKEN:
+        return GUILD_REGISTRY
+
+    params = urllib.parse.urlencode({
+        "action": "lichtbotListGuilds",
+        "queueToken": LICHTBOT_QUEUE_TOKEN,
+        "t": int(time.time())
+    })
+    url = LICHTLOOT_API_URL + "?" + params
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            result = parse_json_api_response(response, "LichtLoot Bot-Gilden", url)
+    except Exception as error:
+        print("Bot-Gildenliste konnte nicht geladen werden:", error)
+        return GUILD_REGISTRY
+
+    if not result.get("success"):
+        print("Bot-Gildenliste Antwort:", result)
+        return GUILD_REGISTRY
+
+    registry = {}
+    discord_map = {}
+    for row in result.get("guilds") or []:
+        slug_value = normalize_guild_slug(row.get("slug"))
+        if not slug_value:
+            continue
+        registry[slug_value] = row
+        discord_guild_id = str(row.get("discordGuildId") or "").strip()
+        if discord_guild_id:
+            discord_map[discord_guild_id] = slug_value
+
+    GUILD_REGISTRY = registry
+    DISCORD_GUILD_SLUGS = discord_map
+    WORLDBUFF_GUILD_SLUGS = configured_worldbuff_guild_slugs()
+    print(
+        "Bot-Gilden geladen: "
+        + (", ".join(f"{slug}#{data.get('discordGuildId') or '-'}" for slug, data in GUILD_REGISTRY.items()) or "keine")
+    )
+    return GUILD_REGISTRY
+
+
 def guild_slug_for_channel(channel_id):
     return CHANNEL_GUILD_SLUGS.get(int(channel_id), LICHTLOOT_GUILD_SLUG)
+
+
+def guild_slug_for_discord_guild(discord_guild_id, fallback=""):
+    return normalize_guild_slug(DISCORD_GUILD_SLUGS.get(str(discord_guild_id or "").strip()) or fallback)
 
 
 def current_guild_slug():
@@ -3049,7 +3119,7 @@ async def hordenbuff_reminder_loop():
     await client.wait_until_ready()
 
     while not client.is_closed():
-        for guild_slug in [LICHTLOOT_GUILD_SLUG, PANEM_GUILD_SLUG]:
+        for guild_slug in configured_worldbuff_guild_slugs():
             token = CURRENT_GUILD_SLUG.set(guild_slug)
             try:
                 await process_hordenbuff_reminders_for_current_guild()
@@ -3113,8 +3183,17 @@ async def sync_accessible_discord_channels():
         print("Discord-Channel-Sync uebersprungen: LICHTBOT_QUEUE_TOKEN fehlt.")
         return {"success": False, "error": "LICHTBOT_QUEUE_TOKEN fehlt."}
 
-    channels = []
+    await refresh_guild_registry()
+    channels_by_guild = {}
     for guild in client.guilds:
+        guild_slug = DISCORD_GUILD_SLUGS.get(str(guild.id))
+        if not guild_slug:
+            if not DISCORD_GUILD_SLUGS:
+                guild_slug = LICHTLOOT_GUILD_SLUG
+            else:
+                print(f"Discord-Channel-Sync: Server {guild.name} ({guild.id}) ist keiner LichtLoot-Gilde zugeordnet, uebersprungen.")
+                continue
+
         member = guild.me or guild.get_member(client.user.id)
         if member is None:
             continue
@@ -3123,7 +3202,7 @@ async def sync_accessible_discord_channels():
             permissions = channel.permissions_for(member)
             if not permissions.view_channel or not permissions.send_messages:
                 continue
-            channels.append({
+            channels_by_guild.setdefault(guild_slug, []).append({
                 "id": str(channel.id),
                 "name": channel.name,
                 "type": "text",
@@ -3134,13 +3213,24 @@ async def sync_accessible_discord_channels():
                 "discordGuildName": guild.name,
             })
 
-    result = await asyncio.to_thread(lichtloot_post, {
-        "action": "lichtbotSaveDiscordChannels",
-        "queueToken": LICHTBOT_QUEUE_TOKEN,
-        "channels": channels
-    })
-    print(f"Discord-Channel-Sync gespeichert: {result.get('saved', 0)} Channels.")
-    return result
+    total_saved = 0
+    results = {}
+    for guild_slug, channels in channels_by_guild.items():
+        token = CURRENT_GUILD_SLUG.set(normalize_guild_slug(guild_slug))
+        try:
+            result = await asyncio.to_thread(lichtloot_post, {
+                "action": "lichtbotSaveDiscordChannels",
+                "queueToken": LICHTBOT_QUEUE_TOKEN,
+                "channels": channels
+            })
+            saved = int(result.get("saved", 0) or 0)
+            total_saved += saved
+            results[guild_slug] = saved
+            print(f"Discord-Channel-Sync gespeichert: {saved} Channels fuer {guild_slug}.")
+        finally:
+            CURRENT_GUILD_SLUG.reset(token)
+
+    return {"success": True, "saved": total_saved, "guilds": results}
 
 
 async def discord_channel_sync_loop():
@@ -6441,8 +6531,9 @@ def hordenbuff_sheet_delete(rend, name):
 async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
     update_type = str(item.get("type") or "").strip()
     row_number = item.get("rowNumber")
+    queue_guild_slug = normalize_guild_slug(item.get("guild") or item.get("guildSlug") or current_guild_slug())
     queue_payload_key = item.get("payload") if isinstance(item.get("payload"), str) else json.dumps(item.get("payload") or {}, sort_keys=True, default=str)
-    queue_key = f"{update_type}:{row_number or item.get('id') or queue_payload_key}"
+    queue_key = f"{queue_guild_slug}:{update_type}:{row_number or item.get('id') or queue_payload_key}"
     now = time.time()
     for old_key, old_time in list(LICHTLOOT_QUEUE_RECENTLY_DONE.items()):
         if now - old_time > 300:
@@ -6550,12 +6641,13 @@ async def lichtloot_queue_loop():
         print("LichtLoot-Queue deaktiviert: LICHTBOT_QUEUE_TOKEN fehlt.")
         return
 
+    await refresh_guild_registry()
     print(f"LichtLoot-Queue aktiv: pruefe alle {LICHTLOOT_QUEUE_CHECK_SECONDS} Sekunden auf Updates.")
 
     while not client.is_closed():
         try:
             result = await asyncio.to_thread(lichtloot_get, {
-                "action": "lichtbotGetQueue",
+                "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
                 "t": int(time.time())
             })
@@ -6567,15 +6659,19 @@ async def lichtloot_queue_loop():
                     print(f"LichtLoot-Queue: {len(items)} Update(s) gefunden: {update_types}")
 
                 for item in items:
+                    guild_slug = normalize_guild_slug(item.get("guild") or item.get("guildSlug") or LICHTLOOT_GUILD_SLUG)
+                    token = CURRENT_GUILD_SLUG.set(guild_slug)
                     try:
                         await handle_lichtloot_queue_item(item)
                     except Exception as item_error:
-                        print("Fehler beim Verarbeiten eines LichtLoot-Queue-Eintrags:", item_error)
+                        print(f"Fehler beim Verarbeiten eines LichtLoot-Queue-Eintrags fuer {guild_slug}:", item_error)
+                    finally:
+                        CURRENT_GUILD_SLUG.reset(token)
             else:
                 print("LichtLoot-Queue Antwort:", result)
 
             railway_result = await asyncio.to_thread(railway_get, {
-                "action": "lichtbotGetQueue",
+                "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
                 "t": int(time.time())
             })
@@ -6587,6 +6683,8 @@ async def lichtloot_queue_loop():
                     print(f"Railway-Queue: {len(railway_items)} Update(s) gefunden: {update_types}")
 
                 for item in railway_items:
+                    guild_slug = normalize_guild_slug(item.get("guild") or item.get("guildSlug") or LICHTLOOT_GUILD_SLUG)
+                    token = CURRENT_GUILD_SLUG.set(guild_slug)
                     try:
                         if str(item.get("type") or "").strip() in {"po_post", "po_post_delete"}:
                             print("PO-Auftrag in Railway-Queue uebersprungen: separater PO-Bot ist zustaendig.")
@@ -6600,7 +6698,9 @@ async def lichtloot_queue_loop():
                                 "rowNumber": row_number
                             })
                     except Exception as item_error:
-                        print("Fehler beim Verarbeiten eines Railway-Queue-Eintrags:", item_error)
+                        print(f"Fehler beim Verarbeiten eines Railway-Queue-Eintrags fuer {guild_slug}:", item_error)
+                    finally:
+                        CURRENT_GUILD_SLUG.reset(token)
             else:
                 print("Railway-Queue Antwort:", railway_result)
 
@@ -8043,7 +8143,9 @@ class PoDeleteEntrySelect(discord.ui.Select):
         try:
             idx = int(self.values[0])
             entry = self.entries[idx]
-            if str(entry.get("discordUserId") or entry.get("discord_user_id") or "").strip() != str(interaction.user.id):
+            can_delete_all = await po_signup_reviewer_allowed(self.payload, interaction.user)
+            is_own_entry = str(entry.get("discordUserId") or entry.get("discord_user_id") or "").strip() == str(interaction.user.id)
+            if not can_delete_all and not is_own_entry:
                 await interaction.followup.send("⚠️ Du kannst nur deinen eigenen PO-Eintrag löschen.", ephemeral=True)
                 return
             source_channel_id = str(self.payload.get("sourceChannelId") or self.payload.get("channelId") or "").strip()
@@ -8093,10 +8195,11 @@ class PoDeleteButton(discord.ui.Button):
     async def callback(self, interaction):
         try:
             if self.payload:
-                entries = own_po_entries(self.entries, interaction.user)
+                can_delete_all = await po_signup_reviewer_allowed(self.payload, interaction.user)
+                entries = self.entries if can_delete_all else own_po_entries(self.entries, interaction.user)
                 if po_delete_entry_options(entries):
                     await interaction.response.send_message(
-                        "Wähle deinen PO-Eintrag aus, den du löschen möchtest.",
+                        "Wähle den PO-Eintrag aus, den du löschen möchtest." if can_delete_all else "Wähle deinen PO-Eintrag aus, den du löschen möchtest.",
                         view=PoDeleteEntryView(self.payload, entries),
                         ephemeral=True
                     )
@@ -8104,18 +8207,19 @@ class PoDeleteButton(discord.ui.Button):
                 await interaction.response.defer(ephemeral=True)
                 source_channel_id = str(self.payload.get("sourceChannelId") or self.payload.get("channelId") or self.channel_id)
                 target_channel_id = str(self.payload.get("targetChannelId") or self.payload.get("discordChannelId") or source_channel_id)
-                entries = own_po_entries(
-                    await load_saved_po_post_entries(self.payload, source_channel_id, target_channel_id),
-                    interaction.user
-                )
+                all_entries = await load_saved_po_post_entries(self.payload, source_channel_id, target_channel_id)
+                entries = all_entries if can_delete_all else own_po_entries(all_entries, interaction.user)
                 if po_delete_entry_options(entries):
                     await interaction.followup.send(
-                        "Wähle deinen PO-Eintrag aus, den du löschen möchtest.",
+                        "Wähle den PO-Eintrag aus, den du löschen möchtest." if can_delete_all else "Wähle deinen PO-Eintrag aus, den du löschen möchtest.",
                         view=PoDeleteEntryView(self.payload, entries),
                         ephemeral=True
                     )
                     return
-                await interaction.followup.send("⚠️ Kein eigener PO-Eintrag zum Löschen gefunden.", ephemeral=True)
+                await interaction.followup.send(
+                    "⚠️ Kein PO-Eintrag zum Löschen gefunden." if can_delete_all else "⚠️ Kein eigener PO-Eintrag zum Löschen gefunden.",
+                    ephemeral=True
+                )
                 return
         except Exception as e:
             print(f"PO-Loeschbutton fehlgeschlagen: {e}")
@@ -8281,7 +8385,7 @@ async def po_signup_reviewer_allowed(payload, user):
     ):
         return True
     for role in getattr(user, "roles", []) or []:
-        if str(getattr(role, "name", "") or "").strip().casefold() in PO_REVIEW_ROLE_NAMES:
+        if normalize_role_name(getattr(role, "name", "")) in PO_REVIEW_ROLE_NAMES:
             return True
     return False
 
@@ -9197,6 +9301,7 @@ async def handle_ticker_update(message):
 @client.event
 async def on_ready():
     print(f"Bot online als {client.user}")
+    await refresh_guild_registry()
     print(f"Überwache Ticker-Channels: {sorted(TICKER_CHANNEL_IDS)}")
     print(f"Postet Übersicht in Channel: {POST_CHANNEL_ID}")
     print(f"Hordenbuff-Channels: {sorted(HORDENBUFF_CHANNEL_IDS)}")
@@ -9256,7 +9361,9 @@ async def on_message_edit(before, after):
     if after.author == client.user:
         return
 
-    token = CURRENT_GUILD_SLUG.set(guild_slug_for_channel(after.channel.id))
+    token = CURRENT_GUILD_SLUG.set(
+        guild_slug_for_discord_guild(getattr(getattr(after, "guild", None), "id", ""), guild_slug_for_channel(after.channel.id))
+    )
     try:
         #for raid in get_raid_names_for_channel(after.channel.id):
         #  schedule_prio_check_update(raid, f"Nachricht im {raid}-Channel bearbeitet")
@@ -9275,7 +9382,9 @@ async def on_message(message):
     if message.author == client.user:
         return
 
-    CURRENT_GUILD_SLUG.set(guild_slug_for_channel(message.channel.id))
+    CURRENT_GUILD_SLUG.set(
+        guild_slug_for_discord_guild(getattr(getattr(message, "guild", None), "id", ""), guild_slug_for_channel(message.channel.id))
+    )
 
     await handle_log_analysis_message(message)
 
