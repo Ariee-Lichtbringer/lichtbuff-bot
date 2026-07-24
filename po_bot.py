@@ -503,7 +503,8 @@ async def discord_channel_sync_loop():
 
 
 def api_get(params):
-    query = urllib.parse.urlencode({"guild": current_guild_slug(), **params})
+    guild_slug = normalize_guild_slug((params or {}).get("guild") or (params or {}).get("guildSlug") or current_guild_slug())
+    query = urllib.parse.urlencode({"guild": guild_slug, **params})
     url = API_URL + "?" + query
     try:
         with urllib.request.urlopen(url, timeout=30) as response:
@@ -519,7 +520,8 @@ def api_get(params):
 
 
 def api_post(payload):
-    data = json.dumps({"guild": current_guild_slug(), **payload}).encode("utf-8")
+    guild_slug = payload_guild_slug(payload)
+    data = json.dumps({"guild": guild_slug, **payload}).encode("utf-8")
     request = urllib.request.Request(
         API_URL,
         data=data,
@@ -767,13 +769,14 @@ def save_po_signup_prio(payload, player, class_name, item, player_login="", item
     })
 
 
-async def load_po_linked_characters(discord_user_id):
+async def load_po_linked_characters(discord_user_id, payload=None):
     if not discord_user_id:
         return []
     try:
         result = await asyncio.to_thread(api_get, {
             "action": "lichtbotGetPoLinkedCharacters",
             "queueToken": QUEUE_TOKEN,
+            "guild": payload_guild_slug(payload) if payload else current_guild_slug(),
             "discordUserId": str(discord_user_id),
             "t": int(time.time()),
         })
@@ -1711,7 +1714,7 @@ class PoOtherCharacterView(discord.ui.View):
 
 async def open_po_entry_flow(interaction, payload, item_name, class_name, default_char=""):
     await interaction.response.defer(ephemeral=True)
-    characters = await load_po_linked_characters(interaction.user.id)
+    characters = await load_po_linked_characters(interaction.user.id, payload)
     item_display = po_item_display_text(item_name)
     if characters:
         await interaction.followup.send(

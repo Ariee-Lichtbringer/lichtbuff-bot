@@ -534,7 +534,27 @@ def ticker_channel_ids_for_current_guild():
     return {TICKER_CHANNEL_ID, POST_CHANNEL_ID}
 
 
-def worldbuff_replacement_channel_ids(target):
+def clean_channel_id_value(value):
+    text = str(value or "").strip()
+    return text if text.isdigit() else ""
+
+
+def worldbuff_replacement_channel_ids(target, payload=None):
+    payload = payload or {}
+    direct_channel_id = clean_channel_id_value(
+        payload.get("targetChannelId")
+        or payload.get("channelId")
+        or payload.get("worldbuffReplacementChannelId")
+    )
+    if direct_channel_id:
+        return [int(direct_channel_id)]
+
+    if current_guild_slug() != LICHTLOOT_GUILD_SLUG:
+        configured_channel_id = clean_channel_id_value(get_configured_worldbuff_channel_id())
+        if configured_channel_id:
+            return [int(configured_channel_id)]
+        return []
+
     raw = str(target or "both").strip().lower()
     channel_ids = []
     if raw in {"guild", "intern", "internal", "gildenintern", "both", "beide", "all", "alle"}:
@@ -3694,7 +3714,7 @@ def build_worldbuff_replacement_text(payload):
 async def post_worldbuff_replacement_from_queue(payload):
     text = build_worldbuff_replacement_text(payload)
     sent = 0
-    for channel_id in worldbuff_replacement_channel_ids(payload.get("target")):
+    for channel_id in worldbuff_replacement_channel_ids(payload.get("target"), payload):
         try:
             channel = client.get_channel(channel_id) or await client.fetch_channel(channel_id)
             await send_silent(channel, text)
