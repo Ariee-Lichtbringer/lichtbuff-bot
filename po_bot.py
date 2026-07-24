@@ -601,9 +601,10 @@ def payload_with_saved_lichtloot_id(payload):
     post_key = clean((payload or {}).get("postKey") or (payload or {}).get("poPostKey") or (payload or {}).get("postId"))
     stored = {}
     if post_key:
-        stored = load_state().get(post_key) or {}
+        state = load_state()
+        stored = state.get(po_post_state_key(payload)) or state.get(post_key) or {}
     result = payload_with_lichtloot_id_from_sources(payload, stored)
-    for key in ("raid", "date", "time", "title", "guildName", "guild", "createdBy", "created_by"):
+    for key in ("raid", "date", "time", "title", "guildName", "guild", "createdBy", "created_by", "poRoles"):
         if not clean(result.get(key)) and clean(stored.get(key)):
             result[key] = stored.get(key)
     for target, sources in {
@@ -663,6 +664,10 @@ def build_fixed_po_header(payload):
         "",
         "Bitte tragt eure Prios rechtzeitig ein.",
         "",
+        "**Rollen**",
+        f"Plündermeister: {po_role_player(payload, 'pluendermeister') or '-'}",
+        f"Raidlead: {po_role_player(payload, 'raidlead') or '-'}",
+        "",
         "**LichtLoot**",
     ]
     if lichtloot_id:
@@ -690,6 +695,41 @@ def po_post_note(payload):
     if looks_like_generated_po_header(note):
         return ""
     return note
+
+
+def po_role_player(payload, role_key):
+    roles = (payload or {}).get("poRoles") or {}
+    role = roles.get(role_key) if isinstance(roles, dict) else {}
+    return clean((role or {}).get("player") or (role or {}).get("char") or (role or {}).get("name"))
+
+
+def save_po_role_assignment(payload, role_key, player, player_login, user):
+    post_key = clean((payload or {}).get("postKey") or (payload or {}).get("poPostKey") or (payload or {}).get("postId"))
+    if not post_key:
+        raise RuntimeError("PO-Post-ID fehlt.")
+
+    state = load_state()
+    state_key = po_post_state_key(payload)
+    stored = state.get(state_key) or state.get(post_key) or {}
+    normalized = {
+        **stored,
+        **(payload or {}),
+        "postKey": post_key,
+    }
+    roles = dict(normalized.get("poRoles") or {})
+    roles[role_key] = {
+        "player": clean(player),
+        "playerLogin": clean(player_login),
+        "discordUserId": str(getattr(user, "id", "") or ""),
+        "discordName": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user),
+        "savedAt": datetime.utcnow().isoformat(),
+    }
+    normalized["poRoles"] = roles
+    state[state_key] = normalized
+    if post_key != state_key:
+        state[post_key] = normalized
+    save_state(state)
+    return normalized
 
 
 def generated_pin(seed, length):
@@ -741,15 +781,24 @@ def save_po_signup_prio(payload, player, class_name, item, player_login="", item
 
     login = clean(player_login)
     class_name = class_display_name(class_name)
+    post_key = clean((payload or {}).get("postKey") or (payload or {}).get("poPostKey") or (payload or {}).get("postId"))
     return api_post({
         "action": "lichtbotSavePoSignupPrio",
         "queueToken": QUEUE_TOKEN,
+        "postKey": post_key,
+        "poPostKey": post_key,
+        "raidId": post_key,
+        "sourceChannelId": payload_source_channel_id(payload),
+        "targetChannelId": payload_target_channel_id(payload),
         "raidPin": raid_pin,
         "prioPin": raid_pin,
         "lichtlootRaidId": raid_pin,
         "playerPin": login,
         "spielerLogin": login,
         "player": player,
+        "raid": payload.get("raid") or "",
+        "raidDate": payload.get("date") or payload.get("raidDate") or payload.get("datum") or "",
+        "raidTime": payload.get("time") or payload.get("raidTime") or payload.get("uhrzeit") or "",
         "server": clean(payload.get("server")),
         "className": class_name,
         "item": item,
@@ -1726,6 +1775,7 @@ class PoClassSelect(discord.ui.Select):
             min_values=1,
             max_values=1,
             options=class_options(),
+            row=0,
         )
 
     async def callback(self, interaction):
@@ -1839,6 +1889,7 @@ class PoSearchButton(discord.ui.Button):
             custom_id=f"po-search:{payload['postKey'][:70]}",
             label="2. Item suchen und PO eintragen",
             style=discord.ButtonStyle.success,
+            row=1,
         )
         self.payload = payload
 
@@ -1866,6 +1917,7 @@ class PoReviewSelect(discord.ui.Select):
             max_values=1,
             options=options,
             disabled=not bool(review_options),
+            row=2,
         )
 
     async def callback(self, interaction):
@@ -1893,6 +1945,62 @@ class PoReviewSelect(discord.ui.Select):
                 await interaction.followup.send(f"⚠️ Freigabe konnte nicht geöffnet werden: `{error}`", ephemeral=True)
             else:
                 await interaction.response.send_message(f"⚠️ Freigabe konnte nicht geöffnet werden: `{error}`", ephemeral=True)
+
+
+class PoRoleModal(discord.ui.Modal):
+    def __init__(self, payload, role_key, role_label):
+        super().__init__(title=f"{role_label} melden")
+        self.payload = payload
+        self.role_key = role_key
+        self.role_label = role_label
+        self.char_name = discord.ui.TextInput(
+            label="Charaktername",
+            placeholder="z. B. Ariee",
+            required=True,
+            max_length=50,
+        )
+        self.player_login = discord.ui.TextInput(
+            label="LichtLoot Spielerlogin",
+            placeholder="dein Spielerlogin/PIN aus LichtLoot",
+            required=True,
+            max_length=80,
+        )
+        self.add_item(self.char_name)
+        self.add_item(self.player_login)
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            updated_payload = save_po_role_assignment(
+                self.payload,
+                self.role_key,
+                self.char_name.value,
+                self.player_login.value,
+                interaction.user,
+            )
+            await refresh_po_message(interaction.client, updated_payload)
+            await interaction.followup.send(
+                f"✅ {self.role_label} gespeichert: **{clean(self.char_name.value)}**.",
+                ephemeral=True,
+            )
+        except Exception as error:
+            await interaction.followup.send(f"⚠️ {self.role_label} konnte nicht gespeichert werden: `{error}`", ephemeral=True)
+
+
+class PoRoleButton(discord.ui.Button):
+    def __init__(self, payload, role_key, role_label):
+        super().__init__(
+            custom_id=f"po-role-{role_key}:{payload['postKey'][:60]}",
+            label=f"{role_label} melden",
+            style=discord.ButtonStyle.secondary,
+            row=3,
+        )
+        self.payload = payload
+        self.role_key = role_key
+        self.role_label = role_label
+
+    async def callback(self, interaction):
+        await interaction.response.send_modal(PoRoleModal(self.payload, self.role_key, self.role_label))
 
 
 class PoDeleteEntrySelect(discord.ui.Select):
@@ -1942,6 +2050,7 @@ class PoDeleteButton(discord.ui.Button):
             custom_id=f"po-delete:{payload['postKey'][:70]}",
             label="PO-Eintrag löschen",
             style=discord.ButtonStyle.danger,
+            row=1,
         )
         self.payload = payload
 
@@ -2004,6 +2113,8 @@ class PoView(discord.ui.View):
         self.add_item(PoSearchButton(payload))
         self.add_item(PoDeleteButton(payload))
         self.add_item(PoReviewSelect(payload, entries or []))
+        self.add_item(PoRoleButton(payload, "pluendermeister", "Plündermeister"))
+        self.add_item(PoRoleButton(payload, "raidlead", "Raidlead"))
 
 
 async def refresh_po_message(client, payload):

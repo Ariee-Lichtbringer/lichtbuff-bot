@@ -1137,9 +1137,47 @@ def is_lichtbringer(gilde):
     return any(name.lower() in gilde.lower() for name in LICHTBRINGER_GILDEN)
 
 
+def current_worldbuff_guild_label():
+    guild_slug = current_guild_slug()
+    if guild_slug == LICHTLOOT_GUILD_SLUG:
+        return "Lichtbringer"
+    data = GUILD_REGISTRY.get(guild_slug) or {}
+    return str(data.get("name") or data.get("guildName") or guild_slug).strip() or guild_slug
+
+
+def current_worldbuff_guild_names():
+    guild_slug = current_guild_slug()
+    data = GUILD_REGISTRY.get(guild_slug) or {}
+    names = {
+        guild_slug,
+        data.get("name"),
+        data.get("guildName"),
+        data.get("guild_name"),
+        data.get("lootName"),
+        data.get("loot_name"),
+        data.get("displayName"),
+    }
+    if guild_slug == LICHTLOOT_GUILD_SLUG:
+        names.update({"Lichtbringer", "LichtLoot", "lichtloot"})
+    return {
+        re.sub(r"\s+", " ", str(name or "").strip()).casefold()
+        for name in names
+        if str(name or "").strip()
+    }
+
+
 def is_own_worldbuff_guild(gilde):
     value = re.sub(r"\s+", " ", str(gilde or "").strip()).casefold()
-    return value in {"lichtbringer", "lichtloot"}
+    return value in current_worldbuff_guild_names()
+
+
+def filter_worldbuff_rows_for_current_guild(rows):
+    if current_guild_slug() == LICHTLOOT_GUILD_SLUG:
+        return list(rows or [])
+    return [
+        row for row in rows or []
+        if is_own_worldbuff_guild((row or {}).get("gilde", ""))
+    ]
 
 
 def is_lichtbringer_buff(buff_data):
@@ -1163,7 +1201,8 @@ def make_buff_key(buff_data):
     gilde = buff_data["gilde"]
 
     if is_own_worldbuff_guild(gilde):
-        return f"{datum}|{zeit}|{buff}|LICHTBRINGER"
+        label = "LICHTBRINGER" if current_guild_slug() == LICHTLOOT_GUILD_SLUG else current_worldbuff_guild_label()
+        return f"{datum}|{zeit}|{buff}|{label}"
 
     return f"{datum}|{zeit}|{buff}|{gilde}"
 
@@ -1251,7 +1290,7 @@ def normalize_guild_for_overview(gilde):
     lower = value.lower()
 
     if is_own_worldbuff_guild(value):
-        return "LICHTBRINGER"
+        return "LICHTBRINGER" if current_guild_slug() == LICHTLOOT_GUILD_SLUG else current_worldbuff_guild_label()
     if "horde" in lower:
         return "HORDE"
 
@@ -1908,6 +1947,7 @@ def build_overview():
     ]
     if local_ticker_buffs:
         merge_ticker_buffs_preserving_railway(data, local_ticker_buffs)
+    data = filter_worldbuff_rows_for_current_guild(data)
 
     werfer = import_werfer_aus_sheet()
 
@@ -2019,6 +2059,7 @@ def current_worldbuff_announcement_block(max_lines=8):
     ]
     if local_ticker_buffs:
         merge_ticker_buffs_preserving_railway(data, local_ticker_buffs)
+    data = filter_worldbuff_rows_for_current_guild(data)
 
     if not data:
         return ""
