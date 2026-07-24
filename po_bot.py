@@ -73,6 +73,26 @@ def guild_slug_for_discord_guild(discord_guild_id, fallback=""):
     return normalize_guild_slug(DISCORD_GUILD_SLUGS.get(str(discord_guild_id or "").strip()) or fallback)
 
 
+def guild_slug_for_discord_server(guild, fallback=""):
+    mapped = DISCORD_GUILD_SLUGS.get(str(getattr(guild, "id", "") or "").strip())
+    if mapped:
+        return normalize_guild_slug(mapped)
+    guild_name = str(getattr(guild, "name", "") or "").strip().lower()
+    if guild_name and GUILD_REGISTRY:
+        for slug_value, data in GUILD_REGISTRY.items():
+            candidates = [
+                slug_value,
+                data.get("name"),
+                data.get("guildName"),
+                data.get("guild_name"),
+                data.get("lootName"),
+                data.get("loot_name")
+            ]
+            if any(candidate and str(candidate).strip().lower() in guild_name for candidate in candidates):
+                return normalize_guild_slug(slug_value)
+    return normalize_guild_slug(fallback)
+
+
 def fetch_bot_guilds():
     if not QUEUE_TOKEN:
         return []
@@ -415,6 +435,71 @@ def item_icon(item_name):
 def item_select_emoji(item_name):
     icon = item_icon(item_name)
     return select_emoji(icon) if icon != "◇" else None
+
+
+async def sync_accessible_discord_channels():
+    if not QUEUE_TOKEN:
+        print("PO Discord-Channel-Sync uebersprungen: LICHTBOT_QUEUE_TOKEN fehlt.")
+        return {"success": False, "error": "LICHTBOT_QUEUE_TOKEN fehlt."}
+
+    await refresh_guild_registry()
+    channels_by_guild = {}
+    for guild in client.guilds:
+        guild_slug = guild_slug_for_discord_server(guild, "")
+        if not guild_slug:
+            if not DISCORD_GUILD_SLUGS:
+                guild_slug = GUILD_SLUG
+            else:
+                print(f"PO Discord-Channel-Sync: Server {guild.name} ({guild.id}) ist keiner LichtLoot-Gilde zugeordnet, uebersprungen.")
+                continue
+
+        member = guild.me or guild.get_member(client.user.id)
+        if member is None:
+            continue
+
+        for channel in getattr(guild, "text_channels", []):
+            permissions = channel.permissions_for(member)
+            if not permissions.view_channel or not permissions.send_messages:
+                continue
+            channels_by_guild.setdefault(normalize_guild_slug(guild_slug), []).append({
+                "id": str(channel.id),
+                "name": channel.name,
+                "type": "text",
+                "category": channel.category.name if channel.category else "",
+                "position": int(getattr(channel, "position", 0) or 0),
+                "canSend": True,
+                "discordGuildId": str(guild.id),
+                "discordGuildName": guild.name,
+            })
+
+    total_saved = 0
+    results = {}
+    for guild_slug, channels in channels_by_guild.items():
+        token = CURRENT_GUILD_SLUG.set(normalize_guild_slug(guild_slug))
+        try:
+            result = await asyncio.to_thread(api_post, {
+                "action": "lichtbotSaveDiscordChannels",
+                "queueToken": QUEUE_TOKEN,
+                "channels": channels
+            })
+            saved = int(result.get("saved", 0) or 0)
+            total_saved += saved
+            results[guild_slug] = saved
+            print(f"PO Discord-Channel-Sync gespeichert: {saved} Channels fuer {guild_slug}.")
+        finally:
+            CURRENT_GUILD_SLUG.reset(token)
+
+    return {"success": True, "saved": total_saved, "guilds": results}
+
+
+async def discord_channel_sync_loop():
+    await client.wait_until_ready()
+    while not client.is_closed():
+        try:
+            await sync_accessible_discord_channels()
+        except Exception as error:
+            print(f"PO Discord-Channel-Sync Fehler: {error}")
+        await asyncio.sleep(300)
 
 
 def api_get(params):
@@ -2112,6 +2197,9 @@ async def on_ready():
     print(f"PO Bot online als {client.user}")
     await refresh_guild_registry()
     await sync_po_commands_for_connected_guilds()
+    if not hasattr(client, "discord_channel_sync_started"):
+        client.discord_channel_sync_started = True
+        client.loop.create_task(discord_channel_sync_loop())
     found_classes, found_items = refresh_emoji_cache()
     print(f"PO Klassenemojis gefunden: {', '.join(sorted(found_classes.keys())) or 'keine'}")
     print(f"PO Item-Emojis gefunden: {len(found_items)}")
@@ -2163,7 +2251,7 @@ async def on_ready():
 async def po_anmelder(interaction, raid: str, datum: str, uhrzeit: str, titel: str = ""):
     await refresh_guild_registry()
     token = CURRENT_GUILD_SLUG.set(
-        guild_slug_for_discord_guild(getattr(getattr(interaction, "guild", None), "id", ""), GUILD_SLUG)
+        guild_slug_for_discord_server(getattr(interaction, "guild", None), GUILD_SLUG)
     )
     try:
         await interaction.response.defer(ephemeral=True)

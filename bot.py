@@ -303,7 +303,12 @@ CSV_CACHE_SECONDS = 300
 ALLOW_WORLDBUFF_CSV_FALLBACK = os.getenv("ALLOW_WORLDBUFF_CSV_FALLBACK", "").strip().lower() in {"1", "true", "yes", "ja"}
 WORLDBUFF_API_CACHE_ROWS = []
 WORLDBUFF_API_CACHE_TIME = None
+WORLDBUFF_API_CACHE_BY_GUILD = {}
+WORLDBUFF_API_CACHE_TIME_BY_GUILD = {}
 WORLDBUFF_API_CACHE_SECONDS = 60
+WORLDBUFF_CHANNEL_CACHE = {}
+WORLDBUFF_CHANNEL_CACHE_TIME = {}
+WORLDBUFF_CHANNEL_CACHE_SECONDS = 120
 WORLDBUFF_TICKER_HISTORY_LIMIT = int(os.getenv("WORLDBUFF_TICKER_HISTORY_LIMIT", "3000") or 3000)
 HORDENBUFF_CSV_URL = "https://docs.google.com/spreadsheets/d/1eItzaMGhpJ28vv4sDA8wwmu0YhUxcbiz-2VLiCVyjv4/export?format=csv&gid=1246908857"
 HORDENBUFF_CSV_CACHE_CONTENT = ""
@@ -458,6 +463,26 @@ def guild_slug_for_discord_guild(discord_guild_id, fallback=""):
     return normalize_guild_slug(DISCORD_GUILD_SLUGS.get(str(discord_guild_id or "").strip()) or fallback)
 
 
+def guild_slug_for_discord_server(guild, fallback=""):
+    mapped = DISCORD_GUILD_SLUGS.get(str(getattr(guild, "id", "") or "").strip())
+    if mapped:
+        return normalize_guild_slug(mapped)
+    guild_name = str(getattr(guild, "name", "") or "").strip().lower()
+    if guild_name and GUILD_REGISTRY:
+        for slug_value, data in GUILD_REGISTRY.items():
+            candidates = [
+                slug_value,
+                data.get("name"),
+                data.get("guildName"),
+                data.get("guild_name"),
+                data.get("lootName"),
+                data.get("loot_name")
+            ]
+            if any(candidate and str(candidate).strip().lower() in guild_name for candidate in candidates):
+                return normalize_guild_slug(slug_value)
+    return normalize_guild_slug(fallback)
+
+
 def current_guild_slug():
     return CURRENT_GUILD_SLUG.get()
 
@@ -521,8 +546,62 @@ def worldbuff_replacement_channel_ids(target):
     return list(dict.fromkeys(int(channel_id) for channel_id in channel_ids if channel_id))
 
 
+def worldbuff_channel_rank(channel):
+    name = str(channel.get("name") or channel.get("channelName") or "").strip().lower()
+    category = str(channel.get("category") or channel.get("categoryName") or "").strip().lower()
+    combined = f"{category} {name}".strip()
+    if name in {"worldbuffs", "worldbuff", "wordbuffs", "wordbuff"}:
+        return 0
+    if "worldbuff" in name or "wordbuff" in name:
+        return 1
+    if "worldbuff" in combined or "wordbuff" in combined:
+        return 2
+    if name in {"buffs", "buff", "wb"}:
+        return 3
+    if "buff" in name:
+        return 4
+    return 99
+
+
+def get_configured_worldbuff_channel_id():
+    guild_slug = current_guild_slug()
+    now = time.time()
+    cached = WORLDBUFF_CHANNEL_CACHE.get(guild_slug)
+    cached_at = WORLDBUFF_CHANNEL_CACHE_TIME.get(guild_slug, 0)
+    if cached and now - cached_at < WORLDBUFF_CHANNEL_CACHE_SECONDS:
+        return cached
+
+    if LICHTBOT_QUEUE_TOKEN:
+        try:
+            result = lichtloot_get({
+                "action": "guildGetDiscordBotChannels",
+                "queueToken": LICHTBOT_QUEUE_TOKEN,
+                "t": int(time.time())
+            })
+            channels = result.get("channels") or []
+            ranked = sorted(
+                [channel for channel in channels if str(channel.get("id") or channel.get("channelId") or "").strip()],
+                key=lambda channel: (
+                    worldbuff_channel_rank(channel),
+                    int(channel.get("position") or 999999),
+                    str(channel.get("name") or channel.get("channelName") or "").lower()
+                )
+            )
+            if ranked and worldbuff_channel_rank(ranked[0]) < 99:
+                channel_id = str(ranked[0].get("id") or ranked[0].get("channelId") or "").strip()
+                WORLDBUFF_CHANNEL_CACHE[guild_slug] = channel_id
+                WORLDBUFF_CHANNEL_CACHE_TIME[guild_slug] = now
+                return channel_id
+        except Exception as error:
+            print(f"Worldbuff-Zielchannel fuer {guild_slug} konnte nicht aus Railway geladen werden: {error}")
+
+    if guild_slug == LICHTLOOT_GUILD_SLUG:
+        return str(POST_CHANNEL_ID)
+    return ""
+
+
 def can_post_worldbuff_overview():
-    return current_guild_slug() == LICHTLOOT_GUILD_SLUG
+    return bool(get_configured_worldbuff_channel_id())
 
 
 def is_ticker_channel(channel_id):
@@ -1427,9 +1506,12 @@ def get_worldbuff_rows_from_apps_script(days=14):
     global WORLDBUFF_API_CACHE_ROWS, WORLDBUFF_API_CACHE_TIME
 
     now = datetime.now()
-    if WORLDBUFF_API_CACHE_ROWS and WORLDBUFF_API_CACHE_TIME:
-        if (now - WORLDBUFF_API_CACHE_TIME).total_seconds() < WORLDBUFF_API_CACHE_SECONDS:
-            return list(WORLDBUFF_API_CACHE_ROWS)
+    guild_slug = current_guild_slug()
+    cached_rows = WORLDBUFF_API_CACHE_BY_GUILD.get(guild_slug)
+    cached_time = WORLDBUFF_API_CACHE_TIME_BY_GUILD.get(guild_slug)
+    if cached_rows and cached_time:
+        if (now - cached_time).total_seconds() < WORLDBUFF_API_CACHE_SECONDS:
+            return list(cached_rows)
 
     try:
         result = lichtloot_get({
@@ -1465,9 +1547,11 @@ def get_worldbuff_rows_from_apps_script(days=14):
                 "status": clean_sheet_value(row.get("status") or "")
             })
 
+        WORLDBUFF_API_CACHE_BY_GUILD[guild_slug] = rows
+        WORLDBUFF_API_CACHE_TIME_BY_GUILD[guild_slug] = now
         WORLDBUFF_API_CACHE_ROWS = rows
         WORLDBUFF_API_CACHE_TIME = now
-        print(f"Apps-Script-Worldbuffs: {len(rows)} Buff-Zeilen gelesen.")
+        print(f"Apps-Script-Worldbuffs fuer {guild_slug}: {len(rows)} Buff-Zeilen gelesen.")
         return list(rows)
     except Exception as e:
         print("Apps-Script-Worldbuffs Fehler:", e)
@@ -1717,6 +1801,10 @@ def clear_worldbuff_csv_cache():
     WORLDBUFF_PLAN_CACHE_TIME = None
     WORLDBUFF_API_CACHE_ROWS = []
     WORLDBUFF_API_CACHE_TIME = None
+    WORLDBUFF_API_CACHE_BY_GUILD.clear()
+    WORLDBUFF_API_CACHE_TIME_BY_GUILD.clear()
+    WORLDBUFF_CHANNEL_CACHE.clear()
+    WORLDBUFF_CHANNEL_CACHE_TIME.clear()
 
 
 def clear_hordenbuff_csv_cache():
@@ -2200,14 +2288,15 @@ async def sync_recent_ticker_messages(limit=None):
 
 
 async def update_worldbuff_post(sync_ticker=True, force_repost=False):
-    if not can_post_worldbuff_overview():
+    channel_id = get_configured_worldbuff_channel_id()
+    if not channel_id:
         print(f"Worldbuff-Uebersicht fuer {current_guild_slug()} uebersprungen: kein Zielchannel konfiguriert.")
         return 0
 
-    channel = client.get_channel(POST_CHANNEL_ID)
+    channel = client.get_channel(int(channel_id))
 
     if channel is None:
-        print("Ziel-Channel nicht gefunden.")
+        print(f"Ziel-Channel nicht gefunden: {channel_id}")
         return 0
 
     if sync_ticker:
@@ -3192,7 +3281,7 @@ async def sync_accessible_discord_channels():
     await refresh_guild_registry()
     channels_by_guild = {}
     for guild in client.guilds:
-        guild_slug = DISCORD_GUILD_SLUGS.get(str(guild.id))
+        guild_slug = guild_slug_for_discord_server(guild, "")
         if not guild_slug:
             if not DISCORD_GUILD_SLUGS:
                 guild_slug = LICHTLOOT_GUILD_SLUG
@@ -9317,7 +9406,7 @@ async def on_ready():
     print(f"Bot online als {client.user}")
     await refresh_guild_registry()
     print(f"Überwache Ticker-Channels: {sorted(TICKER_CHANNEL_IDS)}")
-    print(f"Postet Übersicht in Channel: {POST_CHANNEL_ID}")
+    print("Postet Worldbuff-Uebersichten in den gildenabhaengig gespeicherten Worldbuff-Channel.")
     print(f"Hordenbuff-Channels: {sorted(HORDENBUFF_CHANNEL_IDS)}")
     print(f"Loganalyse-Channels: {sorted(LOG_ANALYSIS_CHANNEL_IDS)}")
     found_class_emojis, found_spec_emojis, found_item_emojis = refresh_class_emoji_cache()
@@ -9376,7 +9465,7 @@ async def on_message_edit(before, after):
         return
 
     token = CURRENT_GUILD_SLUG.set(
-        guild_slug_for_discord_guild(getattr(getattr(after, "guild", None), "id", ""), guild_slug_for_channel(after.channel.id))
+        guild_slug_for_discord_server(getattr(after, "guild", None), guild_slug_for_channel(after.channel.id))
     )
     try:
         #for raid in get_raid_names_for_channel(after.channel.id):
@@ -9397,7 +9486,7 @@ async def on_message(message):
         return
 
     CURRENT_GUILD_SLUG.set(
-        guild_slug_for_discord_guild(getattr(getattr(message, "guild", None), "id", ""), guild_slug_for_channel(message.channel.id))
+        guild_slug_for_discord_server(getattr(message, "guild", None), guild_slug_for_channel(message.channel.id))
     )
 
     await handle_log_analysis_message(message)
