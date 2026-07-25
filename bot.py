@@ -6856,7 +6856,7 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             print(f"P0+-Post nach Freigabe aktualisiert: {context.get('raidId') or raid}")
         elif update_type == "log_analysis_post":
             await post_log_analysis_from_queue(payload)
-        elif update_type == "p0plus_transfer_export":
+        elif update_type in {"p0plus_transfer_export", "p0plus_backup_export"}:
             await post_p0plus_transfer_export_from_queue(payload)
         elif update_type == "worldbuff_backup_export":
             await post_worldbuff_backup_export_from_queue(payload)
