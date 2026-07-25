@@ -1158,6 +1158,8 @@ def po_channel_rank(channel, payload):
     name = clean(channel.get("name") or channel.get("channelName")).lower()
     category = clean(channel.get("category") or channel.get("categoryName")).lower()
     combined = f"{category} {name}".strip()
+    if "backup" in combined or "sicherung" in combined:
+        return 99
     raid = normalize_raid((payload or {}).get("raid") or "")
     has_po = "po" in combined or "p0" in combined
     has_signup = "anmeld" in combined or "signup" in combined

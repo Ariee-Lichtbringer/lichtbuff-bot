@@ -282,6 +282,7 @@ RAID_SIGNUP_SPECS = {
 }
 LICHTLOOT_GUILD_SLUG = os.getenv("LICHTLOOT_GUILD_SLUG", "lichtloot")
 PANEM_GUILD_SLUG = os.getenv("PANEM_GUILD_SLUG", "panemloot")
+WORLDBUFF_BACKUP_CHANNEL_ID = os.getenv("WORLDBUFF_BACKUP_CHANNEL_ID", "1529393614247952434")
 WORLDBUFF_GUILD_SLUGS = [
     LICHTLOOT_GUILD_SLUG,
     PANEM_GUILD_SLUG
@@ -574,17 +575,20 @@ def backup_channel_rank(channel, kind="backup"):
 
 
 async def resolve_backup_channel_id(payload, kind="backup"):
+    if kind == "worldbuff":
+        return clean_channel_id_value(WORLDBUFF_BACKUP_CHANNEL_ID)
+
     configured_channel_id = clean_channel_id_value(payload.get("channelId"))
-    if kind != "worldbuff" and configured_channel_id and await fetch_accessible_discord_channel(configured_channel_id):
+    if configured_channel_id and await fetch_accessible_discord_channel(configured_channel_id):
         return configured_channel_id
 
-    if configured_channel_id and kind != "worldbuff":
+    if configured_channel_id:
         print(f"Backup-Channel nicht erreichbar fuer {current_guild_slug()}: {configured_channel_id}")
 
     if not LICHTBOT_QUEUE_TOKEN:
         return configured_channel_id
 
-    lookup_guild_slug = LICHTLOOT_GUILD_SLUG if kind == "worldbuff" else current_guild_slug()
+    lookup_guild_slug = current_guild_slug()
     token = CURRENT_GUILD_SLUG.set(lookup_guild_slug)
     try:
         result = lichtloot_get({
@@ -599,13 +603,6 @@ async def resolve_backup_channel_id(payload, kind="backup"):
         CURRENT_GUILD_SLUG.reset(token)
 
     channels = result.get("channels") or []
-    if kind == "worldbuff" and configured_channel_id:
-        for channel in channels:
-            channel_id = clean_channel_id_value(channel.get("id") or channel.get("channelId"))
-            if channel_id == configured_channel_id and await fetch_accessible_discord_channel(channel_id):
-                return configured_channel_id
-        print(f"Worldbuff-Backup ignoriert fremde ChannelId und sucht Lichtbringer-Backup-Channel: {configured_channel_id}")
-
     ranked = sorted(
         [channel for channel in channels if clean_channel_id_value(channel.get("id") or channel.get("channelId"))],
         key=lambda channel: (
