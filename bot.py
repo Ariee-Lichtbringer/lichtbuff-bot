@@ -539,6 +539,96 @@ def clean_channel_id_value(value):
     return text if text.isdigit() else ""
 
 
+async def fetch_accessible_discord_channel(channel_id):
+    channel_id = clean_channel_id_value(channel_id)
+    if not channel_id:
+        return None
+    try:
+        return client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+    except Exception:
+        return None
+
+
+def backup_channel_rank(channel, kind="backup"):
+    name = str(channel.get("name") or channel.get("channelName") or "").strip().lower()
+    category = str(channel.get("category") or channel.get("categoryName") or "").strip().lower()
+    combined = f"{category} {name}".strip()
+    has_backup = "backup" in combined or "sicherung" in combined
+    has_worldbuff = "worldbuff" in combined or "wb" in combined or "buff" in combined
+    has_po = "po" in combined or "p0" in combined
+
+    if kind == "worldbuff":
+        if has_worldbuff and has_backup:
+            return 0
+        if name in {"wb", "worldbuff", "worldbuffs"}:
+            return 1
+        if has_backup:
+            return 4
+        return 99
+
+    if has_po and has_backup:
+        return 0
+    if has_backup:
+        return 4
+    return 99
+
+
+async def resolve_backup_channel_id(payload, kind="backup"):
+    configured_channel_id = clean_channel_id_value(payload.get("channelId"))
+    if kind != "worldbuff" and configured_channel_id and await fetch_accessible_discord_channel(configured_channel_id):
+        return configured_channel_id
+
+    if configured_channel_id and kind != "worldbuff":
+        print(f"Backup-Channel nicht erreichbar fuer {current_guild_slug()}: {configured_channel_id}")
+
+    if not LICHTBOT_QUEUE_TOKEN:
+        return configured_channel_id
+
+    lookup_guild_slug = LICHTLOOT_GUILD_SLUG if kind == "worldbuff" else current_guild_slug()
+    token = CURRENT_GUILD_SLUG.set(lookup_guild_slug)
+    try:
+        result = lichtloot_get({
+            "action": "guildGetDiscordBotChannels",
+            "queueToken": LICHTBOT_QUEUE_TOKEN,
+            "t": int(time.time())
+        })
+    except Exception as error:
+        print(f"Backup-Channel-Fallback konnte Channel-Liste fuer {lookup_guild_slug} nicht laden: {error}")
+        return configured_channel_id
+    finally:
+        CURRENT_GUILD_SLUG.reset(token)
+
+    channels = result.get("channels") or []
+    if kind == "worldbuff" and configured_channel_id:
+        for channel in channels:
+            channel_id = clean_channel_id_value(channel.get("id") or channel.get("channelId"))
+            if channel_id == configured_channel_id and await fetch_accessible_discord_channel(channel_id):
+                return configured_channel_id
+        print(f"Worldbuff-Backup ignoriert fremde ChannelId und sucht Lichtbringer-Backup-Channel: {configured_channel_id}")
+
+    ranked = sorted(
+        [channel for channel in channels if clean_channel_id_value(channel.get("id") or channel.get("channelId"))],
+        key=lambda channel: (
+            backup_channel_rank(channel, kind),
+            int(channel.get("position") or 999999),
+            str(channel.get("name") or channel.get("channelName") or "").lower()
+        )
+    )
+
+    for channel in ranked:
+        if backup_channel_rank(channel, kind) >= 99:
+            break
+        channel_id = clean_channel_id_value(channel.get("id") or channel.get("channelId"))
+        if await fetch_accessible_discord_channel(channel_id):
+            print(
+                "Backup-Channel-Fallback: "
+                f"{lookup_guild_slug} nutzt #{channel.get('name') or channel.get('channelName')} ({channel_id})"
+            )
+            return channel_id
+
+    return configured_channel_id
+
+
 def worldbuff_replacement_channel_ids(target, payload=None):
     payload = payload or {}
     direct_channel_id = clean_channel_id_value(
@@ -3635,7 +3725,11 @@ def build_xlsx_file(sheets):
 
 
 async def post_p0plus_transfer_export_from_queue(payload):
-    channel_id = str(payload.get("channelId") or "").strip()
+    backup_kind = str(payload.get("backupKind") or "").strip().lower()
+    channel_id = await resolve_backup_channel_id(
+        payload,
+        "worldbuff" if backup_kind == "worldbuff" else "p0plus"
+    )
     sheets = payload.get("sheets") if isinstance(payload.get("sheets"), list) else []
     csv_text = str(payload.get("csv") or "").strip()
     if not channel_id:
@@ -3651,9 +3745,9 @@ async def post_p0plus_transfer_export_from_queue(payload):
     elif csv_text and not filename.lower().endswith(".csv"):
         filename += ".csv"
     safe_filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", filename).strip(".-") or "po-plus-export.csv"
-    channel = client.get_channel(int(channel_id))
+    channel = await fetch_accessible_discord_channel(channel_id)
     if channel is None:
-        channel = await client.fetch_channel(int(channel_id))
+        raise RuntimeError(f"Backup-Channel nicht erreichbar: {channel_id}")
     if sheets:
         data = build_xlsx_file(sheets)
         fallback_name = "po-plus-export.xlsx"
@@ -3666,7 +3760,7 @@ async def post_p0plus_transfer_export_from_queue(payload):
 
 
 async def post_worldbuff_backup_export_from_queue(payload):
-    channel_id = str(payload.get("channelId") or "").strip()
+    channel_id = await resolve_backup_channel_id(payload, "worldbuff")
     sheets = payload.get("sheets") if isinstance(payload.get("sheets"), list) else []
     if not channel_id:
         print("Worldbuff-Sicherung ohne ChannelId uebersprungen.")
@@ -3679,9 +3773,9 @@ async def post_worldbuff_backup_export_from_queue(payload):
     if not filename.lower().endswith(".xlsx"):
         filename = re.sub(r"\.[^.]+$", "", filename) + ".xlsx"
     safe_filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", filename).strip(".-") or "worldbuff-sicherung.xlsx"
-    channel = client.get_channel(int(channel_id))
+    channel = await fetch_accessible_discord_channel(channel_id)
     if channel is None:
-        channel = await client.fetch_channel(int(channel_id))
+        raise RuntimeError(f"Worldbuff-Backup-Channel nicht erreichbar: {channel_id}")
     data = build_xlsx_file(sheets)
     file = discord.File(data, filename=safe_filename)
     await send_silent(channel, build_worldbuff_backup_export_text(payload), file=file)
