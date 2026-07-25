@@ -1144,6 +1144,79 @@ def payload_target_channel_id(payload):
     return clean(payload.get("targetChannelId") or payload.get("discordChannelId") or payload.get("channelId"))
 
 
+async def fetch_accessible_channel(client, channel_id):
+    channel_id = clean(channel_id)
+    if not channel_id:
+        return None
+    try:
+        return client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+    except Exception:
+        return None
+
+
+def po_channel_rank(channel, payload):
+    name = clean(channel.get("name") or channel.get("channelName")).lower()
+    category = clean(channel.get("category") or channel.get("categoryName")).lower()
+    combined = f"{category} {name}".strip()
+    raid = normalize_raid((payload or {}).get("raid") or "")
+    has_po = "po" in combined or "p0" in combined
+    has_signup = "anmeld" in combined or "signup" in combined
+    has_raid = bool(raid and raid.lower() in combined)
+
+    if has_raid and has_po and has_signup:
+        return 0
+    if has_po and has_signup:
+        return 1
+    if has_raid and has_po:
+        return 2
+    if has_po:
+        return 3
+    if has_raid:
+        return 4
+    return 99
+
+
+async def resolve_po_target_channel_id(client, payload):
+    configured_channel_id = payload_target_channel_id(payload)
+    if configured_channel_id and await fetch_accessible_channel(client, configured_channel_id):
+        return configured_channel_id
+
+    if configured_channel_id:
+        print(f"PO-Anmelder Ziel-Channel nicht erreichbar ({payload.get('postKey')}): {configured_channel_id}")
+
+    try:
+        result = await asyncio.to_thread(api_get, {
+            "action": "guildGetDiscordBotChannels",
+            "queueToken": QUEUE_TOKEN,
+            "t": int(time.time()),
+        })
+    except Exception as error:
+        print(f"PO-Anmelder Channel-Fallback konnte Channel-Liste nicht laden ({payload.get('postKey')}): {error}")
+        return configured_channel_id
+
+    channels = result.get("channels") or []
+    ranked = sorted(
+        [channel for channel in channels if clean(channel.get("id") or channel.get("channelId"))],
+        key=lambda channel: (
+            po_channel_rank(channel, payload),
+            clean(channel.get("category") or channel.get("categoryName")).lower(),
+            clean(channel.get("name") or channel.get("channelName")).lower(),
+        )
+    )
+    for channel in ranked:
+        if po_channel_rank(channel, payload) >= 99:
+            break
+        channel_id = clean(channel.get("id") or channel.get("channelId"))
+        if await fetch_accessible_channel(client, channel_id):
+            print(
+                "PO-Anmelder Channel-Fallback: "
+                f"{payload.get('postKey')} nutzt #{clean(channel.get('name') or channel.get('channelName'))} ({channel_id})"
+            )
+            return channel_id
+
+    return configured_channel_id
+
+
 def parse_item_options(text):
     seen = set()
     items = []
@@ -1213,7 +1286,9 @@ async def find_existing_message_id(client, payload):
     if not target_channel_id or not post_key:
         return ""
     try:
-        channel = client.get_channel(int(target_channel_id)) or await client.fetch_channel(int(target_channel_id))
+        channel = await fetch_accessible_channel(client, target_channel_id)
+        if channel is None:
+            raise RuntimeError(f"Channel nicht erreichbar: {target_channel_id}")
         async for message in channel.history(limit=100):
             if message_matches_post_key(message, post_key):
                 print(f"PO-Anmelder bestehende Discord-Nachricht gefunden: {post_key} -> {message.id}")
@@ -2153,8 +2228,13 @@ class PoView(discord.ui.View):
 
 async def refresh_po_message(client, payload):
     payload = payload_with_saved_lichtloot_id(payload)
-    target_channel_id = payload_target_channel_id(payload)
-    channel = client.get_channel(int(target_channel_id)) or await client.fetch_channel(int(target_channel_id))
+    target_channel_id = await resolve_po_target_channel_id(client, payload)
+    if not target_channel_id:
+        raise RuntimeError("PO-Anmelder ohne Ziel-Channel.")
+    payload = {**payload, "targetChannelId": str(target_channel_id), "channelId": str(target_channel_id)}
+    channel = await fetch_accessible_channel(client, target_channel_id)
+    if channel is None:
+        raise RuntimeError(f"PO-Anmelder Ziel-Channel nicht erreichbar: {target_channel_id}")
     message = await channel.fetch_message(int(payload["messageId"]))
     items = await items_for_payload(payload)
     entries = await load_entries(payload)
@@ -2177,8 +2257,11 @@ async def post_or_update_from_queue(client, payload):
     post_key = clean(payload.get("postKey") or payload.get("poPostKey") or payload.get("postId"))
     if not post_key:
         raise RuntimeError("PO-Anmelder ohne Post-ID.")
-    target_channel_id = payload_target_channel_id(payload)
+    original_target_channel_id = payload_target_channel_id(payload)
+    target_channel_id = await resolve_po_target_channel_id(client, payload)
     source_channel_id = payload_source_channel_id(payload) or target_channel_id
+    if source_channel_id == original_target_channel_id and target_channel_id != original_target_channel_id:
+        source_channel_id = target_channel_id
     if not target_channel_id:
         raise RuntimeError("PO-Anmelder ohne Ziel-Channel.")
 
@@ -2204,7 +2287,9 @@ async def post_or_update_from_queue(client, payload):
     if not normalized.get("messageId"):
         normalized["messageId"] = await find_existing_message_id(client, normalized)
 
-    channel = client.get_channel(int(target_channel_id)) or await client.fetch_channel(int(target_channel_id))
+    channel = await fetch_accessible_channel(client, target_channel_id)
+    if channel is None:
+        raise RuntimeError(f"PO-Anmelder Ziel-Channel nicht erreichbar: {target_channel_id}")
     items = await items_for_payload(normalized)
     entries = await load_entries(normalized)
     p0plus_labels = await load_p0plus_labels(normalized.get("raid") or "")
