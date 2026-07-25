@@ -283,6 +283,7 @@ RAID_SIGNUP_SPECS = {
 LICHTLOOT_GUILD_SLUG = os.getenv("LICHTLOOT_GUILD_SLUG", "lichtloot")
 PANEM_GUILD_SLUG = os.getenv("PANEM_GUILD_SLUG", "panemloot")
 WORLDBUFF_BACKUP_CHANNEL_ID = "1529393614247952434"
+P0PLUS_BACKUP_CHANNEL_ID = "1529393614247952434"
 WORLDBUFF_GUILD_SLUGS = [
     LICHTLOOT_GUILD_SLUG,
     PANEM_GUILD_SLUG
@@ -577,6 +578,8 @@ def backup_channel_rank(channel, kind="backup"):
 async def resolve_backup_channel_id(payload, kind="backup"):
     if kind == "worldbuff":
         return clean_channel_id_value(WORLDBUFF_BACKUP_CHANNEL_ID)
+    if kind == "p0plus":
+        return clean_channel_id_value(P0PLUS_BACKUP_CHANNEL_ID)
 
     configured_channel_id = clean_channel_id_value(payload.get("channelId"))
     if configured_channel_id and await fetch_accessible_discord_channel(configured_channel_id):
