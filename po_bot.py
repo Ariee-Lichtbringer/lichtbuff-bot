@@ -1415,7 +1415,7 @@ def po_review_entry_options(entries):
     seen = set()
     for idx, entry in enumerate(entries or []):
         status = clean(entry.get("approvalStatus")).lower()
-        if entry.get("approved") or status == "approved":
+        if entry.get("approved") or status in {"approved", "rejected"}:
             continue
         player = clean(entry.get("player"))
         item = clean(entry.get("item") or entry.get("itemName"))
@@ -1429,6 +1429,10 @@ def po_review_entry_options(entries):
         if len(result) >= 25:
             break
     return result
+
+
+def po_reject_entry_options(entries):
+    return po_review_entry_options(entries)
 
 
 def po_entry_options(entries, *, only_unlucked=False):
@@ -1520,6 +1524,51 @@ async def review_entry(payload, entry, user):
     if not result.get("success"):
         raise RuntimeError(result.get("error") or "PO-Eintrag konnte nicht freigegeben werden.")
     return result
+
+
+async def reject_entry(payload, entry, user, reason=""):
+    payload = payload_with_saved_lichtloot_id(payload)
+    raid_pin = payload_lichtloot_raid_pin(payload)
+    result = await asyncio.to_thread(api_post, {
+        "action": "reviewPoPostEntry",
+        "queueToken": QUEUE_TOKEN,
+        "postKey": payload["postKey"],
+        "sourceChannelId": payload_source_channel_id(payload),
+        "targetChannelId": payload_target_channel_id(payload),
+        "messageId": entry.get("messageId") or "",
+        "poMessageId": entry.get("messageId") or "",
+        "discordMessageId": payload.get("messageId") or entry.get("discordMessageId") or "",
+        "raidPin": raid_pin,
+        "prioPin": raid_pin,
+        "lichtlootRaidId": raid_pin,
+        "lichtlootPlayerPin": raid_pin,
+        "player": entry.get("player") or "",
+        "item": entry.get("item") or entry.get("itemName") or "",
+        "status": "rejected",
+        "reason": reason,
+        "reviewer": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user),
+    })
+    if not result.get("success"):
+        raise RuntimeError(result.get("error") or "PO-Eintrag konnte nicht abgelehnt werden.")
+    return result
+
+
+async def send_po_rejection_message(client, entry, reason):
+    user_id = clean(entry.get("discordUserId") or entry.get("discord_user_id"))
+    if not user_id:
+        return False
+    try:
+        user = client.get_user(int(user_id)) or await client.fetch_user(int(user_id))
+        player = clean(entry.get("player")) or "dein Charakter"
+        item = clean(entry.get("item") or entry.get("itemName")) or "deine PO"
+        text = f"❌ Deine PO für **{player}** auf **{item}** wurde abgelehnt."
+        if clean(reason):
+            text += f"\n\nNachricht der PO-Freigabe: {clean(reason)}"
+        await user.send(text)
+        return True
+    except Exception as error:
+        print(f"PO-Ablehnung: DM konnte nicht gesendet werden: {error}")
+        return False
 
 
 async def delete_entry(payload, entry, user):
@@ -2116,6 +2165,102 @@ class PoReviewSelect(discord.ui.Select):
                 await interaction.response.send_message(f"⚠️ Freigabe konnte nicht geöffnet werden: `{error}`", ephemeral=True)
 
 
+class PoRejectModal(discord.ui.Modal):
+    def __init__(self, payload, entry):
+        self.payload = payload
+        self.entry = dict(entry or {})
+        player = clean(self.entry.get("player")) or "Spieler"
+        super().__init__(title=f"PO ablehnen: {player}"[:45])
+        self.message = discord.ui.TextInput(
+            label="Nachricht an den Spieler",
+            placeholder="z. B. Bitte anderes Item wählen / passt nicht zur Lootregel.",
+            required=False,
+            style=discord.TextStyle.paragraph,
+            max_length=500,
+        )
+        self.add_item(self.message)
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            reason = clean(self.message.value)
+            result = await reject_entry(self.payload, self.entry, interaction.user, reason)
+            saved = result.get("entry") or self.entry
+            await refresh_po_message(interaction.client, self.payload)
+            dm_sent = await send_po_rejection_message(interaction.client, saved, reason)
+            await interaction.followup.send(
+                f"❌ Abgelehnt: **{saved.get('player') or self.entry.get('player')}** → **{saved.get('item') or self.entry.get('item')}**."
+                + (" Nachricht wurde gesendet." if dm_sent else " Nachricht konnte nicht per DM gesendet werden."),
+                ephemeral=True,
+            )
+        except Exception as error:
+            await interaction.followup.send(f"⚠️ Ablehnung konnte nicht gespeichert werden: `{error}`", ephemeral=True)
+
+
+class PoRejectSelect(discord.ui.Select):
+    def __init__(self, payload, entries):
+        self.payload = payload
+        self.entries = list(entries or [])
+        options = [
+            discord.SelectOption(label=label, value=value, emoji="❌")
+            for value, label in po_reject_entry_options(self.entries)
+        ]
+        super().__init__(
+            custom_id=f"po-reject-select:{payload['postKey'][:60]}",
+            placeholder="PO zum Ablehnen auswählen",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction):
+        try:
+            if not await reviewer_allowed(interaction.user):
+                await interaction.response.send_message(
+                    "⚠️ Nur PO-Freigeber können PO-Einträge ablehnen.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.send_modal(PoRejectModal(self.payload, self.entries[int(self.values[0])]))
+        except Exception as error:
+            if interaction.response.is_done():
+                await interaction.followup.send(f"⚠️ Ablehnen konnte nicht geöffnet werden: `{error}`", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"⚠️ Ablehnen konnte nicht geöffnet werden: `{error}`", ephemeral=True)
+
+
+class PoRejectEntryView(discord.ui.View):
+    def __init__(self, payload, entries):
+        super().__init__(timeout=180)
+        self.add_item(PoRejectSelect(payload, entries))
+
+
+class PoRejectButton(discord.ui.Button):
+    def __init__(self, payload):
+        super().__init__(
+            custom_id=f"po-reject:{payload['postKey'][:70]}",
+            label="PO ablehnen",
+            style=discord.ButtonStyle.danger,
+            row=1,
+        )
+        self.payload = payload
+
+    async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not await reviewer_allowed(interaction.user):
+            await interaction.followup.send("⚠️ Nur PO-Freigeber können PO-Einträge ablehnen.", ephemeral=True)
+            return
+        entries = await fresh_entries_for_payload(self.payload)
+        if not po_reject_entry_options(entries):
+            await interaction.followup.send("Es gibt gerade keinen offenen PO-Eintrag zum Ablehnen.", ephemeral=True)
+            return
+        await interaction.followup.send(
+            "Wähle den PO-Eintrag aus, den du ablehnen möchtest.",
+            view=PoRejectEntryView(self.payload, entries),
+            ephemeral=True,
+        )
+
+
 class PoDeleteEntrySelect(discord.ui.Select):
     def __init__(self, payload, entries):
         self.payload = payload
@@ -2225,6 +2370,7 @@ class PoView(discord.ui.View):
         self.add_item(PoClassSelect(payload))
         self.add_item(PoSearchButton(payload))
         self.add_item(PoDeleteButton(payload))
+        self.add_item(PoRejectButton(payload))
         self.add_item(PoReviewSelect(payload, entries or []))
 
 
