@@ -8546,6 +8546,19 @@ async def save_po_signup_from_modal(payload, user, item_name, char_name, player_
     class_name = canonical_signup_class(class_name or selected_po_signup_class(payload, user) or "")
     source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or "")
     target_channel_id = str(payload.get("targetChannelId") or payload.get("discordChannelId") or source_channel_id)
+    release_check = await asyncio.to_thread(lichtloot_post, {
+        "action": "lichtbotCheckPoRelease",
+        "queueToken": LICHTBOT_QUEUE_TOKEN,
+        "postKey": payload.get("postKey") or payload.get("poPostKey") or "",
+        "raid": payload.get("raid") or "",
+        "player": char_name,
+        "playerPin": player_pin,
+        "server": payload.get("server") or "",
+        "discordUserId": str(getattr(user, "id", "") or ""),
+        "discordName": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user)
+    })
+    if release_check and release_check.get("success") and release_check.get("allowed") is False:
+        raise RuntimeError(release_check.get("message") or "du hast keine PO Freigabe wende dich an den Raidlead")
     result = await asyncio.to_thread(lichtloot_post, {
         "action": "lichtbotSavePoPostEntry",
         "queueToken": LICHTBOT_QUEUE_TOKEN,

@@ -754,6 +754,22 @@ def save_po_signup_prio(payload, player, class_name, item, player_login="", item
     login = clean(player_login)
     class_name = class_display_name(class_name)
     post_key = clean((payload or {}).get("postKey") or (payload or {}).get("poPostKey") or (payload or {}).get("postId"))
+    release_check = api_post({
+        "action": "lichtbotCheckPoRelease",
+        "queueToken": QUEUE_TOKEN,
+        "guildSlug": payload_guild_slug(payload),
+        "postKey": post_key,
+        "raid": payload.get("raid") or "",
+        "player": player,
+        "playerPin": login,
+        "spielerLogin": login,
+        "server": clean(payload.get("server")),
+    })
+    if release_check and release_check.get("success") and release_check.get("allowed") is False:
+        return {
+            "success": False,
+            "error": release_check.get("message") or "du hast keine PO Freigabe wende dich an den Raidlead"
+        }
     return api_post({
         "action": "lichtbotSavePoSignupPrio",
         "queueToken": QUEUE_TOKEN,
