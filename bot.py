@@ -7339,14 +7339,16 @@ def merge_po_entries(saved_entries, fresh_entries):
 
 
 async def load_saved_po_post_entries(payload, source_channel_id, target_channel_id):
+    is_repost = str(payload.get("restoreArchived") or payload.get("repost") or "").strip().lower() in {"1", "true", "yes", "ja"}
     try:
         result = await asyncio.to_thread(lichtloot_get, {
             "action": "lichtbotGetPoPostEntries",
             "queueToken": LICHTBOT_QUEUE_TOKEN,
             "postKey": payload.get("postKey") or payload.get("poPostKey") or "",
-            "sourceChannelId": str(source_channel_id or ""),
-            "targetChannelId": str(target_channel_id or ""),
-            "raid": payload.get("raid") or ""
+            "sourceChannelId": "" if is_repost else str(source_channel_id or ""),
+            "targetChannelId": "" if is_repost else str(target_channel_id or ""),
+            "raid": payload.get("raid") or "",
+            "includeArchived": "true" if is_repost else "false"
         })
     except Exception as e:
         print(f"Gespeicherte PO-Post-Eintraege konnten nicht geladen werden: {e}")
