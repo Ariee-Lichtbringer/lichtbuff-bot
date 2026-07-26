@@ -3514,6 +3514,11 @@ def normalize_raid_name(value):
         return "ONY"
     return aliases.get(raid, raid)
 
+
+def po_release_required_for_raid(value):
+    return normalize_raid_name(value) in {"MC", "BWL", "AQ40", "NAXX"}
+
+
 def format_log_analysis_post_date(value):
     raw = str(value or "").strip()
     if not raw:
@@ -6838,22 +6843,8 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             print("PO-Loeschauftrag uebersprungen: wird vom separaten PO-Bot verarbeitet.")
             return
         elif update_type == "p0_post_refresh":
-            channel_id = payload.get("channelId") or payload.get("discordChannelId")
-            raid = payload.get("raid") or payload.get("raidName")
-            if not channel_id or not raid:
-                raise RuntimeError(f"P0-Post-Refresh unvollstaendig: {payload}")
-            context = await update_p0_post(
-                raid,
-                channel_id,
-                {
-                    "raidDate": payload.get("raidDate", ""),
-                    "raidTime": payload.get("raidTime", ""),
-                    "raidPin": payload.get("raidPin") or payload.get("prioPin") or payload.get("playerPin") or "",
-                    "discordChannelId": channel_id,
-                    "raidHelperMessageId": payload.get("messageId") or payload.get("discordMessageId") or ""
-                }
-            )
-            print(f"P0+-Post nach Freigabe aktualisiert: {context.get('raidId') or raid}")
+            print("P0+-Post-Refresh uebersprungen: wird vom separaten PO-Bot verarbeitet.")
+            return
         elif update_type == "log_analysis_post":
             await post_log_analysis_from_queue(payload)
         elif update_type in {"p0plus_transfer_export", "p0plus_backup_export"}:
@@ -6936,8 +6927,8 @@ async def lichtloot_queue_loop():
                     guild_slug = normalize_guild_slug(item.get("guild") or item.get("guildSlug") or LICHTLOOT_GUILD_SLUG)
                     token = CURRENT_GUILD_SLUG.set(guild_slug)
                     try:
-                        if str(item.get("type") or "").strip() in {"po_post", "po_post_delete"}:
-                            print("PO-Auftrag in Railway-Queue uebersprungen: separater PO-Bot ist zustaendig.")
+                        if str(item.get("type") or "").strip() in {"po_post", "po_post_delete", "p0_post_refresh"}:
+                            print("PO/P0-Auftrag in Railway-Queue uebersprungen: separater PO-Bot ist zustaendig.")
                             continue
                         await handle_lichtloot_queue_item(item, resolve_old_queue=False)
                         row_number = item.get("rowNumber")
@@ -8546,19 +8537,20 @@ async def save_po_signup_from_modal(payload, user, item_name, char_name, player_
     class_name = canonical_signup_class(class_name or selected_po_signup_class(payload, user) or "")
     source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or "")
     target_channel_id = str(payload.get("targetChannelId") or payload.get("discordChannelId") or source_channel_id)
-    release_check = await asyncio.to_thread(lichtloot_post, {
-        "action": "lichtbotCheckPoRelease",
-        "queueToken": LICHTBOT_QUEUE_TOKEN,
-        "postKey": payload.get("postKey") or payload.get("poPostKey") or "",
-        "raid": payload.get("raid") or "",
-        "player": char_name,
-        "playerPin": player_pin,
-        "server": payload.get("server") or "",
-        "discordUserId": str(getattr(user, "id", "") or ""),
-        "discordName": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user)
-    })
-    if release_check and release_check.get("success") and release_check.get("allowed") is False:
-        raise RuntimeError(release_check.get("message") or "du hast keine P0+ Freigabe wende dich an den Raidlead")
+    if po_release_required_for_raid(payload.get("raid") or ""):
+        release_check = await asyncio.to_thread(lichtloot_post, {
+            "action": "lichtbotCheckPoRelease",
+            "queueToken": LICHTBOT_QUEUE_TOKEN,
+            "postKey": payload.get("postKey") or payload.get("poPostKey") or "",
+            "raid": payload.get("raid") or "",
+            "player": char_name,
+            "playerPin": player_pin,
+            "server": payload.get("server") or "",
+            "discordUserId": str(getattr(user, "id", "") or ""),
+            "discordName": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user)
+        })
+        if release_check and release_check.get("success") and release_check.get("allowed") is False:
+            raise RuntimeError(release_check.get("message") or "du hast keine P0+ Freigabe wende dich an den Raidlead")
     result = await asyncio.to_thread(lichtloot_post, {
         "action": "lichtbotSavePoPostEntry",
         "queueToken": LICHTBOT_QUEUE_TOKEN,

@@ -303,6 +303,10 @@ def display_raid(value):
     return RAID_NAMES.get(raid, raid)
 
 
+def po_release_required_for_raid(value):
+    return normalize_raid(value) in {"MC", "BWL", "AQ40", "NAXX"}
+
+
 def slug(value):
     text = clean(value).lower()
     text = text.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
@@ -754,22 +758,23 @@ def save_po_signup_prio(payload, player, class_name, item, player_login="", item
     login = clean(player_login)
     class_name = class_display_name(class_name)
     post_key = clean((payload or {}).get("postKey") or (payload or {}).get("poPostKey") or (payload or {}).get("postId"))
-    release_check = api_post({
-        "action": "lichtbotCheckPoRelease",
-        "queueToken": QUEUE_TOKEN,
-        "guildSlug": payload_guild_slug(payload),
-        "postKey": post_key,
-        "raid": payload.get("raid") or "",
-        "player": player,
-        "playerPin": login,
-        "spielerLogin": login,
-        "server": clean(payload.get("server")),
-    })
-    if release_check and release_check.get("success") and release_check.get("allowed") is False:
-        return {
-            "success": False,
-            "error": release_check.get("message") or "du hast keine P0+ Freigabe wende dich an den Raidlead"
-        }
+    if po_release_required_for_raid(payload.get("raid") or ""):
+        release_check = api_post({
+            "action": "lichtbotCheckPoRelease",
+            "queueToken": QUEUE_TOKEN,
+            "guildSlug": payload_guild_slug(payload),
+            "postKey": post_key,
+            "raid": payload.get("raid") or "",
+            "player": player,
+            "playerPin": login,
+            "spielerLogin": login,
+            "server": clean(payload.get("server")),
+        })
+        if release_check and release_check.get("success") and release_check.get("allowed") is False:
+            return {
+                "success": False,
+                "error": release_check.get("message") or "du hast keine P0+ Freigabe wende dich an den Raidlead"
+            }
     return api_post({
         "action": "lichtbotSavePoSignupPrio",
         "queueToken": QUEUE_TOKEN,
@@ -2463,6 +2468,15 @@ async def post_or_update_from_queue(client, payload):
     payload = dict(payload or {})
     payload["guildSlug"] = payload_guild_slug(payload)
     post_key = clean(payload.get("postKey") or payload.get("poPostKey") or payload.get("postId"))
+    if not post_key and clean(payload.get("source")).lower() == "p0_review":
+        raid_key = normalize_raid(payload.get("raid") or payload.get("raidName"))
+        raid_id = clean(payload.get("raidId") or payload.get("id") or payload.get("raidPin") or payload.get("prioPin"))
+        post_key = clean(f"{raid_key}-po-anmelder-{raid_id}".strip("-"))
+        payload["mode"] = "po-anmelder"
+        payload["postKey"] = post_key
+        payload["poPostKey"] = post_key
+        payload["targetChannelId"] = clean(payload.get("targetChannelId") or payload.get("discordChannelId") or payload.get("channelId"))
+        payload["sourceChannelId"] = clean(payload.get("sourceChannelId") or payload.get("targetChannelId") or payload.get("discordChannelId") or payload.get("channelId"))
     if not post_key:
         raise RuntimeError("PO-Anmelder ohne Post-ID.")
     original_target_channel_id = payload_target_channel_id(payload)
@@ -2546,13 +2560,12 @@ async def po_queue_loop():
             result = await asyncio.to_thread(api_get, {
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": QUEUE_TOKEN,
-                "type": "po_post",
                 "limit": "50",
                 "t": int(time.time()),
             })
             if result.get("success"):
                 items = result.get("items") or []
-                po_items = [item for item in items if clean(item.get("type")) == "po_post"]
+                po_items = [item for item in items if clean(item.get("type")) in {"po_post", "p0_post_refresh"}]
                 stale_delete_items = [item for item in items if clean(item.get("type")) == "po_post_delete"]
                 for item in stale_delete_items:
                     queue_guild_slug = normalize_guild_slug(item.get("guild") or item.get("guildSlug"))
@@ -2576,7 +2589,11 @@ async def po_queue_loop():
                     payload["guildSlug"] = queue_guild_slug
                     mode = clean(payload.get("mode")).lower() or "signup"
                     try:
-                        if mode not in {"signup", "anmelder", "po_signup", "po-anmelder"}:
+                        item_type = clean(item.get("type"))
+                        if item_type == "p0_post_refresh":
+                            payload["source"] = payload.get("source") or "p0_review"
+                            payload["mode"] = payload.get("mode") or "po-anmelder"
+                        if mode not in {"signup", "anmelder", "po_signup", "po-anmelder"} and item_type != "p0_post_refresh":
                             await resolve_queue_item(item.get("rowNumber"))
                             print(f"Alter PO-Post-Auftrag uebersprungen und erledigt markiert: {payload.get('postKey') or item.get('rowNumber')}")
                             continue
