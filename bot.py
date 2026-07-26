@@ -8610,7 +8610,7 @@ def po_review_entry_options(entries):
     seen = set()
     for idx, entry in enumerate(entries or []):
         status = str(entry.get("approvalStatus") or "").strip().lower()
-        if status == "approved":
+        if status in {"approved", "rejected"}:
             continue
         player = str(entry.get("player") or "").strip()
         item = str(entry.get("item") or "").strip()
@@ -8625,6 +8625,10 @@ def po_review_entry_options(entries):
         if len(result) >= 25:
             break
     return result
+
+
+def po_reject_entry_options(entries):
+    return po_review_entry_options(entries)
 
 
 async def po_signup_reviewer_allowed(payload, user):
@@ -8680,6 +8684,55 @@ async def review_po_signup_entry(payload, entry, user):
         raise RuntimeError(result.get("error") or "PO-Eintrag konnte nicht freigegeben werden.")
     await post_standalone_po_list(payload)
     return result
+
+
+async def reject_po_signup_entry(payload, entry, user, reason=""):
+    payload = payload_with_saved_lichtloot_id(payload)
+    raid_pin = payload_lichtloot_raid_pin(payload)
+    source_channel_id = str(payload.get("sourceChannelId") or payload.get("channelId") or "")
+    target_channel_id = str(payload.get("targetChannelId") or payload.get("discordChannelId") or source_channel_id)
+    result = await asyncio.to_thread(lichtloot_post, {
+        "action": "reviewPoPostEntry",
+        "queueToken": LICHTBOT_QUEUE_TOKEN,
+        "postKey": payload.get("postKey") or payload.get("poPostKey") or "",
+        "sourceChannelId": source_channel_id,
+        "targetChannelId": target_channel_id,
+        "messageId": entry.get("messageId") or entry.get("discordMessageId") or "",
+        "discordMessageId": payload.get("messageId") or entry.get("discordMessageId") or "",
+        "raidPin": raid_pin,
+        "prioPin": raid_pin,
+        "lichtlootRaidId": raid_pin,
+        "player": entry.get("player") or "",
+        "item": entry.get("item") or "",
+        "status": "rejected",
+        "reason": reason,
+        "reviewer": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user),
+        "mode": payload.get("mode") or payload.get("poMode") or "signup",
+        "note": payload.get("note") or payload.get("message") or payload.get("raidleadMessage") or "",
+        "itemOptions": payload.get("itemOptions") or payload.get("items") or payload.get("itemList") or ""
+    })
+    if not result.get("success"):
+        raise RuntimeError(result.get("error") or "PO-Eintrag konnte nicht abgelehnt werden.")
+    await post_standalone_po_list(payload)
+    return result
+
+
+async def send_po_rejection_message(entry, reason):
+    user_id = str(entry.get("discordUserId") or entry.get("discord_user_id") or "").strip()
+    if not user_id:
+        return False
+    try:
+        user = client.get_user(int(user_id)) or await client.fetch_user(int(user_id))
+        player = str(entry.get("player") or "dein Charakter").strip()
+        item = str(entry.get("item") or "deine PO").strip()
+        text = f"❌ Deine PO für **{player}** auf **{item}** wurde abgelehnt."
+        if str(reason or "").strip():
+            text += f"\n\nNachricht der PO-Freigabe: {str(reason).strip()}"
+        await user.send(text)
+        return True
+    except Exception as e:
+        print(f"PO-Ablehnung: DM konnte nicht gesendet werden: {e}")
+        return False
 
 
 class PoSignupModal(discord.ui.Modal):
@@ -8899,6 +8952,112 @@ class PoSignupReviewSelect(discord.ui.Select):
             await interaction.followup.send(f"⚠️ Freigabe konnte nicht gespeichert werden: `{e}`", ephemeral=True)
 
 
+class PoSignupRejectModal(discord.ui.Modal):
+    def __init__(self, payload, entry):
+        self.payload = payload
+        self.entry = dict(entry or {})
+        player = str(self.entry.get("player") or "Spieler").strip()
+        super().__init__(title=f"PO ablehnen: {player}"[:45])
+        self.message = discord.ui.TextInput(
+            label="Nachricht an den Spieler",
+            placeholder="z. B. Bitte anderes Item wählen / passt nicht zur Lootregel.",
+            required=False,
+            style=discord.TextStyle.paragraph,
+            max_length=500
+        )
+        self.add_item(self.message)
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            reason = str(self.message.value or "").strip()
+            result = await reject_po_signup_entry(self.payload, self.entry, interaction.user, reason)
+            saved = result.get("entry") or self.entry
+            dm_sent = await send_po_rejection_message(saved, reason)
+            await interaction.followup.send(
+                f"❌ Abgelehnt: **{saved.get('player') or self.entry.get('player')}** → **{saved.get('item') or self.entry.get('item')}**."
+                + (" Nachricht wurde gesendet." if dm_sent else " Nachricht konnte nicht per DM gesendet werden."),
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.followup.send(f"⚠️ Ablehnung konnte nicht gespeichert werden: `{e}`", ephemeral=True)
+
+
+class PoSignupRejectSelect(discord.ui.Select):
+    def __init__(self, payload, entries):
+        self.payload = payload
+        self.entries = list(entries or [])
+        options = []
+        for value, label, _player, item in po_reject_entry_options(self.entries):
+            options.append(discord.SelectOption(
+                label=label,
+                value=value,
+                description=item[:100] if item and item not in label else None,
+                emoji="❌"
+            ))
+        super().__init__(
+            placeholder="PO zum Ablehnen auswählen",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id=f"po_reject_select:{str(payload.get('postKey') or payload.get('poPostKey') or 'default').strip()[:56] or 'default'}"
+        )
+
+    async def callback(self, interaction):
+        try:
+            if not await po_signup_reviewer_allowed(self.payload, interaction.user):
+                await interaction.response.send_message(
+                    "⚠️ Nur PO-Freigeber können PO-Einträge ablehnen.",
+                    ephemeral=True
+                )
+                return
+            idx = int(self.values[0])
+            await interaction.response.send_modal(PoSignupRejectModal(self.payload, self.entries[idx]))
+        except Exception as e:
+            if interaction.response.is_done():
+                await interaction.followup.send(f"⚠️ Ablehnen konnte nicht geöffnet werden: `{e}`", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"⚠️ Ablehnen konnte nicht geöffnet werden: `{e}`", ephemeral=True)
+
+
+class PoSignupRejectEntryView(discord.ui.View):
+    def __init__(self, payload, entries):
+        super().__init__(timeout=180)
+        if po_reject_entry_options(entries or []):
+            self.add_item(PoSignupRejectSelect(payload, entries or []))
+
+
+class PoSignupRejectButton(discord.ui.Button):
+    def __init__(self, payload, entries):
+        post_key = str(payload.get("postKey") or payload.get("poPostKey") or "default").strip()[:70]
+        super().__init__(
+            label="PO ablehnen",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"po_reject:{post_key or 'default'}"
+        )
+        self.payload = payload
+        self.entries = list(entries or [])
+
+    async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not await po_signup_reviewer_allowed(self.payload, interaction.user):
+            await interaction.followup.send("⚠️ Nur PO-Freigeber können PO-Einträge ablehnen.", ephemeral=True)
+            return
+        entries = self.entries
+        if not po_reject_entry_options(entries):
+            source_channel_id = str(self.payload.get("sourceChannelId") or self.payload.get("channelId") or "").strip()
+            target_channel_id = str(self.payload.get("targetChannelId") or self.payload.get("discordChannelId") or source_channel_id)
+            entries = await load_saved_po_post_entries(self.payload, source_channel_id, target_channel_id)
+        if not po_reject_entry_options(entries):
+            await interaction.followup.send("⚠️ Es gibt gerade keinen offenen PO-Eintrag zum Ablehnen.", ephemeral=True)
+            return
+        await interaction.followup.send(
+            "Wähle den PO-Eintrag aus, den du ablehnen möchtest.",
+            view=PoSignupRejectEntryView(self.payload, entries),
+            ephemeral=True
+        )
+
+
 class PoSignupView(discord.ui.View):
     def __init__(self, payload, entries=None):
         super().__init__(timeout=None)
@@ -8913,6 +9072,7 @@ class PoSignupView(discord.ui.View):
         self.add_item(PoSignupButton(payload))
         if po_review_entry_options(entries or []):
             self.add_item(PoSignupReviewSelect(payload, entries or []))
+            self.add_item(PoSignupRejectButton(payload, entries or []))
         if po_luck_entry_options(entries or []):
             self.add_item(PoSignupLuckSelect(payload, entries or []))
         if source_channel_id:
