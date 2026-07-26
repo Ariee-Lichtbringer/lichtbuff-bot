@@ -768,7 +768,7 @@ def save_po_signup_prio(payload, player, class_name, item, player_login="", item
     if release_check and release_check.get("success") and release_check.get("allowed") is False:
         return {
             "success": False,
-            "error": release_check.get("message") or "du hast keine PO Freigabe wende dich an den Raidlead"
+            "error": release_check.get("message") or "du hast keine P0+ Freigabe wende dich an den Raidlead"
         }
     return api_post({
         "action": "lichtbotSavePoSignupPrio",

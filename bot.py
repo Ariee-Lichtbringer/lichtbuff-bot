@@ -8558,7 +8558,7 @@ async def save_po_signup_from_modal(payload, user, item_name, char_name, player_
         "discordName": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user)
     })
     if release_check and release_check.get("success") and release_check.get("allowed") is False:
-        raise RuntimeError(release_check.get("message") or "du hast keine PO Freigabe wende dich an den Raidlead")
+        raise RuntimeError(release_check.get("message") or "du hast keine P0+ Freigabe wende dich an den Raidlead")
     result = await asyncio.to_thread(lichtloot_post, {
         "action": "lichtbotSavePoPostEntry",
         "queueToken": LICHTBOT_QUEUE_TOKEN,
