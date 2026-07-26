@@ -7357,6 +7357,28 @@ async def load_saved_po_post_entries(payload, source_channel_id, target_channel_
     return entries if isinstance(entries, list) else []
 
 
+def payload_po_post_entries(payload):
+    raw = (payload or {}).get("postedEntries") or (payload or {}).get("poEntries") or (payload or {}).get("entries")
+    if isinstance(raw, list):
+        entries = raw
+    elif isinstance(raw, str) and raw.strip():
+        try:
+            entries = json.loads(raw)
+        except Exception as e:
+            print(f"Mitgesendete PO-Eintraege konnten nicht gelesen werden: {e}")
+            entries = []
+    else:
+        entries = []
+    clean_entries = []
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        if not (str(entry.get("player") or "").strip() or str(entry.get("item") or entry.get("itemName") or "").strip()):
+            continue
+        clean_entries.append(entry)
+    return clean_entries
+
+
 async def load_po_item_points(raid=""):
     try:
         result = await asyncio.to_thread(lichtloot_get, {"action": "getP0Plus"})
@@ -9188,7 +9210,8 @@ async def post_standalone_po_list(payload):
     cleanup_source = str(payload.get("cleanupSource") or payload.get("cleanup") or "").strip().lower() in {"1", "true", "yes", "ja"}
     _, fresh_entries, source_messages = await get_po_entries_from_channel(source_channel_id, limit=limit)
     saved_entries = await load_saved_po_post_entries(payload, source_channel_id, target_channel_id)
-    entries = merge_po_entries(saved_entries, fresh_entries)
+    posted_entries = payload_po_post_entries(payload)
+    entries = merge_po_entries(saved_entries + posted_entries, fresh_entries)
     entries = await resolve_po_post_players(entries)
     entries = apply_po_post_approvals(entries, await load_po_post_approvals({
         **payload,

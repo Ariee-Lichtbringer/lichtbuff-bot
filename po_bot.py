@@ -1239,21 +1239,65 @@ async def items_for_payload(payload):
     return await load_raid_item_rows(payload.get("raid") or "")
 
 
+def po_entry_key(entry):
+    message_id = clean((entry or {}).get("messageId") or (entry or {}).get("poMessageId"))
+    if message_id:
+        return f"msg:{message_id}"
+    player = slug((entry or {}).get("player") or (entry or {}).get("playerName"))
+    item = slug((entry or {}).get("item") or (entry or {}).get("itemName"))
+    if player and item:
+        return f"{player}|{item}"
+    return ""
+
+
+def merge_po_entries(saved_entries, fresh_entries):
+    merged = {}
+    for entry in fresh_entries or []:
+        key = po_entry_key(entry)
+        if key:
+            merged[key] = dict(entry)
+    for entry in saved_entries or []:
+        key = po_entry_key(entry)
+        if key:
+            merged[key] = {**merged.get(key, {}), **dict(entry)}
+    return list(merged.values())
+
+
 async def load_entries(payload):
+    is_repost = clean(payload.get("restoreArchived") or payload.get("repost")).lower() in {"1", "true", "yes", "ja"}
     result = await asyncio.to_thread(api_get, {
         "action": "lichtbotGetPoPostEntries",
         "queueToken": QUEUE_TOKEN,
         "postKey": payload["postKey"],
-        "sourceChannelId": payload_source_channel_id(payload),
-        "targetChannelId": payload_target_channel_id(payload),
-        "includeArchived": "false",
+        "sourceChannelId": "" if is_repost else payload_source_channel_id(payload),
+        "targetChannelId": "" if is_repost else payload_target_channel_id(payload),
+        "includeArchived": "true" if is_repost else "false",
     })
     entries = [
         entry for entry in (result.get("entries") or [])
         if not entry.get("configOnly")
         and (clean(entry.get("player")) or clean(entry.get("item") or entry.get("itemName")))
     ]
-    return apply_po_item_variants(payload, entries)
+    return apply_po_item_variants(payload, merge_po_entries(entries + payload_po_post_entries(payload), []))
+
+
+def payload_po_post_entries(payload):
+    raw = (payload or {}).get("postedEntries") or (payload or {}).get("poEntries") or (payload or {}).get("entries")
+    if isinstance(raw, list):
+        entries = raw
+    elif isinstance(raw, str) and raw.strip():
+        try:
+            entries = json.loads(raw)
+        except Exception as error:
+            print(f"Mitgesendete PO-Eintraege konnten nicht gelesen werden: {error}")
+            entries = []
+    else:
+        entries = []
+    return [
+        entry for entry in entries
+        if isinstance(entry, dict)
+        and (clean(entry.get("player")) or clean(entry.get("item") or entry.get("itemName")))
+    ]
 
 
 def message_matches_post_key(message, post_key):
