@@ -1233,13 +1233,21 @@ class RendSignupModal(discord.ui.Modal, title="Rend anmelden"):
     )
 
     async def on_submit(self, interaction):
-        await interaction.response.defer(ephemeral=True)
-        result_text = await hordenbuff_signup_core(
-            ally_char=str(self.ally_char.value or ""),
-            horde_char=str(self.horde_char.value or ""),
-            author_name=interaction.user.display_name
+        interaction_guild_slug = guild_slug_for_discord_server(
+            getattr(interaction, "guild", None),
+            guild_slug_for_channel(getattr(interaction, "channel_id", 0) or 0)
         )
-        await interaction.followup.send(result_text, ephemeral=True)
+        token = CURRENT_GUILD_SLUG.set(interaction_guild_slug)
+        try:
+            await interaction.response.defer(ephemeral=True)
+            result_text = await hordenbuff_signup_core(
+                ally_char=str(self.ally_char.value or ""),
+                horde_char=str(self.horde_char.value or ""),
+                author_name=interaction.user.display_name
+            )
+            await interaction.followup.send(result_text, ephemeral=True)
+        finally:
+            CURRENT_GUILD_SLUG.reset(token)
 
 
 class RendSignupView(discord.ui.View):
