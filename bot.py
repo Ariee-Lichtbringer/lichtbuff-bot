@@ -869,7 +869,7 @@ def get_open_worldbuff_signup_slots(limit=25):
         if not is_open_worldbuff_status(row.get("status")):
             continue
         gilde = row.get("gilde", "")
-        if not is_lichtbringer(gilde):
+        if not is_own_worldbuff_guild(gilde):
             continue
 
         try:
@@ -887,7 +887,12 @@ def get_open_worldbuff_signup_slots(limit=25):
             choice_buffs.append("Ony")
 
         for choice_index, choice_buff in enumerate(choice_buffs):
-            key = "|".join([choice_buff, row.get("datum", ""), row.get("uhrzeit", ""), "LICHTBRINGER"])
+            key = "|".join([
+                choice_buff,
+                row.get("datum", ""),
+                row.get("uhrzeit", ""),
+                current_guild_slug().upper()
+            ])
             if key in seen:
                 continue
             seen.add(key)
@@ -980,13 +985,21 @@ class WorldbuffSignupModal(discord.ui.Modal):
         self.add_item(self.charakter)
 
     async def on_submit(self, interaction):
-        await interaction.response.defer(ephemeral=True)
-        result_text = await worldbuff_signup_core(
-            self.slot,
-            str(self.charakter.value or ""),
-            interaction.user.display_name
+        interaction_guild_slug = guild_slug_for_discord_server(
+            getattr(interaction, "guild", None),
+            guild_slug_for_channel(getattr(interaction, "channel_id", 0) or 0)
         )
-        await interaction.followup.send(result_text, ephemeral=True)
+        token = CURRENT_GUILD_SLUG.set(interaction_guild_slug)
+        try:
+            await interaction.response.defer(ephemeral=True)
+            result_text = await worldbuff_signup_core(
+                self.slot,
+                str(self.charakter.value or ""),
+                interaction.user.display_name
+            )
+            await interaction.followup.send(result_text, ephemeral=True)
+        finally:
+            CURRENT_GUILD_SLUG.reset(token)
 
 
 class WorldbuffSignupSelect(discord.ui.Select):
@@ -1036,23 +1049,31 @@ class WorldbuffBuffButton(discord.ui.Button):
         )
 
     async def callback(self, interaction):
-        buff = normalize_buff(self.buff)
-        slots = await asyncio.to_thread(get_open_worldbuff_signup_slots, 75)
-        slots = [slot for slot in slots if normalize_buff(slot.get("buff")) == buff]
+        interaction_guild_slug = guild_slug_for_discord_server(
+            getattr(interaction, "guild", None),
+            guild_slug_for_channel(getattr(interaction, "channel_id", 0) or 0)
+        )
+        token = CURRENT_GUILD_SLUG.set(interaction_guild_slug)
+        try:
+            buff = normalize_buff(self.buff)
+            slots = await asyncio.to_thread(get_open_worldbuff_signup_slots, 75)
+            slots = [slot for slot in slots if normalize_buff(slot.get("buff")) == buff]
 
-        if not slots:
+            if not slots:
+                await interaction.response.send_message(
+                    f"⚠️ Aktuell ist kein freier {buff}-Termin verfügbar.",
+                    ephemeral=True
+                )
+                return
+
             await interaction.response.send_message(
-                f"⚠️ Aktuell ist kein freier {buff}-Termin verfügbar.",
+                f"✅ **{buff} eintragen**\n"
+                "Wähle einen freien Termin aus. Danach öffnet sich das Feld für deinen Charakternamen.",
+                view=WorldbuffSignupView(slots[:25], buff_filter=buff),
                 ephemeral=True
             )
-            return
-
-        await interaction.response.send_message(
-            f"✅ **{buff} eintragen**\n"
-            "Wähle einen freien Termin aus. Danach öffnet sich das Feld für deinen Charakternamen.",
-            view=WorldbuffSignupView(slots[:25], buff_filter=buff),
-            ephemeral=True
-        )
+        finally:
+            CURRENT_GUILD_SLUG.reset(token)
 
 
 class WorldbuffBuffPickerView(discord.ui.View):
@@ -1341,6 +1362,8 @@ def current_worldbuff_guild_names():
     }
     if guild_slug == LICHTLOOT_GUILD_SLUG:
         names.update({"Lichtbringer", "LichtLoot", "lichtloot"})
+    elif guild_slug == NACHTLOOT_GUILD_SLUG:
+        names.update({"Nachtloot", "NachtLoot", "Nachtwächter", "Die Nachtwächter"})
     return {
         re.sub(r"\s+", " ", str(name or "").strip()).casefold()
         for name in names
