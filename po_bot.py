@@ -681,11 +681,57 @@ async def get_raid_helper_by_id(raid_id):
     })
 
 
-async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id=None):
-    helper = await get_raid_helper_by_id(clean(raid_id))
+def raid_signup_row_count(helper):
+    return len((helper or {}).get("signups") or []) + len((helper or {}).get("externalSignups") or [])
+
+
+def raid_helper_snapshot_from_payload(payload):
+    payload = payload or {}
+    return {
+        "success": True,
+        "raid": payload.get("raidSnapshot") or {},
+        "signups": payload.get("signups") or [],
+        "externalSignups": payload.get("externalSignups") or [],
+    }
+
+
+async def get_raid_helper_for_refresh(payload_or_raid_id):
+    if isinstance(payload_or_raid_id, dict):
+        payload = payload_or_raid_id
+        candidates = []
+        for key in ["raidId", "id", "playerPin", "prioPin", "raidPin"]:
+            value = clean(payload.get(key))
+            if value and value not in candidates:
+                candidates.append(value)
+        for candidate in candidates:
+            try:
+                helper = await get_raid_helper_by_id(candidate)
+                if helper and helper.get("success"):
+                    return helper
+            except Exception:
+                pass
+        raid = clean(payload.get("raid"))
+        raid_date = clean(payload.get("raidDate"))
+        if raid and raid_date:
+            return await asyncio.to_thread(api_get, {
+                "action": "getRaidHelper",
+                "raid": raid,
+                "raidDate": raid_date,
+                "raidTime": clean(payload.get("raidTime")),
+                "t": int(time.time())
+            })
+        return {}
+    return await get_raid_helper_by_id(clean(payload_or_raid_id))
+
+
+async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id=None, payload=None):
+    helper = await get_raid_helper_for_refresh(payload or clean(raid_id))
+    fallback_helper = raid_helper_snapshot_from_payload(payload) if payload else {}
+    if raid_signup_row_count(helper) == 0 and raid_signup_row_count(fallback_helper) > 0:
+        helper = fallback_helper
     if not helper or not helper.get("success"):
         raise RuntimeError("Raid-Anmelder-Refresh: Raid wurde nicht gefunden.")
-    raid = helper.get("raid") or {}
+    raid = helper.get("raid") or (payload or {}).get("raidSnapshot") or {}
     channel_id = clean(channel_id or raid.get("discordChannelId") or raid.get("discord_channel_id"))
     message_id = clean(message_id or raid.get("discordMessageId") or raid.get("discord_message_id"))
     if not channel_id or not message_id:
@@ -695,6 +741,7 @@ async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id
     embed = build_raid_announcement_embed(raid)
     add_raid_signup_roster_fields(embed, helper)
     await message.edit(embed=embed, view=RaidSignupView(raid))
+    print(f"Raidanmelder Refresh: {clean(raid.get('raidId') or raid_id)} mit {raid_signup_row_count(helper)} Anmeldung(en) gerendert.")
     return True
 
 
@@ -3119,7 +3166,8 @@ async def po_queue_loop():
                             refreshed = await refresh_raid_signup_message_by_id(
                                 payload.get("raidId") or payload.get("id"),
                                 payload.get("channelId") or payload.get("discordChannelId"),
-                                payload.get("messageId") or payload.get("discordMessageId") or payload.get("raidHelperMessageId")
+                                payload.get("messageId") or payload.get("discordMessageId") or payload.get("raidHelperMessageId"),
+                                payload
                             )
                             if refreshed:
                                 await resolve_queue_item(item.get("rowNumber"))
