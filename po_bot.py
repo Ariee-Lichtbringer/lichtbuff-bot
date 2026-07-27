@@ -779,9 +779,35 @@ def raid_signup_row_count(helper):
 
 def raid_helper_snapshot_from_payload(payload):
     payload = payload or {}
+    raid = dict(payload.get("raidSnapshot") or {})
+    if not raid:
+        raid_key = clean(payload.get("raid"))
+        raid_id = clean(payload.get("raidId") or payload.get("id"))
+        player_pin = clean(payload.get("playerPin") or payload.get("prioPin") or payload.get("raidPin"))
+        raid = {
+            "raidId": raid_id,
+            "id": raid_id,
+            "raid": raid_key,
+            "raidName": display_raid(raid_key) or raid_key.upper() or "Raid",
+            "raidDate": clean(payload.get("raidDate") or payload.get("date")),
+            "raidTime": clean(payload.get("raidTime") or payload.get("time")),
+            "discordChannelId": clean(payload.get("channelId") or payload.get("discordChannelId")),
+            "playerPin": player_pin,
+            "prioPin": player_pin,
+            "createdBy": clean(payload.get("createdBy") or payload.get("raidlead") or payload.get("lead") or "Gildenleitung"),
+            "guild": clean(payload.get("guild") or payload.get("guildSlug")),
+            "guildSlug": clean(payload.get("guildSlug") or payload.get("guild")),
+            "description": clean(payload.get("description")),
+            "signupDeadline": clean(payload.get("signupDeadline") or payload.get("deadline")),
+            "maxPlayers": clean(payload.get("maxPlayers")),
+            "tankSlots": clean(payload.get("tankSlots")),
+            "healSlots": clean(payload.get("healSlots")),
+            "ddSlots": clean(payload.get("ddSlots")),
+            "raidImageUrl": clean(payload.get("raidImageUrl") or payload.get("imageUrl")),
+        }
     return {
         "success": True,
-        "raid": payload.get("raidSnapshot") or {},
+        "raid": raid,
         "signups": payload.get("signups") or [],
         "externalSignups": payload.get("externalSignups") or [],
     }
