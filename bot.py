@@ -270,15 +270,26 @@ SPEC_EMOJI_NAME_ALIASES = {
     "enhancement": ["enhancement", "enh"],
 }
 RAID_SIGNUP_SPECS = {
-    "Warrior": [("Arms", "arms"), ("Fury", "fury"), ("Tank", "tank")],
+    "Warrior": [("Waffen", "arms"), ("Furor", "fury"), ("Tank", "tank")],
     "Druid": [("Heilung", "heal"), ("Tank", "tank"), ("FeralDD", "feral"), ("Eule", "balance")],
-    "Paladin": [("Holy", "paladin_holy"), ("Retri", "retri"), ("Tank", "tank")],
-    "Rogue": [("Assassination", "assassination"), ("Combat", "combat"), ("Subtlety", "subtlety")],
-    "Hunter": [("Survival", "survival"), ("Marksman", "marksman"), ("Beastmaster", "beastmaster")],
-    "Priest": [("Disziplin", "discipline"), ("Holy", "priest_holy"), ("Schatten", "shadow")],
-    "Mage": [("Fire", "fire"), ("Frost", "frost"), ("Arcane", "arcane")],
-    "Warlock": [("Affliction", "affliction"), ("Demonology", "demonology"), ("Destruction", "destruction")],
-    "Shaman": [("Heilung", "heal"), ("Elemental", "elemental"), ("Enhancement", "enhancement")],
+    "Paladin": [("Heilig", "paladin_holy"), ("Vergeltung", "retri"), ("Tank", "tank")],
+    "Rogue": [("Meucheln", "assassination"), ("Kampf", "combat"), ("Täuschung", "subtlety")],
+    "Hunter": [("Überleben", "survival"), ("Treffsicherheit", "marksman"), ("Tierherrschaft", "beastmaster")],
+    "Priest": [("Disziplin", "discipline"), ("Heilig", "priest_holy"), ("Schatten", "shadow")],
+    "Mage": [("Feuer", "fire"), ("Frost", "frost"), ("Arkan", "arcane")],
+    "Warlock": [("Gebrechen", "affliction"), ("Dämonologie", "demonology"), ("Zerstörung", "destruction")],
+    "Shaman": [("Heilung", "heal"), ("Elementar", "elemental"), ("Verstärkung", "enhancement")],
+}
+RAID_SIGNUP_CLASS_LABELS = {
+    "Warrior": "Krieger",
+    "Druid": "Druide",
+    "Paladin": "Paladin",
+    "Rogue": "Schurke",
+    "Hunter": "Jäger",
+    "Priest": "Priester",
+    "Mage": "Magier",
+    "Warlock": "Hexenmeister",
+    "Shaman": "Schamane",
 }
 LICHTLOOT_GUILD_SLUG = os.getenv("LICHTLOOT_GUILD_SLUG", "lichtloot")
 PANEM_GUILD_SLUG = os.getenv("PANEM_GUILD_SLUG", "panemloot")
@@ -3999,9 +4010,13 @@ def build_raid_announcement_embed(raid):
     worldbuff_block = current_worldbuff_announcement_block()
     if worldbuff_block:
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
-    image_url = raid_image_url(raid)
-    if image_url:
-        embed.set_image(url=image_url)
+    attachment_name = raid_banner_attachment_name(raid)
+    if attachment_name:
+        embed.set_image(url=f"attachment://{attachment_name}")
+    else:
+        image_url = raid_image_url(raid)
+        if image_url:
+            embed.set_image(url=image_url)
     embed.set_footer(text="Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein.")
     return embed
 
@@ -4035,11 +4050,31 @@ def raid_key_for_image(raid):
 
 
 def raid_banner_attachment_name(raid):
-    return ""
+    raid_key = raid_key_for_image(raid)
+    image_map = {
+        "zg": "zg.jpg",
+        "aq20": "aq20.jpg",
+        "aq40": "aq40.jpg",
+        "bwl": "bwl.jpg",
+        "mc": "mc.jpg",
+        "naxx": "naxx.jpg",
+        "ony": "ony.jpg",
+    }
+    filename = image_map.get(raid_key)
+    if not filename:
+        return ""
+    path = RAID_BANNER_DIR / filename
+    return filename if path.exists() else ""
 
 
 def raid_banner_file(raid):
-    return None
+    filename = raid_banner_attachment_name(raid)
+    if not filename:
+        return None
+    path = RAID_BANNER_DIR / filename
+    if not path.exists():
+        return None
+    return discord.File(str(path), filename=filename)
 
 
 def raid_image_url(raid):
@@ -4078,7 +4113,7 @@ def infer_signup_role(spec_text):
         return "tank"
     if any(word in text for word in ["heal", "heiler", "holy", "heilig", "resto", "restoration", "diszi", "disziplin", "discipline"]):
         return "heal"
-    if any(word in text for word in ["dd", "dps", "damage", "fury", "arms", "waffen", "fire", "feuer", "frost", "shadow", "schatten", "combat", "assa", "feral", "balance", "ele", "enh", "retri", "survival", "marksman", "beastmaster", "affliction", "demonology", "destruction"]):
+    if any(word in text for word in ["dd", "dps", "damage", "fury", "furor", "arms", "waffen", "fire", "feuer", "frost", "shadow", "schatten", "combat", "kampf", "assa", "meucheln", "täuschung", "taeuschung", "feral", "balance", "eule", "ele", "elementar", "enh", "verstärkung", "verstaerkung", "retri", "vergeltung", "survival", "überleben", "ueberleben", "marksman", "treffsicherheit", "beastmaster", "tierherrschaft", "affliction", "gebrechen", "demonology", "dämonologie", "daemonologie", "destruction", "zerstörung", "zerstoerung"]):
         return "dd"
     return "flex"
 
@@ -4223,7 +4258,7 @@ def signup_spec_icon_key(spec_text, role="", class_name=""):
         return "heal"
     if any(word in text for word in ["arms", "waffen"]):
         return "arms"
-    if any(word in text for word in ["fury"]):
+    if any(word in text for word in ["fury", "furor"]):
         return "fury"
     if any(word in text for word in ["retri", "vergeltung"]):
         return "retri"
@@ -4233,31 +4268,31 @@ def signup_spec_icon_key(spec_text, role="", class_name=""):
         return "frost"
     if any(word in text for word in ["arcane", "arkan"]):
         return "arcane"
-    if any(word in text for word in ["assassination", "assa"]):
+    if any(word in text for word in ["assassination", "assa", "meucheln"]):
         return "assassination"
-    if any(word in text for word in ["subtlety", "sub"]):
+    if any(word in text for word in ["subtlety", "sub", "täuschung", "taeuschung"]):
         return "subtlety"
     if any(word in text for word in ["combat", "kampf"]):
         return "combat"
     if any(word in text for word in ["affliction", "affli", "gebrechen"]):
         return "affliction"
-    if any(word in text for word in ["demonology", "demo"]):
+    if any(word in text for word in ["demonology", "demo", "dämonologie", "daemonologie"]):
         return "demonology"
-    if any(word in text for word in ["destruction", "destro"]):
+    if any(word in text for word in ["destruction", "destro", "zerstörung", "zerstoerung"]):
         return "destruction"
-    if any(word in text for word in ["survival"]):
+    if any(word in text for word in ["survival", "überleben", "ueberleben"]):
         return "survival"
-    if any(word in text for word in ["marksman", "marksmanship"]):
+    if any(word in text for word in ["marksman", "marksmanship", "treffsicherheit"]):
         return "marksman"
-    if any(word in text for word in ["beastmaster", "beast mastery", "bm"]):
+    if any(word in text for word in ["beastmaster", "beast mastery", "bm", "tierherrschaft"]):
         return "beastmaster"
     if any(word in text for word in ["feral"]):
         return "feral"
     if any(word in text for word in ["balance", "eule", "moonkin"]):
         return "balance"
-    if any(word in text for word in ["elemental", "ele"]):
+    if any(word in text for word in ["elemental", "ele", "elementar"]):
         return "elemental"
-    if any(word in text for word in ["enhancement", "enh"]):
+    if any(word in text for word in ["enhancement", "enh", "verstärkung", "verstaerkung"]):
         return "enhancement"
     return ""
 
@@ -4655,15 +4690,15 @@ def add_raid_signup_roster_fields(embed, helper):
 
 def raid_signup_class_options():
     return [
-        discord.SelectOption(label="Warrior", value="Warrior", emoji=signup_class_select_emoji("Warrior")),
-        discord.SelectOption(label="Druid", value="Druid", emoji=signup_class_select_emoji("Druid")),
+        discord.SelectOption(label="Krieger", value="Warrior", emoji=signup_class_select_emoji("Warrior")),
+        discord.SelectOption(label="Druide", value="Druid", emoji=signup_class_select_emoji("Druid")),
         discord.SelectOption(label="Paladin", value="Paladin", emoji=signup_class_select_emoji("Paladin")),
-        discord.SelectOption(label="Rogue", value="Rogue", emoji=signup_class_select_emoji("Rogue")),
-        discord.SelectOption(label="Hunter", value="Hunter", emoji=signup_class_select_emoji("Hunter")),
-        discord.SelectOption(label="Priest", value="Priest", emoji=signup_class_select_emoji("Priest")),
-        discord.SelectOption(label="Mage", value="Mage", emoji=signup_class_select_emoji("Mage")),
-        discord.SelectOption(label="Warlock", value="Warlock", emoji=signup_class_select_emoji("Warlock")),
-        discord.SelectOption(label="Shaman", value="Shaman", emoji=signup_class_select_emoji("Shaman")),
+        discord.SelectOption(label="Schurke", value="Rogue", emoji=signup_class_select_emoji("Rogue")),
+        discord.SelectOption(label="Jäger", value="Hunter", emoji=signup_class_select_emoji("Hunter")),
+        discord.SelectOption(label="Priester", value="Priest", emoji=signup_class_select_emoji("Priest")),
+        discord.SelectOption(label="Magier", value="Mage", emoji=signup_class_select_emoji("Mage")),
+        discord.SelectOption(label="Hexenmeister", value="Warlock", emoji=signup_class_select_emoji("Warlock")),
+        discord.SelectOption(label="Schamane", value="Shaman", emoji=signup_class_select_emoji("Shaman")),
     ]
 
 
@@ -5160,8 +5195,9 @@ class RaidSignupSpecSelect(discord.ui.Select):
         self.class_name = class_name
         self.origin_channel_id = origin_channel_id
         self.origin_message_id = origin_message_id
+        class_label = RAID_SIGNUP_CLASS_LABELS.get(class_name, class_name)
         super().__init__(
-            placeholder=f"Skillung für {class_name} wählen",
+            placeholder=f"Skillung für {class_label} wählen",
             min_values=1,
             max_values=1,
             options=raid_signup_spec_options(class_name)
@@ -5200,8 +5236,9 @@ class RaidSignupClassSelect(discord.ui.Select):
 
     async def callback(self, interaction):
         class_name = self.values[0]
+        class_label = RAID_SIGNUP_CLASS_LABELS.get(class_name, class_name)
         await interaction.response.send_message(
-            f"Skillung für **{class_name}** wählen:",
+            f"Skillung für **{class_label}** wählen:",
             view=RaidSignupSpecView(
                 self.raid,
                 class_name,
