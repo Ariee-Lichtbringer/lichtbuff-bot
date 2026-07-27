@@ -2171,7 +2171,7 @@ def build_overview():
     return text
 
 
-def current_worldbuff_announcement_block(max_lines=8):
+def current_worldbuff_announcement_block(max_lines=8, include_aq40_note=False):
     sheet_buffs = import_buffs_aus_sheet()
     data = list(sheet_buffs)
     local_ticker_buffs = [
@@ -2209,12 +2209,14 @@ def current_worldbuff_announcement_block(max_lines=8):
     if not rows:
         return ""
 
-    lines = [
-        "**VEM zuletzt** (falls mal ein anderer Käfer gewünscht wird, gerne für nächste Woche aufzeigen)",
-        "",
-        "Wir spielen wie immer mit WB's! Jeder kennt die Regeln! Sollten dennoch einige Spieler meinen ihre WB's nicht zu nutzen, ohne dies vorher abzusprechen, behalten wir uns weiter Maßnahmen vor!",
-        ""
-    ]
+    lines = []
+    if include_aq40_note:
+        lines.extend([
+            "**VEM zuletzt** (falls mal ein anderer Käfer gewünscht wird, gerne für nächste Woche aufzeigen)",
+            "",
+            "Wir spielen wie immer mit WB's! Jeder kennt die Regeln! Sollten dennoch einige Spieler meinen ihre WB's nicht zu nutzen, ohne dies vorher abzusprechen, behalten wir uns weiter Maßnahmen vor!",
+            ""
+        ])
     current_date = ""
     added = 0
 
@@ -3954,9 +3956,10 @@ def build_raid_announcement_text(raid):
         "Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein."
     ])
 
-    worldbuff_block = current_worldbuff_announcement_block()
+    raid_key = normalize_raid_name(raid.get("raid") or raid.get("raidName") or "").lower()
+    worldbuff_block = current_worldbuff_announcement_block(include_aq40_note=(raid_key == "aq40"))
     if worldbuff_block:
-        lines.extend(["", "", worldbuff_block])
+        lines.extend(["", "📢 **Aktuelle Worldbuffs**", worldbuff_block])
 
     text = "\n".join(lines)
 
@@ -4007,7 +4010,8 @@ def build_raid_announcement_embed(raid):
         embed.add_field(name="Slots", value=" · ".join(slot_parts), inline=False)
 
     embed.add_field(name="Prio-PIN", value=f"`{player_pin}`", inline=True)
-    worldbuff_block = current_worldbuff_announcement_block()
+    raid_key = normalize_raid_name(raid.get("raid") or raid.get("raidName") or "").lower()
+    worldbuff_block = current_worldbuff_announcement_block(include_aq40_note=(raid_key == "aq40"))
     if worldbuff_block:
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
     attachment_name = raid_banner_attachment_name(raid)
