@@ -7282,6 +7282,9 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             print(f"Worldbuff-Loeschung aus Queue verarbeitet, {removed} Cache-Eintraege entfernt.")
 
         if update_type == "raid_announcement":
+            if isinstance(payload.get("followupPoPost"), dict) and payload.get("followupPoPost"):
+                print("Kombinierter Raid-/PO-Anmelder wird vom PO-Bot verarbeitet.")
+                return
             posted = await post_raid_announcement_by_id(
                 payload.get("raidId") or payload.get("id"),
                 payload.get("channelId") or payload.get("discordChannelId")

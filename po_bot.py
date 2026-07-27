@@ -2204,9 +2204,10 @@ async def refresh_po_view_only(client, payload):
     message = await channel.fetch_message(int(payload["messageId"]))
     items = await items_for_payload(payload)
     entries = await load_entries(payload)
-    view = PoView(payload, items, entries)
+    raid = combined_raid_snapshot(payload)
+    view = CombinedRaidPoView(raid, payload, items, entries) if raid else PoView(payload, items, entries)
     await message.edit(view=view)
-    client.add_view(PoView(payload, items, entries), message_id=message.id)
+    client.add_view(view, message_id=message.id)
     return items, entries
 
 
@@ -2220,7 +2221,12 @@ def register_po_view(client, payload, items=None, entries=None):
     if not message_id:
         return False
     try:
-        client.add_view(PoView(payload, items or [], entries or []), message_id=int(message_id))
+        raid = combined_raid_snapshot(payload)
+        view = (
+            CombinedRaidPoView(raid, payload, items or [], entries or [])
+            if raid else PoView(payload, items or [], entries or [])
+        )
+        client.add_view(view, message_id=int(message_id))
         return True
     except Exception as error:
         print(f"PO View konnte nicht registriert werden ({payload.get('postKey')}): {error}")
@@ -3207,6 +3213,61 @@ class PoView(discord.ui.View):
         self.add_item(PoReviewSelect(payload, entries or []))
 
 
+class CombinedRaidPoView(discord.ui.View):
+    def __init__(self, raid, payload, items, entries=None):
+        super().__init__(timeout=None)
+        raid_select = RaidSignupClassSelect(raid)
+        raid_select.row = 0
+        self.add_item(raid_select)
+
+        po_class = PoClassSelect(payload)
+        po_class.row = 2
+        self.add_item(po_class)
+        for component in [
+            PoSearchButton(payload),
+            PoDeleteButton(payload),
+            PoRejectButton(payload),
+        ]:
+            component.row = 3
+            self.add_item(component)
+        review = PoReviewSelect(payload, entries or [])
+        review.row = 4
+        self.add_item(review)
+
+    @discord.ui.button(label="Bank", emoji="🪑", style=discord.ButtonStyle.secondary, custom_id="combined_raid_signup_bench", row=1)
+    async def bench_signup(self, interaction, button):
+        await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "bench", "Auf die Bank setzen"))
+
+    @discord.ui.button(label="Abwesend", emoji="🚫", style=discord.ButtonStyle.secondary, custom_id="combined_raid_signup_absent", row=1)
+    async def absent_signup(self, interaction, button):
+        await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "absent", "Als abwesend markieren"))
+
+    @property
+    def raid(self):
+        raid_select = next((item for item in self.children if isinstance(item, RaidSignupClassSelect)), None)
+        return getattr(raid_select, "raid", {})
+
+
+def combined_raid_snapshot(payload):
+    raid = payload.get("combinedRaidSnapshot")
+    return raid if isinstance(raid, dict) and raid else None
+
+
+def po_message_parts(payload, entries, p0plus_labels, items):
+    po_embed = make_embed(payload, entries, p0plus_labels)
+    raid = combined_raid_snapshot(payload)
+    if not raid:
+        return [po_embed], PoView(payload, items, entries)
+    raid_embed = build_raid_announcement_embed(raid)
+    helper = {
+        "raid": raid,
+        "signups": payload.get("combinedRaidSignups") or [],
+        "externalSignups": payload.get("combinedRaidExternalSignups") or [],
+    }
+    add_raid_signup_roster_fields(raid_embed, helper)
+    return [raid_embed, po_embed], CombinedRaidPoView(raid, payload, items, entries)
+
+
 async def refresh_po_message(client, payload):
     payload = payload_with_saved_lichtloot_id(payload)
     target_channel_id = await resolve_po_target_channel_id(client, payload)
@@ -3220,8 +3281,8 @@ async def refresh_po_message(client, payload):
     items = await items_for_payload(payload)
     entries = await load_entries(payload)
     p0plus_labels = await load_p0plus_labels(payload.get("raid") or "")
-    view = PoView(payload, items, entries)
-    await edit_po_message(message, make_embed(payload, entries, p0plus_labels), view)
+    embeds, view = po_message_parts(payload, entries, p0plus_labels, items)
+    await message.edit(embeds=embeds, view=view)
     register_po_view(client, payload, items, entries)
 
 
@@ -3291,18 +3352,17 @@ async def post_or_update_from_queue(client, payload):
     items = await items_for_payload(normalized)
     entries = await load_entries(normalized)
     p0plus_labels = await load_p0plus_labels(normalized.get("raid") or "")
-    view = PoView(normalized, items, entries)
-    embed = make_embed(normalized, entries, p0plus_labels)
+    embeds, view = po_message_parts(normalized, entries, p0plus_labels, items)
     message = None
     if normalized.get("messageId"):
         try:
             message = await channel.fetch_message(int(normalized["messageId"]))
-            await edit_po_message(message, embed, view)
+            await message.edit(embeds=embeds, view=view)
         except Exception as error:
             print(f"PO-Anmelder wird neu gepostet, alte Nachricht nicht nutzbar ({post_key}): {error}")
             message = None
     if message is None:
-        message = await send_po_message(channel, embed, view)
+        message = await channel.send(embeds=embeds, view=view, silent=True)
         normalized["messageId"] = str(message.id)
         if force_new_message and previous_message_id and previous_message_id != normalized["messageId"]:
             try:
@@ -3350,7 +3410,15 @@ async def po_queue_loop():
             })
             if result.get("success"):
                 items = result.get("items") or []
-                po_items = [item for item in items if clean(item.get("type")) in {"po_post", "p0_post_refresh"}]
+                po_items = [
+                    item for item in items
+                    if clean(item.get("type")) in {"po_post", "p0_post_refresh"}
+                    or (
+                        clean(item.get("type")) == "raid_announcement"
+                        and isinstance((item.get("payload") or {}).get("followupPoPost"), dict)
+                        and (item.get("payload") or {}).get("followupPoPost")
+                    )
+                ]
                 stale_delete_items = [item for item in items if clean(item.get("type")) == "po_post_delete"]
                 for item in stale_delete_items:
                     queue_guild_slug = normalize_guild_slug(item.get("guild") or item.get("guildSlug"))
@@ -3376,17 +3444,47 @@ async def po_queue_loop():
                     try:
                         item_type = clean(item.get("type"))
                         if item_type == "raid_announcement":
-                            posted = await post_raid_announcement_by_id(
-                                payload.get("raidId") or payload.get("id"),
-                                payload.get("channelId") or payload.get("discordChannelId"),
-                                payload
+                            helper = await get_raid_helper_for_refresh(payload)
+                            fallback_helper = raid_helper_snapshot_from_payload(payload)
+                            if not helper or not helper.get("success"):
+                                helper = fallback_helper
+                            raid = helper.get("raid") or fallback_helper.get("raid") or {}
+                            followup = dict(payload.get("followupPoPost") or {})
+                            channel_id = clean(
+                                payload.get("channelId")
+                                or payload.get("discordChannelId")
+                                or raid.get("discordChannelId")
                             )
-                            if posted and posted != "stale":
-                                await resolve_queue_item(item.get("rowNumber"))
-                                print(f"Raidanmelder vom PO-Bot gepostet: {current_guild_slug()}:{payload.get('raidId') or payload.get('id')}")
-                            elif posted == "stale":
-                                await resolve_queue_item(item.get("rowNumber"))
-                                print(f"Veralteter Raidanmelder-Auftrag erledigt markiert: {payload}")
+                            combined_payload = {
+                                **followup,
+                                "guildSlug": queue_guild_slug,
+                                "sourceChannelId": clean(followup.get("sourceChannelId") or channel_id),
+                                "targetChannelId": channel_id,
+                                "channelId": channel_id,
+                                "restoreArchived": "true",
+                                "forceNewMessage": "true",
+                                "lichtlootRaidId": clean(
+                                    followup.get("lichtlootRaidId")
+                                    or raid.get("raidId")
+                                    or payload.get("raidId")
+                                ),
+                                "combinedRaidSnapshot": raid,
+                                "combinedRaidSignups": helper.get("signups") or [],
+                                "combinedRaidExternalSignups": helper.get("externalSignups") or [],
+                            }
+                            normalized = await post_or_update_from_queue(client, combined_payload)
+                            await asyncio.to_thread(api_post, {
+                                "action": "lichtbotSetRaidDiscordMessage",
+                                "queueToken": QUEUE_TOKEN,
+                                "raidId": clean(raid.get("raidId") or payload.get("raidId")),
+                                "discordChannelId": channel_id,
+                                "discordMessageId": clean(normalized.get("messageId")),
+                            })
+                            await resolve_queue_item(item.get("rowNumber"))
+                            print(
+                                f"Kombinierter Raid-/PO-Anmelder vom PO-Bot gepostet: "
+                                f"{current_guild_slug()}:{payload.get('raidId') or payload.get('id')}"
+                            )
                             continue
                         if item_type == "raid_announcement_refresh":
                             refreshed = await refresh_raid_signup_message_by_id(
