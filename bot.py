@@ -70,6 +70,9 @@ PANEM_TICKER_CHANNEL_ID = 1482656882857349277
 POST_CHANNEL_ID = 1281152286772695071
 HORDENBUFF_CHANNEL_ID = 1510764309062615220
 PANEM_HORDENBUFF_CHANNEL_ID = 1518153802983669810
+NACHTLOOT_HORDENBUFF_CHANNEL_ID = int(
+    os.getenv("NACHTLOOT_HORDENBUFF_CHANNEL_ID", "1370129713674064122") or 1370129713674064122
+)
 LOG_ANALYSIS_CHANNEL_ID = 1279032487628242995
 WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_ID = int(os.getenv("WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_ID", "1118795108968574987") or 1118795108968574987)
 WORLDBUFF_REPLACEMENT_WORLDBUFF_CHANNEL_ID = int(os.getenv("WORLDBUFF_REPLACEMENT_WORLDBUFF_CHANNEL_ID", str(POST_CHANNEL_ID)) or POST_CHANNEL_ID)
@@ -95,7 +98,8 @@ TICKER_CHANNEL_IDS = {
 
 HORDENBUFF_CHANNEL_IDS = {
     HORDENBUFF_CHANNEL_ID,
-    PANEM_HORDENBUFF_CHANNEL_ID
+    PANEM_HORDENBUFF_CHANNEL_ID,
+    NACHTLOOT_HORDENBUFF_CHANNEL_ID
 }
 
 LOG_ANALYSIS_CHANNEL_IDS = {
@@ -293,6 +297,7 @@ RAID_SIGNUP_CLASS_LABELS = {
 }
 LICHTLOOT_GUILD_SLUG = os.getenv("LICHTLOOT_GUILD_SLUG", "lichtloot")
 PANEM_GUILD_SLUG = os.getenv("PANEM_GUILD_SLUG", "panemloot")
+NACHTLOOT_GUILD_SLUG = os.getenv("NACHTLOOT_GUILD_SLUG", "nachtloot")
 WORLDBUFF_BACKUP_CHANNEL_ID = "1529393614247952434"
 P0PLUS_BACKUP_CHANNEL_ID = "1529393614247952434"
 WORLDBUFF_GUILD_SLUGS = [
@@ -304,7 +309,8 @@ DISCORD_GUILD_SLUGS = {}
 
 CHANNEL_GUILD_SLUGS = {
     PANEM_TICKER_CHANNEL_ID: PANEM_GUILD_SLUG,
-    PANEM_HORDENBUFF_CHANNEL_ID: PANEM_GUILD_SLUG
+    PANEM_HORDENBUFF_CHANNEL_ID: PANEM_GUILD_SLUG,
+    NACHTLOOT_HORDENBUFF_CHANNEL_ID: NACHTLOOT_GUILD_SLUG
 }
 
 # Alter CSV-Export bleibt nur noch als expliziter Notfall-Fallback.
@@ -538,9 +544,44 @@ def worldbuff_post_file():
 
 
 def hordenbuff_channel_ids_for_current_guild():
-    if current_guild_slug() == PANEM_GUILD_SLUG:
+    guild_slug = current_guild_slug()
+    if guild_slug == PANEM_GUILD_SLUG:
         return {PANEM_HORDENBUFF_CHANNEL_ID}
-    return {HORDENBUFF_CHANNEL_ID}
+    if guild_slug == NACHTLOOT_GUILD_SLUG:
+        return {NACHTLOOT_HORDENBUFF_CHANNEL_ID}
+    if guild_slug == LICHTLOOT_GUILD_SLUG:
+        return {HORDENBUFF_CHANNEL_ID}
+
+    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
+    discord_guild_id = str(registry_entry.get("discordGuildId") or "").strip()
+    discord_guild = client.get_guild(int(discord_guild_id)) if discord_guild_id.isdigit() else None
+    if discord_guild:
+        ranked = sorted(
+            getattr(discord_guild, "text_channels", []),
+            key=lambda channel: (
+                hordenbuff_channel_rank(channel),
+                int(getattr(channel, "position", 999999) or 999999)
+            )
+        )
+        if ranked and hordenbuff_channel_rank(ranked[0]) < 99:
+            return {int(ranked[0].id)}
+
+    return set()
+
+
+def hordenbuff_channel_rank(channel):
+    name = str(getattr(channel, "name", "") or "").strip().lower()
+    category = str(getattr(getattr(channel, "category", None), "name", "") or "").strip().lower()
+    combined = f"{category} {name}"
+    if "rend-buff" in name or "rend_buff" in name or "rendbuff" in name:
+        return 0
+    if "rend" in name:
+        return 1
+    if "hordenbuff" in name or "horde-buff" in name:
+        return 2
+    if "rend" in combined or "hordenbuff" in combined:
+        return 3
+    return 99
 
 
 def ticker_channel_ids_for_current_guild():
@@ -2582,7 +2623,7 @@ def sync_hordenbuff_schedule_to_nachtloot():
         return 0
 
     source_rows = get_hordenbuff_schedule_rows()
-    token = CURRENT_GUILD_SLUG.set(PANEM_GUILD_SLUG)
+    token = CURRENT_GUILD_SLUG.set(NACHTLOOT_GUILD_SLUG)
     try:
         target_rows = iter_hordenbuff_railway_rows()
         existing = {
@@ -3166,7 +3207,7 @@ async def update_hordenbuff_post(force=False):
 async def update_hordenbuff_posts_for_all_guilds(force=False):
     await asyncio.to_thread(sync_hordenbuff_schedule_to_nachtloot)
     updated_count = 0
-    for guild_slug in [LICHTLOOT_GUILD_SLUG, PANEM_GUILD_SLUG]:
+    for guild_slug in dict.fromkeys([LICHTLOOT_GUILD_SLUG, NACHTLOOT_GUILD_SLUG, PANEM_GUILD_SLUG]):
         token = CURRENT_GUILD_SLUG.set(guild_slug)
         try:
             updated_count += await update_hordenbuff_post(force=force)
