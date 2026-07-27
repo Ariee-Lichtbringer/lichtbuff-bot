@@ -961,9 +961,12 @@ class RaidSignupPinModal(discord.ui.Modal, title="Mein LichtLoot Login"):
 
     async def on_submit(self, interaction):
         player_pin = clean(self.player_pin.value)
+        guild_slug = payload_guild_slug(payload_for_interaction(self.raid, interaction))
         try:
             result = await asyncio.to_thread(api_get, {
                 "action": "getCharactersByPin",
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
                 "pin": player_pin,
                 "playerPin": player_pin,
                 "t": int(time.time())
@@ -1020,9 +1023,12 @@ class RaidSignupCharacterSelect(discord.ui.Select):
         char_name = clean(character.get("name"))
         server = clean(character.get("server"))
         char_class = canonical_signup_class(character.get("className") or character.get("Klasse") or character.get("class_name") or self.class_name)
+        guild_slug = payload_guild_slug(payload_for_interaction(self.raid, interaction))
         result = await asyncio.to_thread(api_post, {
             "action": "saveRaidSignup",
             "queueToken": QUEUE_TOKEN,
+            "guild": guild_slug,
+            "guildSlug": guild_slug,
             "raidId": clean(self.raid.get("raidId") or self.raid.get("id")),
             "playerPin": self.player_pin,
             "pin": self.player_pin,

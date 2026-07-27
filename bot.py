@@ -5190,9 +5190,17 @@ class RaidSignupPinModal(discord.ui.Modal, title="Mein LichtLoot Login"):
 
     async def on_submit(self, interaction):
         player_pin = str(self.player_pin.value or "").strip()
+        guild_slug = guild_slug_for_discord_server(
+            getattr(interaction, "guild", None),
+            self.raid.get("guildSlug")
+            or self.raid.get("guild")
+            or guild_slug_for_channel(getattr(interaction, "channel_id", 0) or 0)
+        )
         try:
             result = await asyncio.to_thread(lichtloot_get, {
                 "action": "getCharactersByPin",
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
                 "pin": player_pin,
                 "playerPin": player_pin,
                 "t": int(time.time())
@@ -5250,9 +5258,17 @@ class RaidSignupCharacterSelect(discord.ui.Select):
         server = str(character.get("server") or "").strip()
         char_class = canonical_signup_class(character.get("className") or character.get("Klasse") or character.get("class_name") or self.class_name)
         spec = str(self.spec_label or "").strip()
+        guild_slug = guild_slug_for_discord_server(
+            getattr(interaction, "guild", None),
+            self.raid.get("guildSlug")
+            or self.raid.get("guild")
+            or guild_slug_for_channel(getattr(interaction, "channel_id", 0) or 0)
+        )
         payload = {
             "action": "saveRaidSignup",
             "queueToken": LICHTBOT_QUEUE_TOKEN,
+            "guild": guild_slug,
+            "guildSlug": guild_slug,
             "raidId": str(self.raid.get("raidId") or self.raid.get("id") or ""),
             "playerPin": self.player_pin,
             "pin": self.player_pin,
