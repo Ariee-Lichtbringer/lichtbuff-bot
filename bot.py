@@ -2171,7 +2171,7 @@ def build_overview():
     return text
 
 
-def current_worldbuff_announcement_block(max_lines=8, include_aq40_note=False):
+def current_worldbuff_announcement_block(max_lines=8):
     sheet_buffs = import_buffs_aus_sheet()
     data = list(sheet_buffs)
     local_ticker_buffs = [
@@ -2210,13 +2210,6 @@ def current_worldbuff_announcement_block(max_lines=8, include_aq40_note=False):
         return ""
 
     lines = []
-    if include_aq40_note:
-        lines.extend([
-            "**VEM zuletzt** (falls mal ein anderer Käfer gewünscht wird, gerne für nächste Woche aufzeigen)",
-            "",
-            "Wir spielen wie immer mit WB's! Jeder kennt die Regeln! Sollten dennoch einige Spieler meinen ihre WB's nicht zu nutzen, ohne dies vorher abzusprechen, behalten wir uns weiter Maßnahmen vor!",
-            ""
-        ])
     current_date = ""
     added = 0
 
@@ -3956,8 +3949,7 @@ def build_raid_announcement_text(raid):
         "Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein."
     ])
 
-    raid_key = normalize_raid_name(raid.get("raid") or raid.get("raidName") or "").lower()
-    worldbuff_block = current_worldbuff_announcement_block(include_aq40_note=(raid_key == "aq40"))
+    worldbuff_block = current_worldbuff_announcement_block()
     if worldbuff_block:
         lines.extend(["", "📢 **Aktuelle Worldbuffs**", worldbuff_block])
 
@@ -4010,8 +4002,7 @@ def build_raid_announcement_embed(raid):
         embed.add_field(name="Slots", value=" · ".join(slot_parts), inline=False)
 
     embed.add_field(name="Prio-PIN", value=f"`{player_pin}`", inline=True)
-    raid_key = normalize_raid_name(raid.get("raid") or raid.get("raidName") or "").lower()
-    worldbuff_block = current_worldbuff_announcement_block(include_aq40_note=(raid_key == "aq40"))
+    worldbuff_block = current_worldbuff_announcement_block()
     if worldbuff_block:
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
     attachment_name = raid_banner_attachment_name(raid)
@@ -10474,7 +10465,14 @@ async def on_message(message):
     if lower in ["!worldbuff", "!worldbuffs"]:
         status_message = await message.channel.send("🔄 **Worldbuff-Post wird aktualisiert...**")
         try:
-            count = await asyncio.wait_for(update_worldbuff_post(sync_ticker=True, force_repost=True), timeout=60)
+            # Die Worldbuff-Uebersicht kommt aus Railway/Apps Script und kann
+            # direkt neu gepostet werden. Ein kompletter Discord-Ticker-Sync
+            # durchsucht mehrere tausend alte Nachrichten und darf den
+            # manuellen Befehl deshalb nicht blockieren.
+            count = await asyncio.wait_for(
+                update_worldbuff_post(sync_ticker=False, force_repost=True),
+                timeout=30
+            )
             if count:
                 await status_message.edit(content=f"✅ **Worldbuff-Post aktualisiert.** Posts: **{count}**")
             else:
@@ -10482,6 +10480,11 @@ async def on_message(message):
             client.loop.create_task(delete_message_later(status_message, 15))
         except asyncio.TimeoutError:
             await status_message.edit(content="⏱️ **Worldbuff-Update dauert zu lange.** Bitte Railway-Logs prüfen.")
+        except Exception as error:
+            print(f"Manuelles Worldbuff-Update fehlgeschlagen: {error}")
+            await status_message.edit(
+                content="⚠️ **Worldbuff-Post fehlgeschlagen.** Der genaue Fehler steht in den Railway-Logs."
+            )
         await delete_command_message(message)
         return
 
