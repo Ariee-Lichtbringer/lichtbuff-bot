@@ -4235,6 +4235,8 @@ def raid_key_for_image(raid):
 
 
 def raid_banner_attachment_name(raid):
+    if raid_guild_slug(raid) != LICHTLOOT_GUILD_SLUG:
+        return ""
     raid_key = raid_key_for_image(raid)
     image_map = {
         "zg": "zg.jpg",
@@ -4262,7 +4264,44 @@ def raid_banner_file(raid):
     return discord.File(str(path), filename=filename)
 
 
+def raid_guild_slug(raid):
+    explicit_raw = str((raid or {}).get("guildSlug") or "").strip()
+    if explicit_raw:
+        explicit = normalize_guild_slug(explicit_raw)
+        if explicit in GUILD_REGISTRY:
+            return explicit
+    guild_name = str((raid or {}).get("guild") or (raid or {}).get("gilde") or "").strip().lower()
+    if guild_name:
+        for slug_value, data in GUILD_REGISTRY.items():
+            candidates = [
+                slug_value,
+                data.get("name"),
+                data.get("guildName"),
+                data.get("guild_name"),
+                data.get("lootName"),
+                data.get("loot_name"),
+            ]
+            if any(candidate and str(candidate).strip().lower() == guild_name for candidate in candidates):
+                return normalize_guild_slug(slug_value)
+    return current_guild_slug()
+
+
+def guild_raid_image_url(raid, raid_key):
+    guild_slug = raid_guild_slug(raid)
+    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
+    layout = registry_entry.get("layout") or {}
+    images = layout.get("raidImages") if isinstance(layout, dict) else {}
+    configured = str((images or {}).get(raid_key) or "").strip()
+    if not configured:
+        return ""
+    return urllib.parse.urljoin(LICHTLOOT_URL.rstrip("/") + "/", configured)
+
+
 def raid_image_url(raid):
+    raid_key = normalize_raid_name(raid.get("raid") or raid.get("raidName") or "").lower()
+    guild_image = guild_raid_image_url(raid, raid_key)
+    if raid_guild_slug(raid) != LICHTLOOT_GUILD_SLUG and guild_image:
+        return guild_image
     explicit = str(raid.get("raidImageUrl") or raid.get("imageUrl") or "").strip()
     if explicit.startswith("http://") or explicit.startswith("https://"):
         replaced = re.sub(
@@ -4278,7 +4317,6 @@ def raid_image_url(raid):
             flags=re.IGNORECASE
         )
         return replaced
-    raid_key = normalize_raid_name(raid.get("raid") or raid.get("raidName") or "").lower()
     image_map = {
         "zg": "zg.jpg",
         "aq20": "aq20.jpg",

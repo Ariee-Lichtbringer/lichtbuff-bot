@@ -566,6 +566,27 @@ def format_raid_announcement_time(value):
 
 def raid_announcement_image_url(raid):
     raid_key = normalize_raid((raid or {}).get("raid") or (raid or {}).get("raidName")).lower()
+    guild_slug = normalize_guild_slug((raid or {}).get("guildSlug") or "")
+    guild_name = clean((raid or {}).get("guild") or (raid or {}).get("gilde")).lower()
+    if not (raid or {}).get("guildSlug") and guild_name:
+        for slug_value, data in GUILD_REGISTRY.items():
+            candidates = [
+                slug_value,
+                data.get("name"),
+                data.get("guildName"),
+                data.get("guild_name"),
+                data.get("lootName"),
+                data.get("loot_name"),
+            ]
+            if any(candidate and clean(candidate).lower() == guild_name for candidate in candidates):
+                guild_slug = normalize_guild_slug(slug_value)
+                break
+    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
+    layout = registry_entry.get("layout") or {}
+    images = layout.get("raidImages") if isinstance(layout, dict) else {}
+    guild_image = clean((images or {}).get(raid_key))
+    if guild_slug != "lichtloot" and guild_image:
+        return urllib.parse.urljoin(LICHTLOOT_URL.rstrip("/") + "/", guild_image)
     explicit = clean((raid or {}).get("raidImageUrl") or (raid or {}).get("imageUrl"))
     if explicit.startswith(("http://", "https://")):
         return explicit
