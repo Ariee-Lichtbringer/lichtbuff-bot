@@ -271,6 +271,7 @@ RAID_NAMES = {
 
 user_classes = {}
 class_emoji_cache = {}
+spec_emoji_cache = {}
 item_emoji_cache = {}
 RAID_SIGNUP_DM_CACHE = {}
 p0plus_cache = {}
@@ -390,13 +391,14 @@ def primary_item_emoji_name(item_name):
 
 def refresh_emoji_cache():
     found_classes = {}
+    found_specs = {}
     found_items = {}
     all_emojis = []
     try:
         for guild in client.guilds:
             all_emojis.extend(getattr(guild, "emojis", []) or [])
     except Exception:
-        return found_classes, found_items
+        return found_classes, found_specs, found_items
 
     by_name = {normalize_emoji_name(emoji.name): emoji for emoji in all_emojis}
     for key, names in CLASS_EMOJI_NAME_ALIASES.items():
@@ -405,13 +407,21 @@ def refresh_emoji_cache():
             if emoji:
                 found_classes[key] = str(emoji)
                 break
+    for key, names in SPEC_EMOJI_NAME_ALIASES.items():
+        for name in names:
+            emoji = by_name.get(normalize_emoji_name(name))
+            if emoji:
+                found_specs[key] = str(emoji)
+                break
     for emoji_name, emoji in by_name.items():
         found_items[emoji_name] = str(emoji)
     class_emoji_cache.clear()
     class_emoji_cache.update(found_classes)
+    spec_emoji_cache.clear()
+    spec_emoji_cache.update(found_specs)
     item_emoji_cache.clear()
     item_emoji_cache.update(found_items)
-    return found_classes, found_items
+    return found_classes, found_specs, found_items
 
 
 def class_icon(class_name):
@@ -476,6 +486,7 @@ RAID_SIGNUP_SPECS = {
 SPEC_EMOJI_FALLBACKS = {
     "tank": "🛡️",
     "heal": "➕",
+    "holy": "➕",
     "paladin_holy": "✨",
     "priest_holy": "➕",
     "discipline": "💠",
@@ -499,6 +510,35 @@ SPEC_EMOJI_FALLBACKS = {
     "beastmaster": "🏹",
     "elemental": "⚡",
     "enhancement": "⚡",
+}
+
+SPEC_EMOJI_NAME_ALIASES = {
+    "tank": ["tank", "prot", "schutz"],
+    "heal": ["heilung", "heal", "heiler", "resto", "restoration"],
+    "holy": ["holy", "heilig"],
+    "paladin_holy": ["holy_pala", "paladin_holy", "pala_holy", "palaholy", "holy_paladin", "heilig_paladin"],
+    "priest_holy": ["holy_priester", "priest_holy", "priester_holy", "holy_priest", "heilig_priester"],
+    "discipline": ["disziplin", "discipline", "disc"],
+    "shadow": ["schatten", "shadow"],
+    "arms": ["arms", "waffen"],
+    "fury": ["fury", "furor"],
+    "retri": ["retri", "ret", "vergeltung"],
+    "fire": ["feuer", "fire"],
+    "frost": ["frost", "eis"],
+    "arcane": ["arkan", "arcane"],
+    "assassination": ["assassination", "assa"],
+    "subtlety": ["subtlety", "sub"],
+    "combat": ["combat", "kampf"],
+    "affliction": ["affliction", "affli", "gebrechen"],
+    "demonology": ["demonology", "demo", "daemonologie", "dämonologie"],
+    "destruction": ["destruction", "destro", "zerstoerung", "zerstörung"],
+    "feral": ["feraldd", "feral"],
+    "balance": ["eule", "balance", "moonkin"],
+    "survival": ["survival"],
+    "marksman": ["marksman", "marksmanship"],
+    "beastmaster": ["beastmaster", "beast_mastery", "beast mastery", "bm"],
+    "elemental": ["elemental", "ele"],
+    "enhancement": ["enhancement", "enh"],
 }
 
 
@@ -608,28 +648,80 @@ def infer_signup_role(spec_text):
     return "dd"
 
 
+def signup_spec_icon_key(spec_text, role="", class_name=""):
+    text = clean(spec_text or role).lower()
+    if any(word in text for word in ["tank", "prot", "schutz", "def"]):
+        return "tank"
+    if any(word in text for word in ["disziplin", "discipline", "disc"]):
+        return "discipline"
+    if any(word in text for word in ["holy", "heilig"]):
+        canonical_class = canonical_signup_class(class_name).lower()
+        if canonical_class == "paladin":
+            return "paladin_holy"
+        if canonical_class == "priest":
+            return "priest_holy"
+        return "holy"
+    if any(word in text for word in ["schatten", "shadow"]):
+        return "shadow"
+    if any(word in text for word in ["heal", "heiler", "resto", "restoration"]):
+        return "heal"
+    checks = [
+        ("arms", ["arms", "waffen"]),
+        ("fury", ["fury", "furor"]),
+        ("retri", ["retri", "vergeltung"]),
+        ("fire", ["fire", "feuer"]),
+        ("frost", ["frost", "eis"]),
+        ("arcane", ["arcane", "arkan"]),
+        ("assassination", ["assassination", "assa"]),
+        ("subtlety", ["subtlety", "sub"]),
+        ("combat", ["combat", "kampf"]),
+        ("affliction", ["affliction", "affli", "gebrechen"]),
+        ("demonology", ["demonology", "demo", "daemonologie", "dämonologie"]),
+        ("destruction", ["destruction", "destro", "zerstoerung", "zerstörung"]),
+        ("survival", ["survival"]),
+        ("marksman", ["marksman", "marksmanship"]),
+        ("beastmaster", ["beastmaster", "beast mastery", "bm"]),
+        ("feral", ["feral"]),
+        ("balance", ["balance", "eule", "moonkin"]),
+        ("elemental", ["elemental", "ele"]),
+        ("enhancement", ["enhancement", "enh"]),
+    ]
+    for key, words in checks:
+        if any(word in text for word in words):
+            return key
+    return ""
+
+
 def signup_spec_icon(spec_text, role="", class_name=""):
     text = clean(spec_text or role).lower()
-    aliases = {
-        "waffen": "arms",
-        "furor": "fury",
-        "heilig": "heal",
-        "vergeltung": "retri",
-        "arkan": "arcane",
-        "feuer": "fire",
-        "gebrechen": "affliction",
-        "dämonologie": "demonology",
-        "daemonologie": "demonology",
-        "zerstörung": "destruction",
-        "zerstoerung": "destruction",
-    }
-    for label, key in aliases.items():
-        if label in text:
-            return SPEC_EMOJI_FALLBACKS.get(key, "✦")
-    for key, icon in SPEC_EMOJI_FALLBACKS.items():
-        if key in text:
-            return icon
-    return class_icon(class_name) or "✦"
+    icon_key = signup_spec_icon_key(spec_text, role, class_name)
+    if icon_key and spec_emoji_cache.get(icon_key):
+        return spec_emoji_cache[icon_key]
+    if icon_key and SPEC_EMOJI_FALLBACKS.get(icon_key):
+        return SPEC_EMOJI_FALLBACKS[icon_key]
+    if any(word in text for word in ["tank", "prot", "schutz", "def"]):
+        return SPEC_EMOJI_FALLBACKS["tank"]
+    if any(word in text for word in ["heal", "heiler", "holy", "resto", "restoration", "diszi"]):
+        return SPEC_EMOJI_FALLBACKS["heal"]
+    if any(word in text for word in ["fire", "feuer", "flamme"]):
+        return "🔥"
+    if any(word in text for word in ["frost", "eis"]):
+        return "❄️"
+    if any(word in text for word in ["shadow", "schatten"]):
+        return "🌑"
+    if any(word in text for word in ["fury", "arms", "waffen", "combat", "assa", "feral", "enh", "ele", "balance", "dd", "dps"]):
+        return "⚔️"
+    return "✦"
+
+
+def signup_spec_select_emoji(spec_label, spec_key="", class_name=""):
+    icon = signup_spec_icon(spec_label or spec_key, spec_key, class_name)
+    if icon.startswith("<:") or icon.startswith("<a:"):
+        try:
+            return discord.PartialEmoji.from_str(icon)
+        except Exception:
+            return None
+    return select_emoji(icon)
 
 
 def raid_signup_class_options():
@@ -746,16 +838,39 @@ async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id
 
 
 async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None, origin_message_id=None):
-    helper = await get_raid_helper_by_id(clean((raid or {}).get("raidId") or (raid or {}).get("id")))
-    fresh_raid = helper.get("raid") or raid or {}
-    embed = build_raid_announcement_embed(fresh_raid)
-    add_raid_signup_roster_fields(embed, helper)
-    target = getattr(interaction, "message", None)
-    if origin_channel_id and origin_message_id:
-        channel = client.get_channel(int(origin_channel_id)) or await client.fetch_channel(int(origin_channel_id))
-        target = await channel.fetch_message(int(origin_message_id))
-    if target:
-        await target.edit(embed=embed, view=RaidSignupView(fresh_raid))
+    try:
+        raid_lookup_id = clean((raid or {}).get("raidId") or (raid or {}).get("id"))
+        raid_pin = clean((raid or {}).get("playerPin") or (raid or {}).get("prioPin"))
+        helper_queries = []
+        if raid_lookup_id:
+            helper_queries.append({"action": "getRaidHelper", "raidId": raid_lookup_id, "playerPin": raid_lookup_id, "t": int(time.time())})
+            helper_queries.append({"action": "getRaidHelper", "raidId": raid_lookup_id, "t": int(time.time())})
+        if raid_pin and raid_pin != raid_lookup_id:
+            helper_queries.append({"action": "getRaidHelper", "playerPin": raid_pin, "t": int(time.time())})
+
+        helper = None
+        last_error = None
+        for query_params in helper_queries:
+            try:
+                helper = await asyncio.to_thread(api_get, query_params)
+                if helper and helper.get("success"):
+                    break
+            except Exception as error:
+                last_error = error
+        if helper is None:
+            raise last_error or RuntimeError("Raid-Anmelder konnte nicht geladen werden.")
+        fresh_raid = helper.get("raid") or raid or {}
+        embed = build_raid_announcement_embed(fresh_raid)
+        add_raid_signup_roster_fields(embed, helper)
+        target = getattr(interaction, "message", None)
+        if origin_channel_id and origin_message_id:
+            channel = client.get_channel(int(origin_channel_id)) or await client.fetch_channel(int(origin_channel_id))
+            target = await channel.fetch_message(int(origin_message_id))
+        if target:
+            await target.edit(embed=embed, view=RaidSignupView(fresh_raid))
+            print(f"Raidanmelder direkt aktualisiert: {clean(fresh_raid.get('raidId') or raid_lookup_id)} mit {raid_signup_row_count(helper)} Anmeldung(en).")
+    except Exception as error:
+        print(f"Raid-Anmelder-Message konnte nicht aktualisiert werden: {error}")
 
 
 async def edit_raid_signup_message_from_helper(raid, helper, origin_channel_id=None, origin_message_id=None):
@@ -913,20 +1028,29 @@ class RaidSignupCharacterSelect(discord.ui.Select):
             view=None
         )
         try:
-            helper = result.get("helper") or {
-                "success": True,
-                "raid": result.get("raid") or refresh_raid,
-                "signups": result.get("signups") or [],
-                "externalSignups": result.get("externalSignups") or [],
-            }
-            await edit_raid_signup_message_from_helper(refresh_raid, helper, self.origin_channel_id, self.origin_message_id)
+            await refresh_raid_signup_message(interaction, refresh_raid, self.origin_channel_id, self.origin_message_id)
         except Exception as error:
-            print(f"Raid-Anmelder direkter Refresh nach Anmeldung fehlgeschlagen: {error}")
+            print(f"Raid-Anmelder direkter Refresh nach Anmeldung fehlgeschlagen, nutze Snapshot-Fallback: {error}")
+            try:
+                helper = result.get("helper") or {
+                    "success": True,
+                    "raid": result.get("raid") or refresh_raid,
+                    "signups": result.get("signups") or [],
+                    "externalSignups": result.get("externalSignups") or [],
+                }
+                await edit_raid_signup_message_from_helper(refresh_raid, helper, self.origin_channel_id, self.origin_message_id)
+            except Exception as fallback_error:
+                print(f"Raid-Anmelder Snapshot-Fallback fehlgeschlagen: {fallback_error}")
         try:
             await asyncio.to_thread(api_post, {
                 "action": "guildQueueRaidAnnouncementRefresh",
                 "queueToken": QUEUE_TOKEN,
                 "raidId": clean(refresh_raid.get("raidId") or refresh_raid.get("id")),
+                "playerPin": clean(refresh_raid.get("playerPin") or refresh_raid.get("prioPin") or ""),
+                "prioPin": clean(refresh_raid.get("playerPin") or refresh_raid.get("prioPin") or ""),
+                "raid": clean(refresh_raid.get("raid") or ""),
+                "raidDate": clean(refresh_raid.get("raidDate") or ""),
+                "raidTime": clean(refresh_raid.get("raidTime") or ""),
                 "channelId": clean(self.origin_channel_id or interaction.channel_id),
                 "messageId": clean(self.origin_message_id or getattr(interaction.message, "id", ""))
             })
@@ -965,7 +1089,10 @@ class RaidSignupSpecSelect(discord.ui.Select):
         self.class_name = class_name
         self.origin_channel_id = origin_channel_id
         self.origin_message_id = origin_message_id
-        options = [discord.SelectOption(label=label, value=key, emoji=select_emoji(SPEC_EMOJI_FALLBACKS.get(key, "✦"))) for label, key in RAID_SIGNUP_SPECS.get(class_name, [("Flex", "flex")])]
+        options = [
+            discord.SelectOption(label=label, value=key, emoji=signup_spec_select_emoji(label, key, class_name))
+            for label, key in RAID_SIGNUP_SPECS.get(class_name, [("Flex", "flex")])
+        ]
         super().__init__(placeholder=f"Skillung wählen", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction):
@@ -3270,8 +3397,9 @@ async def on_ready():
     if not hasattr(client, "discord_channel_sync_started"):
         client.discord_channel_sync_started = True
         client.loop.create_task(discord_channel_sync_loop())
-    found_classes, found_items = refresh_emoji_cache()
+    found_classes, found_specs, found_items = refresh_emoji_cache()
     print(f"PO Klassenemojis gefunden: {', '.join(sorted(found_classes.keys())) or 'keine'}")
+    print(f"PO Skill-Emojis gefunden: {', '.join(sorted(found_specs.keys())) or 'keine'}")
     print(f"PO Item-Emojis gefunden: {len(found_items)}")
     state = load_state()
     for payload in state.values():
