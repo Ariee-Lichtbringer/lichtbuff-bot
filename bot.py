@@ -3996,7 +3996,6 @@ def build_raid_announcement_embed(raid):
         embed.add_field(name="Slots", value=" · ".join(slot_parts), inline=False)
 
     embed.add_field(name="Prio-PIN", value=f"`{player_pin}`", inline=True)
-    embed.add_field(name="Webansicht", value=LICHTLOOT_URL, inline=True)
     worldbuff_block = current_worldbuff_announcement_block()
     if worldbuff_block:
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
@@ -4005,6 +4004,30 @@ def build_raid_announcement_embed(raid):
         embed.set_image(url=image_url)
     embed.set_footer(text="Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein.")
     return embed
+
+
+def raid_leadership_edit_url(raid):
+    raid_id = str(raid.get("raidId") or raid.get("id") or "").strip()
+    guild_slug = str(raid.get("guildSlug") or current_guild_slug() or LICHTLOOT_GUILD_SLUG or "lichtloot").strip().lower()
+    query = urllib.parse.urlencode({
+        "guild": guild_slug,
+        "raidHelper": raid_id,
+    })
+    return f"{LICHTLOOT_URL}/gildenleitung.html?{query}"
+
+
+def raid_signup_links_value(raid):
+    edit_url = raid_leadership_edit_url(raid)
+    return " | ".join([
+        f"[Webansicht]({LICHTLOOT_URL}/)",
+        f"[Comp]({edit_url})",
+        f"[Gcal]({edit_url})",
+        f"[Bearbeiten]({edit_url})",
+    ])
+
+
+def add_raid_signup_links_field(embed, raid):
+    embed.add_field(name="\u200b", value=raid_signup_links_value(raid), inline=False)
 
 
 def raid_key_for_image(raid):
@@ -4573,9 +4596,11 @@ def add_raid_signup_role_fields(embed, helper):
 
 def add_raid_signup_roster_fields(embed, helper):
     raid_key = raid_key_from_raid(helper.get("raid") or {})
+    raid = helper.get("raid") or {}
     signups, roster, counts = raid_signup_roster_from_helper(helper)
     if not signups:
         embed.add_field(name="Anmeldungen", value="Noch keine Anmeldungen.", inline=False)
+        add_raid_signup_links_field(embed, raid)
         return
 
     add_raid_signup_role_fields(embed, helper)
@@ -4624,6 +4649,8 @@ def add_raid_signup_roster_fields(embed, helper):
             for row in roster["absent"][:18]
         )
         embed.add_field(name=f"🚫 Abwesenheit ({len(roster['absent'])})", value=value[:1024], inline=False)
+
+    add_raid_signup_links_field(embed, raid)
 
 
 def raid_signup_class_options():
@@ -4925,11 +4952,11 @@ async def save_raid_signup_status(interaction, raid, char_name, status, note="")
     return result
 
 
-class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
-    char_name = discord.ui.TextInput(
-        label="Charaktername",
-        placeholder="z. B. Burny",
-        max_length=40
+class RaidSignupPinModal(discord.ui.Modal, title="Mein LichtLoot Login"):
+    player_pin = discord.ui.TextInput(
+        label="Mein LichtLoot Login/PIN",
+        placeholder="Dein Spieler-PIN",
+        max_length=20
     )
 
     def __init__(self, raid, class_name, spec_label, spec_key, origin_channel_id=None, origin_message_id=None):
@@ -4942,46 +4969,102 @@ class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
         self.origin_message_id = origin_message_id
 
     async def on_submit(self, interaction):
-        char_name = str(self.char_name.value or "").strip()
-        spec = str(self.spec_label or "").strip()
-        if not char_name:
-            await interaction.response.send_message("Bitte Charaktername angeben.", ephemeral=True)
-            return
+        player_pin = str(self.player_pin.value or "").strip()
+        try:
+            result = await asyncio.to_thread(lichtloot_get, {
+                "action": "getCharactersByPin",
+                "pin": player_pin,
+                "playerPin": player_pin,
+                "t": int(time.time())
+            })
+            characters = result if isinstance(result, list) else (result.get("characters") or result.get("chars") or [])
+            characters = [entry for entry in characters if str(entry.get("name") or "").strip()]
+            if not characters:
+                await interaction.response.send_message("⚠️ Für diesen Spieler-PIN wurden keine Charaktere gefunden.", ephemeral=True)
+                return
+            await interaction.response.send_message(
+                "Charakter für die Anmeldung wählen:",
+                view=RaidSignupCharacterView(
+                    self.raid,
+                    self.class_name,
+                    self.spec_label,
+                    self.spec_key,
+                    player_pin,
+                    characters,
+                    self.origin_channel_id,
+                    self.origin_message_id
+                ),
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(f"⚠️ Spieler-PIN konnte nicht geladen werden: {e}", ephemeral=True)
 
+
+class RaidSignupCharacterSelect(discord.ui.Select):
+    def __init__(self, raid, class_name, spec_label, spec_key, player_pin, characters, origin_channel_id=None, origin_message_id=None):
+        self.raid = raid
+        self.class_name = class_name
+        self.spec_label = spec_label
+        self.spec_key = spec_key
+        self.player_pin = player_pin
+        self.characters = list(characters or [])[:25]
+        self.origin_channel_id = origin_channel_id
+        self.origin_message_id = origin_message_id
+        options = []
+        for index, character in enumerate(self.characters):
+            char_class = canonical_signup_class(character.get("className") or character.get("Klasse") or character.get("class_name") or class_name)
+            label = str(character.get("name") or "").strip()
+            server = str(character.get("server") or "").strip()
+            description = " · ".join(part for part in [server, char_class] if part)[:100]
+            options.append(discord.SelectOption(
+                label=label[:100],
+                value=str(index),
+                description=description,
+                emoji=signup_class_select_emoji(char_class)
+            ))
+        super().__init__(placeholder="Charakter wählen", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction):
+        character = self.characters[int(self.values[0])]
+        char_name = str(character.get("name") or "").strip()
+        server = str(character.get("server") or "").strip()
+        char_class = canonical_signup_class(character.get("className") or character.get("Klasse") or character.get("class_name") or self.class_name)
+        spec = str(self.spec_label or "").strip()
         payload = {
-            "action": "saveDiscordSignupRows",
+            "action": "saveRaidSignup",
             "queueToken": LICHTBOT_QUEUE_TOKEN,
             "raidId": str(self.raid.get("raidId") or self.raid.get("id") or ""),
+            "playerPin": self.player_pin,
+            "pin": self.player_pin,
+            "char": char_name,
+            "player": char_name,
+            "server": server,
             "raid": self.raid.get("raid") or self.raid.get("raidName") or "",
             "raidDate": self.raid.get("raidDate") or "",
             "raidTime": self.raid.get("raidTime") or "",
-            "discordChannelId": str(self.origin_channel_id or interaction.channel_id or ""),
-            "raidHelperMessageId": str(self.origin_message_id or getattr(interaction.message, "id", "") or ""),
-            "rows": [{
-                "char": char_name,
-                "spieler": char_name,
-                "klasse": self.class_name,
-                "role": infer_signup_role(spec),
-                "status": "signed",
-                "note": f"Skillung: {spec}",
-                "discordUserId": str(interaction.user.id),
-                "discordName": str(interaction.user.display_name),
-                "source": raid_signup_source(interaction, self.origin_channel_id, self.origin_message_id)
-            }]
+            "role": infer_signup_role(spec),
+            "signupRole": infer_signup_role(spec),
+            "status": "signed",
+            "signupStatus": "signed",
+            "note": f"Skillung: {spec}",
+            "discordUserId": str(interaction.user.id),
+            "discordName": str(interaction.user.display_name),
+            "source": raid_signup_source(interaction, self.origin_channel_id, self.origin_message_id)
         }
-
         try:
             result = await asyncio.to_thread(lichtloot_post, payload)
             if not result.get("success"):
                 raise RuntimeError(result.get("error") or "Anmeldung konnte nicht gespeichert werden.")
             refresh_raid = dict(self.raid)
+            if result.get("raid"):
+                refresh_raid.update(result.get("raid") or {})
             if result.get("raidId"):
                 refresh_raid["raidId"] = result.get("raidId")
-            await interaction.response.send_message(
-                f"✅ Anmeldung gespeichert: **{char_name}** · {self.class_name} · {spec}",
-                ephemeral=True
+            await interaction.response.edit_message(
+                content=f"✅ Anmeldung gespeichert: **{char_name}** · {char_class} · {spec}",
+                view=None
             )
-            await send_own_raid_signup_confirmation(interaction, refresh_raid, char_name, self.class_name, spec)
+            await send_own_raid_signup_confirmation(interaction, refresh_raid, char_name, char_class, spec)
         except Exception as e:
             await interaction.response.send_message(f"⚠️ Anmeldung fehlgeschlagen: {e}", ephemeral=True)
             return
@@ -4990,6 +5073,25 @@ class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
             await refresh_raid_signup_message(interaction, refresh_raid, self.origin_channel_id, self.origin_message_id)
         except Exception as e:
             print("Raid-Anmelder-Refresh nach Anmeldung fehlgeschlagen:", e)
+
+
+class RaidSignupCharacterView(discord.ui.View):
+    def __init__(self, raid, class_name, spec_label, spec_key, player_pin, characters, origin_channel_id=None, origin_message_id=None):
+        super().__init__(timeout=180)
+        self.add_item(RaidSignupCharacterSelect(raid, class_name, spec_label, spec_key, player_pin, characters, origin_channel_id, origin_message_id))
+
+
+class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
+    char_name = discord.ui.TextInput(label="Charaktername", placeholder="z. B. Ariee", max_length=40)
+
+    def __init__(self, raid, class_name, spec_label, spec_key, origin_channel_id=None, origin_message_id=None):
+        super().__init__()
+
+    async def on_submit(self, interaction):
+        await interaction.response.send_message(
+            "Bitte nutze die neue Anmeldung mit Spieler-PIN und Charakter-Auswahl.",
+            ephemeral=True
+        )
 
 
 class RaidSignupStatusModal(discord.ui.Modal):
@@ -5069,7 +5171,7 @@ class RaidSignupSpecSelect(discord.ui.Select):
         spec_key = self.values[0]
         specs = RAID_SIGNUP_SPECS.get(self.class_name, [])
         spec_label = next((label for label, key in specs if key == spec_key), spec_key)
-        await interaction.response.send_modal(RaidSignupModal(
+        await interaction.response.send_modal(RaidSignupPinModal(
             self.raid,
             self.class_name,
             spec_label,
