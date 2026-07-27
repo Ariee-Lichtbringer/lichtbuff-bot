@@ -10,7 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -587,7 +587,7 @@ def raid_announcement_image_url(raid):
     layout = registry_entry.get("layout") or {}
     images = layout.get("raidImages") if isinstance(layout, dict) else {}
     guild_image = clean((images or {}).get(raid_key))
-    if guild_slug != "lichtloot" and guild_image:
+    if guild_image:
         return urllib.parse.urljoin(LICHTLOOT_URL.rstrip("/") + "/", guild_image)
     explicit = clean((raid or {}).get("raidImageUrl") or (raid or {}).get("imageUrl"))
     if explicit.startswith(("http://", "https://")):
@@ -601,6 +601,9 @@ def build_raid_announcement_embed(raid):
     raid = raid or {}
     raid_name = clean(raid.get("raidName") or display_raid(raid.get("raid")) or "Raid")
     description = clean(raid.get("description")) or "Raidanmeldung ist geöffnet."
+    # Discord lässt Embeds bei kurzen Inhalten zusammenschrumpfen. Die Trennlinie
+    # hält den Raidanmelder auf derselben gut lesbaren Breite wie im Lichtbuff-Bot.
+    description = f"{description}\n\n{'━' * 42}"
     embed = discord.Embed(title=raid_name.upper(), description=description[:3900], color=0x7c3aed)
     embed.add_field(name="Raidlead", value=clean(raid.get("createdBy") or raid.get("erstelltVon") or "Gildenleitung"), inline=True)
     embed.add_field(name="Datum", value=format_raid_announcement_date(raid.get("raidDate")), inline=True)
@@ -617,11 +620,61 @@ def build_raid_announcement_embed(raid):
         embed.add_field(name="Slots", value=" · ".join(slots), inline=False)
     embed.add_field(name="Prio-PIN", value=f"`{clean(raid.get('playerPin')) or '-'}`", inline=True)
     embed.add_field(name="Webansicht", value=LICHTLOOT_URL, inline=True)
+    worldbuff_block = current_worldbuff_announcement_block()
+    if worldbuff_block:
+        embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
     image_url = raid_announcement_image_url(raid)
     if image_url:
         embed.set_image(url=image_url)
     embed.set_footer(text="Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein.")
     return embed
+
+
+def current_worldbuff_announcement_block(max_lines=8):
+    try:
+        result = api_get({
+            "action": "guildGetWorldbuffs",
+            "queueToken": QUEUE_TOKEN,
+            "guild": current_guild_slug(),
+            "guildSlug": current_guild_slug(),
+            "source": "railway",
+            "days": "all",
+            "t": int(time.time()),
+        })
+    except Exception as error:
+        print(f"Worldbuffs fuer Raidanmelder konnten nicht geladen werden: {error}")
+        return ""
+    rows = result.get("buffs") or result.get("entries") or []
+    today = datetime.now().date()
+    latest = today + timedelta(days=7)
+    upcoming = []
+    for row in rows:
+        try:
+            row_date = datetime.strptime(clean(row.get("datum") or row.get("date")), "%d.%m.%Y").date()
+        except Exception:
+            continue
+        if today <= row_date <= latest:
+            upcoming.append((row_date, clean(row.get("uhrzeit") or row.get("time")), row))
+    upcoming.sort(key=lambda item: (item[0], item[1]))
+    lines = []
+    current_date = None
+    for row_date, row_time, row in upcoming[:max_lines]:
+        if row_date != current_date:
+            weekday = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"][row_date.weekday()]
+            lines.append(f"**{weekday}, {row_date.strftime('%d.%m.%Y')}**")
+            current_date = row_date
+        buff = clean(row.get("buff") or row.get("type")) or "Buff"
+        emoji = "🟢" if buff.lower() == "hakkar" else "🔴"
+        guild = clean(row.get("gilde") or row.get("guild"))
+        caster = clean(row.get("charakter") or row.get("character"))
+        suffix = f" - {guild}" if guild else ""
+        if caster:
+            suffix += f" - ⚔️ {caster}"
+        lines.append(f"{emoji} **{buff}** {row_time}{suffix}")
+    remaining = max(0, len(upcoming) - max_lines)
+    if remaining:
+        lines.append(f"… und {remaining} weitere Worldbuff-Termine im Worldbuff-Post.")
+    return "\n".join(lines)
 
 
 def build_raid_announcement_text(raid):
@@ -1175,6 +1228,12 @@ class RaidSignupClassSelect(discord.ui.Select):
 
 class RaidSignupStatusModal(discord.ui.Modal):
     char_name = discord.ui.TextInput(label="Charaktername", placeholder="z. B. Ariee", max_length=40)
+    note = discord.ui.TextInput(
+        label="Notiz optional",
+        placeholder="z. B. Arbeit, später da, Ersatzbank",
+        required=False,
+        max_length=100,
+    )
 
     def __init__(self, raid, status, title):
         super().__init__(title=title)
@@ -1182,7 +1241,69 @@ class RaidSignupStatusModal(discord.ui.Modal):
         self.status = status
 
     async def on_submit(self, interaction):
-        await interaction.response.send_message("Statusänderung ist im PO-Bot registriert. Bitte bei Bedarf im Raidleadpanel verwalten.", ephemeral=True)
+        char_name = clean(self.char_name.value)
+        note = clean(self.note.value)
+        if not char_name:
+            await interaction.response.send_message("Bitte Charaktername angeben.", ephemeral=True)
+            return
+        try:
+            helper = await get_raid_helper_for_refresh(self.raid)
+            wanted_user = str(interaction.user.id)
+            wanted_source = raid_signup_source(interaction)
+            existing = next((
+                row for row in (helper.get("externalSignups") or []) + (helper.get("signups") or [])
+                if clean(row.get("char") or row.get("player")).lower() == char_name.lower()
+                and (
+                    clean(row.get("discordUserId")) == wanted_user
+                    or clean(row.get("source")) == wanted_source
+                )
+            ), None)
+            if not existing:
+                raise RuntimeError("Für diesen Charakter wurde keine Anmeldung gefunden.")
+            result = await asyncio.to_thread(api_post, {
+                "action": "saveDiscordSignupRows",
+                "queueToken": QUEUE_TOKEN,
+                "guild": payload_guild_slug(self.raid),
+                "guildSlug": payload_guild_slug(self.raid),
+                "raidId": clean(self.raid.get("raidId") or self.raid.get("id")),
+                "raid": clean(self.raid.get("raid") or self.raid.get("raidName")),
+                "raidDate": clean(self.raid.get("raidDate")),
+                "raidTime": clean(self.raid.get("raidTime")),
+                "discordChannelId": str(interaction.channel_id or ""),
+                "raidHelperMessageId": str(getattr(interaction.message, "id", "") or ""),
+                "rows": [{
+                    "char": char_name,
+                    "spieler": char_name,
+                    "klasse": clean(existing.get("className") or existing.get("klasse")),
+                    "role": clean(existing.get("role")),
+                    "status": self.status,
+                    "note": note or clean(existing.get("note")),
+                    "discordUserId": wanted_user,
+                    "discordName": str(interaction.user.display_name),
+                    "source": raid_signup_source(interaction),
+                }],
+            })
+            if not result.get("success"):
+                raise RuntimeError(result.get("error") or "Status konnte nicht gespeichert werden.")
+            label = {
+                "bench": "auf die Bank gesetzt",
+                "late": "als verspätet markiert",
+                "tentative": "als vorläufig markiert",
+                "absent": "als abwesend markiert",
+            }.get(self.status, "aktualisiert")
+            await interaction.response.send_message(f"✅ **{char_name}** wurde {label}.", ephemeral=True)
+            await refresh_raid_signup_message(interaction, self.raid)
+        except Exception as error:
+            if interaction.response.is_done():
+                await interaction.followup.send(f"⚠️ Status konnte nicht geändert werden: {error}", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"⚠️ Status konnte nicht geändert werden: {error}", ephemeral=True)
+
+
+class RaidSignupChangeView(discord.ui.View):
+    def __init__(self, raid):
+        super().__init__(timeout=180)
+        self.add_item(RaidSignupClassSelect(raid))
 
 
 class RaidSignupView(discord.ui.View):
@@ -1195,9 +1316,25 @@ class RaidSignupView(discord.ui.View):
     async def bench_signup(self, interaction, button):
         await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "bench", "Auf die Bank setzen"))
 
-    @discord.ui.button(label="Abwesend", emoji="🚫", style=discord.ButtonStyle.secondary, custom_id="raid_signup_absent")
+    @discord.ui.button(label="Spät", emoji="🕒", style=discord.ButtonStyle.secondary, custom_id="raid_signup_late")
+    async def late_signup(self, interaction, button):
+        await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "late", "Verspätung eintragen"))
+
+    @discord.ui.button(label="Vorläufig", emoji="⚖️", style=discord.ButtonStyle.secondary, custom_id="raid_signup_tentative")
+    async def tentative_signup(self, interaction, button):
+        await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "tentative", "Vorläufig anmelden"))
+
+    @discord.ui.button(label="Abwesenheit", emoji="🚫", style=discord.ButtonStyle.secondary, custom_id="raid_signup_absent")
     async def absent_signup(self, interaction, button):
         await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "absent", "Als abwesend markieren"))
+
+    @discord.ui.button(label="Ändern", emoji="⚙️", style=discord.ButtonStyle.secondary, custom_id="raid_signup_change")
+    async def change_signup(self, interaction, button):
+        await interaction.response.send_message(
+            "Wähle deine Klasse, um Charakter oder Skillung zu ändern:",
+            view=RaidSignupChangeView(self.raid),
+            ephemeral=True,
+        )
 
 
 async def restore_active_raid_signup_views():
@@ -3238,9 +3375,25 @@ class CombinedRaidPoView(discord.ui.View):
     async def bench_signup(self, interaction, button):
         await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "bench", "Auf die Bank setzen"))
 
-    @discord.ui.button(label="Abwesend", emoji="🚫", style=discord.ButtonStyle.secondary, custom_id="combined_raid_signup_absent", row=1)
+    @discord.ui.button(label="Spät", emoji="🕒", style=discord.ButtonStyle.secondary, custom_id="combined_raid_signup_late", row=1)
+    async def late_signup(self, interaction, button):
+        await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "late", "Verspätung eintragen"))
+
+    @discord.ui.button(label="Vorläufig", emoji="⚖️", style=discord.ButtonStyle.secondary, custom_id="combined_raid_signup_tentative", row=1)
+    async def tentative_signup(self, interaction, button):
+        await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "tentative", "Vorläufig anmelden"))
+
+    @discord.ui.button(label="Abwesenheit", emoji="🚫", style=discord.ButtonStyle.secondary, custom_id="combined_raid_signup_absent", row=1)
     async def absent_signup(self, interaction, button):
         await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "absent", "Als abwesend markieren"))
+
+    @discord.ui.button(label="Ändern", emoji="⚙️", style=discord.ButtonStyle.secondary, custom_id="combined_raid_signup_change", row=1)
+    async def change_signup(self, interaction, button):
+        await interaction.response.send_message(
+            "Wähle deine Klasse, um Charakter oder Skillung zu ändern:",
+            view=RaidSignupChangeView(self.raid),
+            ephemeral=True,
+        )
 
     @property
     def raid(self):
