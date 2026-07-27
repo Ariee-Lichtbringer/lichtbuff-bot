@@ -2403,7 +2403,7 @@ async def sync_recent_ticker_messages(limit=None):
                     print(f"Worldbuff-Poster-Message {message_id} in Channel {channel_id} konnte nicht gelesen werden:", e)
 
             try:
-                for pinned_msg in await channel.pins():
+                async for pinned_msg in channel.pins():
                     found_buffs.extend(parse_ticker_message(discord_message_search_text(pinned_msg)))
             except Exception as e:
                 print(f"Ticker-Pins {channel_id} konnten nicht gelesen werden:", e)
@@ -6813,7 +6813,8 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             removed = await asyncio.to_thread(remove_deleted_worldbuff_from_all_caches, payload)
             print(f"Worldbuff-Loeschung aus Queue verarbeitet, {removed} Cache-Eintraege entfernt.")
 
-        if update_type in {"raid_announcement", "raid_announcement_refresh", "raid_signup_notice"}:
+        raid_helper_owner = str(os.getenv("RAID_HELPER_OWNER", "bot") or "bot").strip().lower()
+        if update_type in {"raid_announcement", "raid_announcement_refresh", "raid_signup_notice"} and raid_helper_owner in {"po_bot", "pobot", "po-bot"}:
             print(f"Raidanmelder-Auftrag uebersprungen: wird vom separaten PO-Bot verarbeitet ({update_type}).")
             return
 
