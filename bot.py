@@ -4264,6 +4264,35 @@ def raid_banner_file(raid):
     return discord.File(str(path), filename=filename)
 
 
+def download_raid_banner_file(raid):
+    image_url = raid_image_url(raid)
+    if not image_url:
+        return None, ""
+    try:
+        request = urllib.request.Request(
+            image_url,
+            headers={"User-Agent": "LichtbuffBot/1.0"}
+        )
+        with urllib.request.urlopen(request, timeout=20) as response:
+            content = response.read(8 * 1024 * 1024)
+            content_type = str(response.headers.get("Content-Type") or "").lower()
+        if not content or (content_type and not content_type.startswith("image/")):
+            raise RuntimeError(f"ungueltiger Content-Type {content_type or '-'}")
+        extension = "png" if "png" in content_type else "webp" if "webp" in content_type else "jpg"
+        filename = f"{raid_key_for_image(raid) or 'raid'}-{raid_guild_slug(raid)}.{extension}"
+        return discord.File(BytesIO(content), filename=filename), filename
+    except Exception as error:
+        print(f"Raidbild konnte nicht heruntergeladen werden ({image_url}): {error}")
+        return None, ""
+
+
+async def raid_banner_file_for_send(raid):
+    local_file = raid_banner_file(raid)
+    if local_file:
+        return local_file, raid_banner_attachment_name(raid)
+    return await asyncio.to_thread(download_raid_banner_file, raid)
+
+
 def raid_guild_slug(raid):
     explicit_raw = str((raid or {}).get("guildSlug") or "").strip()
     if explicit_raw:
@@ -5015,8 +5044,10 @@ async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None,
             if channel is None:
                 channel = await client.fetch_channel(int(origin_channel_id))
             target_message = await channel.fetch_message(int(origin_message_id))
-        banner = raid_banner_file(fresh_raid)
+        await refresh_guild_registry()
+        banner, banner_name = await raid_banner_file_for_send(fresh_raid)
         if banner:
+            embed.set_image(url=f"attachment://{banner_name}")
             await target_message.edit(embed=embed, attachments=[banner], view=RaidSignupView(fresh_raid))
         else:
             await target_message.edit(embed=embed, view=RaidSignupView(fresh_raid))
@@ -5048,8 +5079,10 @@ async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id
     target_message = await channel.fetch_message(int(message_id))
     embed = build_raid_announcement_embed(raid)
     add_raid_signup_roster_fields(embed, helper)
-    banner = raid_banner_file(raid)
+    await refresh_guild_registry()
+    banner, banner_name = await raid_banner_file_for_send(raid)
     if banner:
+        embed.set_image(url=f"attachment://{banner_name}")
         await target_message.edit(embed=embed, attachments=[banner], view=RaidSignupView(raid))
     else:
         await target_message.edit(embed=embed, view=RaidSignupView(raid))
@@ -9929,8 +9962,9 @@ async def raid_announcement_loop():
 
                 try:
                     embed = build_raid_announcement_embed(raid)
-                    banner = raid_banner_file(raid)
+                    banner, banner_name = await raid_banner_file_for_send(raid)
                     if banner:
+                        embed.set_image(url=f"attachment://{banner_name}")
                         await send_silent(channel, embed=embed, file=banner, view=RaidSignupView(raid))
                     else:
                         await send_silent(channel, embed=embed, view=RaidSignupView(raid))
@@ -9959,6 +9993,7 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None):
     if not raid_id:
         raise RuntimeError("Raid-Ankuendigung manuell: Raid-ID fehlt.")
 
+    await refresh_guild_registry()
     helper = None
     raid = None
 
@@ -10030,16 +10065,18 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None):
 
     sent_message = None
     try:
-        banner = raid_banner_file(raid)
+        banner, banner_name = await raid_banner_file_for_send(raid)
         if banner:
+            embed.set_image(url=f"attachment://{banner_name}")
             sent_message = await send_silent(channel, embed=embed, file=banner, view=RaidSignupView(raid))
         else:
             sent_message = await send_silent(channel, embed=embed, view=RaidSignupView(raid))
     except discord.HTTPException as e:
         print(f"Raid-Ankuendigung mit Auswahlfeld fehlgeschlagen, versuche Embed ohne Auswahlfeld: {e}")
         try:
-            banner = raid_banner_file(raid)
+            banner, banner_name = await raid_banner_file_for_send(raid)
             if banner:
+                embed.set_image(url=f"attachment://{banner_name}")
                 sent_message = await send_silent(channel, embed=embed, file=banner)
             else:
                 sent_message = await send_silent(channel, embed=embed)
