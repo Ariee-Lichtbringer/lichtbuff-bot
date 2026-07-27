@@ -303,6 +303,8 @@ PANEM_GUILD_SLUG = os.getenv("PANEM_GUILD_SLUG", "panemloot")
 NACHTLOOT_GUILD_SLUG = os.getenv("NACHTLOOT_GUILD_SLUG", "nachtloot")
 WORLDBUFF_BACKUP_CHANNEL_ID = "1529393614247952434"
 P0PLUS_BACKUP_CHANNEL_ID = "1529393614247952434"
+NACHTLOOT_WORLDBUFF_BACKUP_CHANNEL_ID = "1531288515994718318"
+NACHTLOOT_P0PLUS_BACKUP_CHANNEL_ID = "1531288738326642828"
 WORLDBUFF_GUILD_SLUGS = [
     LICHTLOOT_GUILD_SLUG,
     PANEM_GUILD_SLUG
@@ -649,14 +651,18 @@ def backup_channel_rank(channel, kind="backup"):
 
 
 async def resolve_backup_channel_id(payload, kind="backup"):
-    if kind == "worldbuff":
-        return clean_channel_id_value(WORLDBUFF_BACKUP_CHANNEL_ID)
-    if kind == "p0plus":
-        return clean_channel_id_value(P0PLUS_BACKUP_CHANNEL_ID)
-
-    configured_channel_id = clean_channel_id_value(payload.get("channelId"))
+    configured_channel_id = clean_channel_id_value(payload.get("channelId") or payload.get("targetChannelId"))
     if configured_channel_id and await fetch_accessible_discord_channel(configured_channel_id):
         return configured_channel_id
+
+    if kind == "worldbuff":
+        if current_guild_slug() == NACHTLOOT_GUILD_SLUG:
+            return clean_channel_id_value(NACHTLOOT_WORLDBUFF_BACKUP_CHANNEL_ID)
+        return clean_channel_id_value(WORLDBUFF_BACKUP_CHANNEL_ID)
+    if kind == "p0plus":
+        if current_guild_slug() == NACHTLOOT_GUILD_SLUG:
+            return clean_channel_id_value(NACHTLOOT_P0PLUS_BACKUP_CHANNEL_ID)
+        return clean_channel_id_value(P0PLUS_BACKUP_CHANNEL_ID)
 
     if configured_channel_id:
         print(f"Backup-Channel nicht erreichbar fuer {current_guild_slug()}: {configured_channel_id}")
