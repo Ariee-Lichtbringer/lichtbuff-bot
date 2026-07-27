@@ -758,6 +758,21 @@ async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None,
         await target.edit(embed=embed, view=RaidSignupView(fresh_raid))
 
 
+async def edit_raid_signup_message_from_helper(raid, helper, origin_channel_id=None, origin_message_id=None):
+    helper = helper or {}
+    fresh_raid = helper.get("raid") or raid or {}
+    channel_id = clean(origin_channel_id or fresh_raid.get("discordChannelId") or fresh_raid.get("discord_channel_id"))
+    message_id = clean(origin_message_id or fresh_raid.get("discordMessageId") or fresh_raid.get("discord_message_id"))
+    if not channel_id or not message_id:
+        raise RuntimeError("Raid-Anmelder direktes Update: Discord-Nachricht fehlt.")
+    channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+    message = await channel.fetch_message(int(message_id))
+    embed = build_raid_announcement_embed(fresh_raid)
+    add_raid_signup_roster_fields(embed, helper)
+    await message.edit(embed=embed, view=RaidSignupView(fresh_raid))
+    print(f"Raidanmelder direkt aktualisiert: {clean(fresh_raid.get('raidId') or fresh_raid.get('id'))} mit {raid_signup_row_count(helper)} Anmeldung(en).")
+
+
 async def post_raid_announcement_by_id(raid_id, channel_id=None):
     helper = await get_raid_helper_by_id(clean(raid_id))
     raid = helper.get("raid") if helper and helper.get("success") else None
@@ -886,6 +901,8 @@ class RaidSignupCharacterSelect(discord.ui.Select):
             await interaction.response.send_message(f"⚠️ Anmeldung fehlgeschlagen: {result.get('error') or 'unbekannter Fehler'}", ephemeral=True)
             return
         refresh_raid = dict(self.raid)
+        if result.get("raid"):
+            refresh_raid.update(result.get("raid") or {})
         if result.get("raidId"):
             refresh_raid["raidId"] = result.get("raidId")
         await interaction.response.edit_message(
@@ -893,7 +910,13 @@ class RaidSignupCharacterSelect(discord.ui.Select):
             view=None
         )
         try:
-            await refresh_raid_signup_message(interaction, refresh_raid, self.origin_channel_id, self.origin_message_id)
+            helper = result.get("helper") or {
+                "success": True,
+                "raid": result.get("raid") or refresh_raid,
+                "signups": result.get("signups") or [],
+                "externalSignups": result.get("externalSignups") or [],
+            }
+            await edit_raid_signup_message_from_helper(refresh_raid, helper, self.origin_channel_id, self.origin_message_id)
         except Exception as error:
             print(f"Raid-Anmelder direkter Refresh nach Anmeldung fehlgeschlagen: {error}")
         try:
