@@ -7137,11 +7137,6 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             removed = await asyncio.to_thread(remove_deleted_worldbuff_from_all_caches, payload)
             print(f"Worldbuff-Loeschung aus Queue verarbeitet, {removed} Cache-Eintraege entfernt.")
 
-        raid_helper_owner = str(os.getenv("RAID_HELPER_OWNER", "bot") or "bot").strip().lower()
-        if update_type in {"raid_announcement", "raid_announcement_refresh", "raid_signup_notice"} and raid_helper_owner in {"po_bot", "pobot", "po-bot"}:
-            print(f"Raidanmelder-Auftrag uebersprungen: wird vom separaten PO-Bot verarbeitet ({update_type}).")
-            return
-
         if update_type == "raid_announcement":
             posted = await post_raid_announcement_by_id(
                 payload.get("raidId") or payload.get("id"),
