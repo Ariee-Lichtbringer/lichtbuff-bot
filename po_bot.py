@@ -896,7 +896,10 @@ def add_raid_signup_roster_fields(embed, helper):
         for row in grouped[cls][:8]:
             player = clean(row.get("player") or row.get("char")) or "-"
             spec = signup_spec_from_note(row.get("note"), row.get("role")) or "Flex"
-            star = " ★" if has_p0_release(player, raid_key) else ""
+            star = " ★" if any(
+                row.get(key) is True or clean(row.get(key)).lower() in {"1", "true", "yes", "ja", "freigegeben"}
+                for key in ("p0Released", "poReleased", "p0PlusReleased", "poPlusReleased")
+            ) else ""
             lines.append(f"**{player}{star}** · {signup_spec_icon(spec, row.get('role'), cls)}")
         embed.add_field(
             name=f"{class_icon(cls)} {cls} ({len(grouped[cls])})",
@@ -1138,10 +1141,10 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None):
     return True
 
 
-class RaidSignupPinModal(discord.ui.Modal, title="Mein LichtLoot Login"):
+class RaidSignupPinModal(discord.ui.Modal, title="Mein SpielerLogin/PIN"):
     player_pin = discord.ui.TextInput(
-        label="Mein LichtLoot Login/PIN",
-        placeholder="Dein Spieler-PIN",
+        label="Mein SpielerLogin/PIN",
+        placeholder="Dein SpielerLogin/PIN",
         max_length=20
     )
 
@@ -1169,7 +1172,7 @@ class RaidSignupPinModal(discord.ui.Modal, title="Mein LichtLoot Login"):
             characters = result if isinstance(result, list) else (result.get("characters") or result.get("chars") or [])
             characters = [entry for entry in characters if clean(entry.get("name"))]
             if not characters:
-                await interaction.response.send_message("⚠️ Für diesen Spieler-PIN wurden keine Charaktere gefunden.", ephemeral=True)
+                await interaction.response.send_message("⚠️ Für diesen SpielerLogin/PIN wurden keine Charaktere gefunden.", ephemeral=True)
                 return
             await interaction.response.send_message(
                 "Charakter für die Anmeldung wählen:",
@@ -1186,7 +1189,7 @@ class RaidSignupPinModal(discord.ui.Modal, title="Mein LichtLoot Login"):
                 ephemeral=True
             )
         except Exception as error:
-            await interaction.response.send_message(f"⚠️ Spieler-PIN konnte nicht geladen werden: {error}", ephemeral=True)
+            await interaction.response.send_message(f"⚠️ SpielerLogin/PIN konnte nicht geladen werden: {error}", ephemeral=True)
 
 
 class RaidSignupCharacterSelect(discord.ui.Select):
@@ -1322,7 +1325,7 @@ class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
 
     async def on_submit(self, interaction):
         await interaction.response.send_message(
-            "Bitte nutze die neue Anmeldung mit Spieler-PIN und Charakter-Auswahl.",
+            "Bitte nutze die neue Anmeldung mit SpielerLogin/PIN und Charakter-Auswahl.",
             ephemeral=True
         )
 
@@ -1765,6 +1768,8 @@ def ensure_payload_lichtloot_raid(payload):
     result = api_post({
         "action": "lichtbotCreateRaid",
         "queueToken": QUEUE_TOKEN,
+        "guild": payload_guild_slug(payload),
+        "guildSlug": payload_guild_slug(payload),
         "raid": payload.get("raid") or "",
         "raidName": display_raid(payload.get("raid") or ""),
         "raidDate": payload.get("date") or payload.get("raidDate") or payload.get("datum") or "",
@@ -1772,7 +1777,7 @@ def ensure_payload_lichtloot_raid(payload):
         "playerPin": prio_pin,
         "prioPin": prio_pin,
         "leadPin": lead_pin,
-        "guildName": payload.get("guildName") or payload.get("guild") or payload.get("gilde") or "Lichtbringer",
+        "guildName": payload.get("guildName") or payload.get("gilde") or payload_guild_slug(payload),
         "createdBy": payload.get("createdBy") or payload.get("created_by") or payload.get("erstelltVon") or "Gildenleitung",
         "status": "geschlossen",
         "p0PlusFreigabe": "geöffnet",
@@ -1803,6 +1808,7 @@ def save_po_signup_prio(payload, player, class_name, item, player_login="", item
         release_check = api_post({
             "action": "lichtbotCheckPoRelease",
             "queueToken": QUEUE_TOKEN,
+            "guild": payload_guild_slug(payload),
             "guildSlug": payload_guild_slug(payload),
             "postKey": post_key,
             "raid": payload.get("raid") or "",
@@ -1819,6 +1825,7 @@ def save_po_signup_prio(payload, player, class_name, item, player_login="", item
     return api_post({
         "action": "lichtbotSavePoSignupPrio",
         "queueToken": QUEUE_TOKEN,
+        "guild": payload_guild_slug(payload),
         "guildSlug": payload_guild_slug(payload),
         "postKey": post_key,
         "poPostKey": post_key,
@@ -2806,7 +2813,7 @@ def po_signup_error_message(error, char_name=""):
     if "passt nicht zu diesem charakter" in folded or "spielerlogin" in folded or "spielerlogin/pin" in folded:
         wanted = clean(char_name)
         suffix = f" für **{wanted}**" if wanted else ""
-        return f"SpielerLogin/PIN oder Charaktername falsch{suffix}. Bitte prüfe genau deinen LichtLoot-Spielerlogin und den Charakternamen."
+        return f"SpielerLogin/PIN oder Charaktername falsch{suffix}. Bitte prüfe deinen SpielerLogin/PIN und den Charakternamen."
     return message
 
 
@@ -2827,7 +2834,7 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
         await interaction.followup.send("⚠️ Bitte zuerst eine Klasse wählen.", ephemeral=True)
         return
     if not player_login:
-        await interaction.followup.send("⚠️ Bitte deinen LichtLoot Spielerlogin eintragen.", ephemeral=True)
+        await interaction.followup.send("⚠️ Bitte deinen SpielerLogin/PIN eintragen.", ephemeral=True)
         return
     if not char_name:
         await interaction.followup.send("⚠️ Bitte deinen Charakternamen eintragen.", ephemeral=True)
@@ -2893,7 +2900,7 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
     if prio_result and not prio_result.get("success"):
         detail = po_signup_error_message(prio_result.get("error") or "unbekannt", saved_player)
         await interaction.followup.send(
-            f"⚠️ Discord-Eintrag ist gespeichert, aber LichtLoot-PO+ konnte nicht gespeichert werden: {detail}",
+            f"⚠️ Discord-Eintrag ist gespeichert, aber PO+ konnte nicht gespeichert werden: {detail}",
             ephemeral=True,
         )
 
@@ -2912,8 +2919,8 @@ class PoEntryModal(discord.ui.Modal):
             max_length=50,
         )
         self.player_login = discord.ui.TextInput(
-            label="LichtLoot Spielerlogin",
-            placeholder="dein Spielerlogin/PIN aus LichtLoot",
+            label="SpielerLogin/PIN",
+            placeholder="dein SpielerLogin/PIN",
             required=True,
             max_length=80,
         )
@@ -2984,7 +2991,7 @@ class PoPlayerLoginCharacterSelect(discord.ui.Select):
             options.append(discord.SelectOption(label=label, value=str(index), description=description or None))
         super().__init__(
             custom_id=f"po-pin-char:{payload['postKey'][:55]}",
-            placeholder="Charakter aus LichtLoot wählen",
+            placeholder="Gespeicherten Charakter wählen",
             min_values=1,
             max_values=1,
             options=options,
@@ -3022,8 +3029,8 @@ class PoPlayerLoginModal(discord.ui.Modal):
         self.item_name = item_name
         self.class_name = class_name
         self.player_login = discord.ui.TextInput(
-            label="LichtLoot SpielerLogin",
-            placeholder="dein SpielerLogin/PIN aus LichtLoot",
+            label="SpielerLogin/PIN",
+            placeholder="dein SpielerLogin/PIN",
             required=True,
             max_length=80,
         )
