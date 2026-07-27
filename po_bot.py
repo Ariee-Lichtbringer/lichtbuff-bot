@@ -268,6 +268,9 @@ RAID_NAMES = {
     "AQ20": "AQ20",
     "AQ40": "Ahn'Qiraj 40",
     "ZG": "ZG",
+    "ZG-MITTWOCH": "ZG Mittwoch",
+    "ZG-PRIME": "ZG PRIME",
+    "ZG-LATE": "ZG LATE",
     "NAXX": "Naxxramas",
 }
 
@@ -288,6 +291,12 @@ def clean(value):
 
 def normalize_raid(value):
     text = clean(value).upper().replace(" ", "").replace("-", "")
+    if text in {"ZGMITTWOCH", "ZULGURUBMITTWOCH"}:
+        return "ZG-MITTWOCH"
+    if text in {"ZGPRIME", "ZULGURUBPRIME"}:
+        return "ZG-PRIME"
+    if text in {"ZGLATE", "ZULGURUBLATE"}:
+        return "ZG-LATE"
     if text in {"MOLTENCORE"}:
         return "MC"
     if text in {"BLACKWINGLAIR"}:
@@ -309,7 +318,12 @@ def display_raid(value):
 
 
 def po_release_required_for_raid(value):
-    return normalize_raid(value) in {"MC", "BWL", "AQ40", "NAXX"}
+    return normalize_raid(value) in {"MC", "BWL", "AQ40", "NAXX", "ZG-MITTWOCH", "ZG-PRIME", "ZG-LATE"}
+
+
+def loot_raid(value):
+    raid = normalize_raid(value)
+    return "ZG" if raid in {"ZG-MITTWOCH", "ZG-PRIME", "ZG-LATE"} else raid
 
 
 def slug(value):
@@ -580,6 +594,7 @@ def format_raid_announcement_time(value):
 
 def raid_announcement_image_url(raid):
     raid_key = normalize_raid((raid or {}).get("raid") or (raid or {}).get("raidName")).lower()
+    image_raid_key = "zg" if raid_key in {"zg-mittwoch", "zg-prime", "zg-late"} else raid_key
     guild_slug = normalize_guild_slug((raid or {}).get("guildSlug") or "")
     guild_name = clean((raid or {}).get("guild") or (raid or {}).get("gilde")).lower()
     if "nachtloot" in guild_name or "nachtw" in guild_name:
@@ -600,14 +615,14 @@ def raid_announcement_image_url(raid):
     registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
     layout = registry_entry.get("layout") or {}
     images = layout.get("raidImages") if isinstance(layout, dict) else {}
-    guild_image = clean((images or {}).get(raid_key))
+    guild_image = clean((images or {}).get(raid_key) or (images or {}).get(image_raid_key))
     if guild_slug != "lichtloot" and guild_image:
         return urllib.parse.urljoin(LICHTLOOT_URL.rstrip("/") + "/", guild_image)
     explicit = clean((raid or {}).get("raidImageUrl") or (raid or {}).get("imageUrl"))
     if explicit.startswith(("http://", "https://")):
         return explicit
-    if raid_key in {"zg", "aq20", "aq40", "bwl", "mc", "naxx", "ony"}:
-        return f"https://lichtloot-production.up.railway.app/images/raid-banners/{raid_key}.jpg"
+    if image_raid_key in {"zg", "aq20", "aq40", "bwl", "mc", "naxx", "ony"}:
+        return f"https://lichtloot-production.up.railway.app/images/raid-banners/{image_raid_key}.jpg"
     return ""
 
 
@@ -1984,7 +1999,7 @@ def apply_po_item_variants(payload, entries):
 
 async def load_raid_items(raid):
     try:
-        result = await asyncio.to_thread(api_get, {"action": "getLootItems", "raid": normalize_raid(raid)})
+        result = await asyncio.to_thread(api_get, {"action": "getLootItems", "raid": loot_raid(raid)})
     except Exception as error:
         print(f"Lootitems konnten nicht geladen werden ({raid}): {error}")
         return []
@@ -2003,7 +2018,7 @@ async def load_raid_items(raid):
 
 async def load_raid_item_rows(raid):
     try:
-        result = await asyncio.to_thread(api_get, {"action": "getLootItems", "raid": normalize_raid(raid), "t": int(time.time())})
+        result = await asyncio.to_thread(api_get, {"action": "getLootItems", "raid": loot_raid(raid), "t": int(time.time())})
     except Exception as error:
         print(f"Lootitems konnten nicht geladen werden ({raid}): {error}")
         return []

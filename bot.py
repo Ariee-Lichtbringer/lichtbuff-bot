@@ -3704,6 +3704,12 @@ async def discord_channel_sync_loop():
 def normalize_raid_name(value):
     raid = str(value or "").strip().upper()
     compact = re.sub(r"[^A-Z0-9]+", "", raid)
+    if compact in {"ZGMITTWOCH", "ZULGURUBMITTWOCH"}:
+        return "ZG-MITTWOCH"
+    if compact in {"ZGPRIME", "ZULGURUBPRIME"}:
+        return "ZG-PRIME"
+    if compact in {"ZGLATE", "ZULGURUBLATE"}:
+        return "ZG-LATE"
     aliases = {
         "ONYXIA": "ONY",
         "ONIXIA": "ONY",
@@ -3728,7 +3734,7 @@ def normalize_raid_name(value):
 
 
 def po_release_required_for_raid(value):
-    return normalize_raid_name(value) in {"MC", "BWL", "AQ40", "NAXX"}
+    return normalize_raid_name(value) in {"MC", "BWL", "AQ40", "NAXX", "ZG-MITTWOCH", "ZG-PRIME", "ZG-LATE"}
 
 
 def format_log_analysis_post_date(value):
@@ -10783,10 +10789,10 @@ async def on_message(message):
             channel_raids = p0_supported_raids_for_channel(message.channel.id)
             raid = channel_raids[0] if channel_raids else ""
 
-        if raid not in {"MC", "BWL", "AQ40", "NAXX"}:
+        if raid not in {"MC", "BWL", "AQ40", "NAXX", "ZG-MITTWOCH", "ZG-PRIME", "ZG-LATE"}:
             await send_temp(
                 message.channel,
-                "Bitte nutze `!p0` im MC/BWL/AQ40/Naxx-Raidchannel oder gib den Raid an: `!p0 mc`, `!p0 bwl`, `!p0 aq40`, `!p0 naxx`."
+                "Bitte nutze `!p0` in einem PO+-Raidchannel oder gib den Raid an, z. B. `!p0 zg-prime`."
             )
             await delete_command_message(message)
             return
