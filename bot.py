@@ -2603,13 +2603,24 @@ async def sync_recent_ticker_messages_for_all_guilds(limit=None):
 
 
 async def update_worldbuff_overview_from_all_guilds(force_repost=False):
-    await sync_recent_ticker_messages_for_all_guilds()
-
-    token = CURRENT_GUILD_SLUG.set(LICHTLOOT_GUILD_SLUG)
-    try:
-        await update_worldbuff_post(sync_ticker=False, force_repost=force_repost)
-    finally:
-        CURRENT_GUILD_SLUG.reset(token)
+    updated_count = 0
+    guild_slugs = dict.fromkeys([
+        LICHTLOOT_GUILD_SLUG,
+        NACHTLOOT_GUILD_SLUG,
+        PANEM_GUILD_SLUG
+    ])
+    for guild_slug in guild_slugs:
+        token = CURRENT_GUILD_SLUG.set(guild_slug)
+        try:
+            updated_count += await update_worldbuff_post(
+                sync_ticker=guild_slug == LICHTLOOT_GUILD_SLUG,
+                force_repost=force_repost
+            )
+        except Exception as error:
+            print(f"Worldbuff-Update fuer {guild_slug} fehlgeschlagen:", error)
+        finally:
+            CURRENT_GUILD_SLUG.reset(token)
+    return updated_count
 
 
 def get_hordenbuff_schedule_rows():
@@ -10577,7 +10588,10 @@ async def on_message(message):
     if lower == "!wb":
         status_message = await message.channel.send("🔄 **Worldbuffs und Hordenbuffs werden aktualisiert...**")
         try:
-            worldbuff_count = await asyncio.wait_for(update_worldbuff_post(sync_ticker=True), timeout=60)
+            worldbuff_count = await asyncio.wait_for(
+                update_worldbuff_post(sync_ticker=current_guild_slug() == LICHTLOOT_GUILD_SLUG),
+                timeout=60
+            )
             hordenbuff_count = await asyncio.wait_for(update_hordenbuff_post(force=True), timeout=45)
             await status_message.edit(
                 content=(
@@ -10623,8 +10637,11 @@ async def on_message(message):
             # Vor dem Posten nur den letzten lesbaren Ticker-Post einlesen.
             # Der Sync durchsucht nicht mehr die komplette Channel-Historie.
             count = await asyncio.wait_for(
-                update_worldbuff_post(sync_ticker=True, force_repost=True),
-                timeout=30
+                update_worldbuff_post(
+                    sync_ticker=current_guild_slug() == LICHTLOOT_GUILD_SLUG,
+                    force_repost=True
+                ),
+                timeout=60
             )
             if count:
                 target_channel_id = get_configured_worldbuff_channel_id()
