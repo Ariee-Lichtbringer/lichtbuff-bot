@@ -12,6 +12,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
 
 import discord
@@ -160,6 +161,7 @@ QUEUE_CHECK_SECONDS = int(os.getenv("PO_BOT_QUEUE_CHECK_SECONDS", "10") or "10")
 PRIO_SERVER = os.getenv("PO_BOT_PRIO_SERVER", "Lichtbringer")
 PO_HELP_IMAGE_FILENAME = "po-anmelder-hinweis.png"
 PO_HELP_IMAGE_PATH = Path(os.getenv("PO_BOT_HELP_IMAGE", str(Path(__file__).with_name(PO_HELP_IMAGE_FILENAME))))
+RAID_BANNER_DIR = Path(__file__).resolve().parent / "raid-banners"
 LICHTLOOT_PRIO_URL = os.getenv("LICHTLOOT_PRIO_URL", "")
 LICHTLOOT_URL = os.getenv("LICHTLOOT_URL", "https://lichtloot.de")
 
@@ -554,6 +556,18 @@ def format_raid_announcement_date(value):
     return raw
 
 
+def format_raid_announcement_day_and_date(value):
+    raw = clean(value)
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+        try:
+            parsed = datetime.strptime(raw, fmt)
+            weekday = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"][parsed.weekday()]
+            return f"{weekday}, {parsed.strftime('%d.%m.%Y')}"
+        except ValueError:
+            pass
+    return format_raid_announcement_date(value)
+
+
 def format_raid_announcement_time(value):
     raw = clean(value)
     if not raw:
@@ -587,7 +601,7 @@ def raid_announcement_image_url(raid):
     layout = registry_entry.get("layout") or {}
     images = layout.get("raidImages") if isinstance(layout, dict) else {}
     guild_image = clean((images or {}).get(raid_key))
-    if guild_image:
+    if guild_slug != "lichtloot" and guild_image:
         return urllib.parse.urljoin(LICHTLOOT_URL.rstrip("/") + "/", guild_image)
     explicit = clean((raid or {}).get("raidImageUrl") or (raid or {}).get("imageUrl"))
     if explicit.startswith(("http://", "https://")):
@@ -601,13 +615,18 @@ def build_raid_announcement_embed(raid):
     raid = raid or {}
     raid_name = clean(raid.get("raidName") or display_raid(raid.get("raid")) or "Raid")
     description = clean(raid.get("description")) or "Raidanmeldung ist geöffnet."
-    # Discord lässt Embeds bei kurzen Inhalten zusammenschrumpfen. Die Trennlinie
-    # hält den Raidanmelder auf derselben gut lesbaren Breite wie im Lichtbuff-Bot.
-    description = f"{description}\n\n{'━' * 42}"
     embed = discord.Embed(title=raid_name.upper(), description=description[:3900], color=0x7c3aed)
     embed.add_field(name="Raidlead", value=clean(raid.get("createdBy") or raid.get("erstelltVon") or "Gildenleitung"), inline=True)
-    embed.add_field(name="Datum", value=format_raid_announcement_date(raid.get("raidDate")), inline=True)
-    embed.add_field(name="Start", value=format_raid_announcement_time(raid.get("raidTime")), inline=True)
+    embed.add_field(
+        name="Tag / Datum",
+        value=f"**__{format_raid_announcement_day_and_date(raid.get('raidDate'))}__**",
+        inline=True,
+    )
+    embed.add_field(
+        name="Uhrzeit",
+        value=f"**__{format_raid_announcement_time(raid.get('raidTime'))}__**",
+        inline=True,
+    )
     deadline = format_raid_announcement_time(raid.get("signupDeadline") or raid.get("signup_deadline"))
     if deadline != "noch offen":
         embed.add_field(name="Anmeldeschluss", value=deadline, inline=False)
@@ -619,15 +638,55 @@ def build_raid_announcement_embed(raid):
     if slots:
         embed.add_field(name="Slots", value=" · ".join(slots), inline=False)
     embed.add_field(name="Prio-PIN", value=f"`{clean(raid.get('playerPin')) or '-'}`", inline=True)
-    embed.add_field(name="Webansicht", value=LICHTLOOT_URL, inline=True)
     worldbuff_block = current_worldbuff_announcement_block()
     if worldbuff_block:
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
-    image_url = raid_announcement_image_url(raid)
-    if image_url:
-        embed.set_image(url=image_url)
+    attachment_name = raid_banner_attachment_name(raid)
+    if attachment_name:
+        embed.set_image(url=f"attachment://{attachment_name}")
+    else:
+        image_url = raid_announcement_image_url(raid)
+        if image_url:
+            embed.set_image(url=image_url)
     embed.set_footer(text="Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein.")
     return embed
+
+
+def raid_banner_attachment_name(raid):
+    if payload_guild_slug(raid) != "lichtloot":
+        return ""
+    raid_key = normalize_raid(raid.get("raid") or raid.get("raidName")).lower()
+    filename = {
+        "zg": "zg.jpg", "aq20": "aq20.jpg", "aq40": "aq40.jpg",
+        "bwl": "bwl.jpg", "mc": "mc.jpg", "naxx": "naxx.jpg", "ony": "ony.jpg",
+    }.get(raid_key, "")
+    return filename if filename and (RAID_BANNER_DIR / filename).exists() else ""
+
+
+def raid_banner_file(raid):
+    filename = raid_banner_attachment_name(raid)
+    if not filename:
+        return None, ""
+    return discord.File(str(RAID_BANNER_DIR / filename), filename=filename), filename
+
+
+def add_raid_signup_links_field(embed, raid):
+    raid_id = clean((raid or {}).get("raidId") or (raid or {}).get("id"))
+    guild_slug = payload_guild_slug(raid or {})
+    edit_url = (
+        f"{LICHTLOOT_URL.rstrip('/')}/gildenleitung.html?"
+        + urllib.parse.urlencode({"guild": guild_slug, "raidHelper": raid_id})
+    )
+    embed.add_field(
+        name="\u200b",
+        value=" | ".join([
+            f"[Webansicht]({LICHTLOOT_URL.rstrip('/')}/)",
+            f"[Comp]({edit_url})",
+            f"[Gcal]({edit_url})",
+            f"[Bearbeiten]({edit_url})",
+        ]),
+        inline=False,
+    )
 
 
 def current_worldbuff_announcement_block(max_lines=8):
@@ -823,6 +882,7 @@ def add_raid_signup_roster_fields(embed, helper):
     rows = list((helper or {}).get("signups") or []) + list((helper or {}).get("externalSignups") or [])
     if not rows:
         embed.add_field(name="Anmeldungen", value="Noch keine Anmeldungen.", inline=False)
+        add_raid_signup_links_field(embed, (helper or {}).get("raid") or {})
         return
     grouped = {}
     raid_key = normalize_raid(((helper or {}).get("raid") or {}).get("raid") or "").lower()
@@ -837,7 +897,12 @@ def add_raid_signup_roster_fields(embed, helper):
             spec = signup_spec_from_note(row.get("note"), row.get("role")) or "Flex"
             star = " ★" if has_p0_release(player, raid_key) else ""
             lines.append(f"**{player}{star}** · {signup_spec_icon(spec, row.get('role'), cls)}")
-        embed.add_field(name=f"{class_icon(cls)} {cls} ({len(grouped[cls])})", value="\n".join(lines)[:1024], inline=True)
+        embed.add_field(
+            name=f"{class_icon(cls)} {cls} ({len(grouped[cls])})",
+            value=("\n".join(lines) + "\n\u200b")[:1024],
+            inline=False,
+        )
+    add_raid_signup_links_field(embed, (helper or {}).get("raid") or {})
 
 
 async def get_raid_helper_by_id(raid_id):
@@ -1004,8 +1069,12 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None):
     channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
     embed = build_raid_announcement_embed(raid)
     add_raid_signup_roster_fields(embed, helper)
+    banner, _ = raid_banner_file(raid)
     try:
-        message = await send_silent(channel, embed=embed, view=RaidSignupView(raid))
+        if banner:
+            message = await send_silent(channel, embed=embed, file=banner, view=RaidSignupView(raid))
+        else:
+            message = await send_silent(channel, embed=embed, view=RaidSignupView(raid))
     except discord.HTTPException:
         message = await send_silent(channel, build_raid_announcement_text(raid))
     if message:
@@ -3435,7 +3504,11 @@ async def refresh_po_message(client, payload):
     entries = await load_entries(payload)
     p0plus_labels = await load_p0plus_labels(payload.get("raid") or "")
     embeds, view = po_message_parts(payload, entries, p0plus_labels, items)
-    await message.edit(embeds=embeds, view=view)
+    banner, _ = raid_banner_file(combined_raid_snapshot(payload) or {})
+    if banner:
+        await message.edit(embeds=embeds, attachments=[banner], view=view)
+    else:
+        await message.edit(embeds=embeds, view=view)
     register_po_view(client, payload, items, entries)
 
 
@@ -3506,16 +3579,23 @@ async def post_or_update_from_queue(client, payload):
     entries = await load_entries(normalized)
     p0plus_labels = await load_p0plus_labels(normalized.get("raid") or "")
     embeds, view = po_message_parts(normalized, entries, p0plus_labels, items)
+    banner, _ = raid_banner_file(combined_raid_snapshot(normalized) or {})
     message = None
     if normalized.get("messageId"):
         try:
             message = await channel.fetch_message(int(normalized["messageId"]))
-            await message.edit(embeds=embeds, view=view)
+            if banner:
+                await message.edit(embeds=embeds, attachments=[banner], view=view)
+            else:
+                await message.edit(embeds=embeds, view=view)
         except Exception as error:
             print(f"PO-Anmelder wird neu gepostet, alte Nachricht nicht nutzbar ({post_key}): {error}")
             message = None
     if message is None:
-        message = await channel.send(embeds=embeds, view=view, silent=True)
+        if banner:
+            message = await channel.send(embeds=embeds, file=banner, view=view, silent=True)
+        else:
+            message = await channel.send(embeds=embeds, view=view, silent=True)
         normalized["messageId"] = str(message.id)
         if force_new_message and previous_message_id and previous_message_id != normalized["messageId"]:
             try:
