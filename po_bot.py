@@ -986,6 +986,50 @@ async def get_raid_helper_for_refresh(payload_or_raid_id):
     return await get_raid_helper_by_id(clean(payload_or_raid_id))
 
 
+def combined_po_payload_for_message(message_id):
+    wanted = clean(message_id)
+    if not wanted:
+        return None, None, None
+    state = load_state()
+    for state_key, payload in state.items():
+        if (
+            isinstance(payload, dict)
+            and clean(payload.get("messageId")) == wanted
+            and combined_raid_snapshot(payload)
+        ):
+            return state, state_key, dict(payload)
+    return state, None, None
+
+
+async def edit_raid_message_preserving_po(message, raid, helper):
+    state, state_key, po_payload = combined_po_payload_for_message(getattr(message, "id", ""))
+    if not po_payload:
+        embed = build_raid_announcement_embed(raid)
+        add_raid_signup_roster_fields(embed, helper)
+        banner, _ = raid_banner_file(raid)
+        if banner:
+            await message.edit(embed=embed, attachments=[banner], view=RaidSignupView(raid))
+        else:
+            await message.edit(embed=embed, view=RaidSignupView(raid))
+        return
+
+    po_payload["combinedRaidSnapshot"] = raid
+    po_payload["combinedRaidSignups"] = list((helper or {}).get("signups") or [])
+    po_payload["combinedRaidExternalSignups"] = list((helper or {}).get("externalSignups") or [])
+    state[state_key] = po_payload
+    save_state(state)
+    items = await items_for_payload(po_payload)
+    entries = await load_entries(po_payload)
+    p0plus_labels = await load_p0plus_labels(po_payload.get("raid") or "")
+    embeds, view = po_message_parts(po_payload, entries, p0plus_labels, items)
+    banner, _ = raid_banner_file(raid)
+    if banner:
+        await message.edit(embeds=embeds, attachments=[banner], view=view)
+    else:
+        await message.edit(embeds=embeds, view=view)
+    register_po_view(client, po_payload, items, entries)
+
+
 async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id=None, payload=None):
     helper = await get_raid_helper_for_refresh(payload or clean(raid_id))
     fallback_helper = raid_helper_snapshot_from_payload(payload) if payload else {}
@@ -1000,14 +1044,12 @@ async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id
         return "missing_message"
     channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
     message = await channel.fetch_message(int(message_id))
-    embed = build_raid_announcement_embed(raid)
-    add_raid_signup_roster_fields(embed, helper)
-    await message.edit(embed=embed, view=RaidSignupView(raid))
+    await edit_raid_message_preserving_po(message, raid, helper)
     print(f"Raidanmelder Refresh: {clean(raid.get('raidId') or raid_id)} mit {raid_signup_row_count(helper)} Anmeldung(en) gerendert.")
     return True
 
 
-async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None, origin_message_id=None):
+async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None, origin_message_id=None, optimistic_signup=None):
     try:
         raid_lookup_id = clean((raid or {}).get("raidId") or (raid or {}).get("id"))
         raid_pin = clean((raid or {}).get("playerPin") or (raid or {}).get("prioPin"))
@@ -1029,15 +1071,22 @@ async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None,
                 last_error = error
         if helper is None:
             raise last_error or RuntimeError("Raid-Anmelder konnte nicht geladen werden.")
+        if optimistic_signup:
+            all_rows = list(helper.get("signups") or []) + list(helper.get("externalSignups") or [])
+            optimistic_char = clean(optimistic_signup.get("char") or optimistic_signup.get("player")).lower()
+            if optimistic_char and not any(
+                clean(row.get("char") or row.get("player")).lower() == optimistic_char
+                for row in all_rows
+            ):
+                helper = dict(helper)
+                helper["externalSignups"] = list(helper.get("externalSignups") or []) + [optimistic_signup]
         fresh_raid = helper.get("raid") or raid or {}
-        embed = build_raid_announcement_embed(fresh_raid)
-        add_raid_signup_roster_fields(embed, helper)
         target = getattr(interaction, "message", None)
         if origin_channel_id and origin_message_id:
             channel = client.get_channel(int(origin_channel_id)) or await client.fetch_channel(int(origin_channel_id))
             target = await channel.fetch_message(int(origin_message_id))
         if target:
-            await target.edit(embed=embed, view=RaidSignupView(fresh_raid))
+            await edit_raid_message_preserving_po(target, fresh_raid, helper)
             print(f"Raidanmelder direkt aktualisiert: {clean(fresh_raid.get('raidId') or raid_lookup_id)} mit {raid_signup_row_count(helper)} Anmeldung(en).")
     except Exception as error:
         print(f"Raid-Anmelder-Message konnte nicht aktualisiert werden: {error}")
@@ -1052,9 +1101,7 @@ async def edit_raid_signup_message_from_helper(raid, helper, origin_channel_id=N
         raise RuntimeError("Raid-Anmelder direktes Update: Discord-Nachricht fehlt.")
     channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
     message = await channel.fetch_message(int(message_id))
-    embed = build_raid_announcement_embed(fresh_raid)
-    add_raid_signup_roster_fields(embed, helper)
-    await message.edit(embed=embed, view=RaidSignupView(fresh_raid))
+    await edit_raid_message_preserving_po(message, fresh_raid, helper)
     print(f"Raidanmelder direkt aktualisiert: {clean(fresh_raid.get('raidId') or fresh_raid.get('id'))} mit {raid_signup_row_count(helper)} Anmeldung(en).")
 
 
@@ -1208,7 +1255,24 @@ class RaidSignupCharacterSelect(discord.ui.Select):
             view=None
         )
         try:
-            await refresh_raid_signup_message(interaction, refresh_raid, self.origin_channel_id, self.origin_message_id)
+            await refresh_raid_signup_message(
+                interaction,
+                refresh_raid,
+                self.origin_channel_id,
+                self.origin_message_id,
+                {
+                    "char": char_name,
+                    "player": char_name,
+                    "className": char_class,
+                    "klasse": char_class,
+                    "role": infer_signup_role(self.spec_label),
+                    "status": "signed",
+                    "note": f"Skillung: {self.spec_label}",
+                    "discordUserId": str(interaction.user.id),
+                    "discordName": str(interaction.user.display_name),
+                    "source": raid_signup_source(interaction, self.origin_channel_id, self.origin_message_id),
+                },
+            )
         except Exception as error:
             print(f"Raid-Anmelder direkter Refresh nach Anmeldung fehlgeschlagen, nutze Snapshot-Fallback: {error}")
             try:
