@@ -342,7 +342,7 @@ P0_RELEASE_CSV_URL = os.getenv(
     "https://docs.google.com/spreadsheets/d/1ejape-5N42TDUIsglYZV1uPupQxYMiUK6JE1QiPJKbE/export?format=csv&gid=0"
 )
 P0_RELEASE_CACHE = {}
-P0_RELEASE_CACHE_TIME = None
+P0_RELEASE_CACHE_TIME = {}
 P0_RELEASE_CACHE_SECONDS = 300
 P0_RELEASE_REFRESHING = False
 
@@ -4271,6 +4271,8 @@ def raid_guild_slug(raid):
         if explicit in GUILD_REGISTRY:
             return explicit
     guild_name = str((raid or {}).get("guild") or (raid or {}).get("gilde") or "").strip().lower()
+    if "nachtloot" in guild_name or "nachtw" in guild_name:
+        return NACHTLOOT_GUILD_SLUG
     if guild_name:
         for slug_value, data in GUILD_REGISTRY.items():
             candidates = [
@@ -4597,70 +4599,71 @@ def raid_key_from_raid(raid):
     ]))
 
 
-def load_p0_release_cache():
+def load_p0_release_cache(guild_slug=LICHTLOOT_GUILD_SLUG):
     global P0_RELEASE_CACHE, P0_RELEASE_CACHE_TIME
+    guild_slug = normalize_guild_slug(guild_slug)
     now = time.time()
-    if P0_RELEASE_CACHE_TIME and now - P0_RELEASE_CACHE_TIME < P0_RELEASE_CACHE_SECONDS:
-        return P0_RELEASE_CACHE
+    cached_at = P0_RELEASE_CACHE_TIME.get(guild_slug)
+    if cached_at and now - cached_at < P0_RELEASE_CACHE_SECONDS:
+        return P0_RELEASE_CACHE.get(guild_slug, {})
 
     result = {}
     try:
-        with urllib.request.urlopen(P0_RELEASE_CSV_URL, timeout=8) as response:
-            content = response.read().decode("utf-8-sig")
-        rows = list(csv.reader(StringIO(content)))
-        if not rows:
-            return result
-        raid_columns = {}
-        for index, header in enumerate(rows[0]):
-            raid_key = raid_key_from_text(header)
-            if raid_key:
-                raid_columns[index] = raid_key
-                result.setdefault(raid_key, set())
-        for row in rows[1:]:
-            for index, raid_key in raid_columns.items():
-                if index < len(row):
-                    player_key = normalize_player_key(row[index])
-                    if player_key:
-                        result.setdefault(raid_key, set()).add(player_key)
-        P0_RELEASE_CACHE = result
-        P0_RELEASE_CACHE_TIME = now
+        response = lichtloot_get({
+            "action": "getP0ReleaseList",
+            "guild": guild_slug,
+            "guildSlug": guild_slug,
+            "t": int(now),
+        })
+        for raid_key, players in (response.get("releases") or {}).items():
+            result[raid_key] = {
+                normalize_player_key(player)
+                for player in players or []
+                if normalize_player_key(player)
+            }
+        P0_RELEASE_CACHE[guild_slug] = result
+        P0_RELEASE_CACHE_TIME[guild_slug] = now
     except Exception as e:
-        print("P0-Freigabeliste konnte nicht geladen werden:", e)
-    return P0_RELEASE_CACHE
+        print(f"P0-Freigabeliste fuer {guild_slug} konnte nicht geladen werden:", e)
+    return P0_RELEASE_CACHE.get(guild_slug, result)
 
 
-async def refresh_p0_release_cache_background(force=False):
+async def refresh_p0_release_cache_background(force=False, guild_slug=LICHTLOOT_GUILD_SLUG):
     global P0_RELEASE_CACHE_TIME, P0_RELEASE_REFRESHING
+    guild_slug = normalize_guild_slug(guild_slug)
     now = time.time()
-    if not force and P0_RELEASE_CACHE_TIME and now - P0_RELEASE_CACHE_TIME < P0_RELEASE_CACHE_SECONDS:
+    cached_at = P0_RELEASE_CACHE_TIME.get(guild_slug)
+    if not force and cached_at and now - cached_at < P0_RELEASE_CACHE_SECONDS:
         return
     if P0_RELEASE_REFRESHING:
         return
     P0_RELEASE_REFRESHING = True
     try:
-        await asyncio.to_thread(load_p0_release_cache)
+        await asyncio.to_thread(load_p0_release_cache, guild_slug)
     except Exception as e:
         print("P0-Freigabeliste Hintergrundrefresh fehlgeschlagen:", e)
     finally:
         P0_RELEASE_REFRESHING = False
 
 
-def schedule_p0_release_cache_refresh(force=False):
+def schedule_p0_release_cache_refresh(force=False, guild_slug=LICHTLOOT_GUILD_SLUG):
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    loop.create_task(refresh_p0_release_cache_background(force=force))
+    loop.create_task(refresh_p0_release_cache_background(force=force, guild_slug=guild_slug))
 
 
-def has_p0_release(player_name, raid_key):
+def has_p0_release(player_name, raid_key, guild_slug=LICHTLOOT_GUILD_SLUG):
     key = normalize_player_key(player_name)
     if not key or not raid_key:
         return False
+    guild_slug = normalize_guild_slug(guild_slug)
     try:
-        if not P0_RELEASE_CACHE_TIME or time.time() - P0_RELEASE_CACHE_TIME >= P0_RELEASE_CACHE_SECONDS:
-            schedule_p0_release_cache_refresh()
-        return key in P0_RELEASE_CACHE.get(raid_key, set())
+        cached_at = P0_RELEASE_CACHE_TIME.get(guild_slug)
+        if not cached_at or time.time() - cached_at >= P0_RELEASE_CACHE_SECONDS:
+            schedule_p0_release_cache_refresh(guild_slug=guild_slug)
+        return key in P0_RELEASE_CACHE.get(guild_slug, {}).get(raid_key, set())
     except Exception as e:
         print("P0-Freigabe konnte nicht geprueft werden:", e)
         return False
@@ -4757,16 +4760,16 @@ def signup_damage_range(row):
     return "melee"
 
 
-def p0_player_suffix(player_name, raid_key):
-    return " ★" if has_p0_release(player_name, raid_key) else ""
+def p0_player_suffix(player_name, raid_key, raid=None):
+    return " ★" if has_p0_release(player_name, raid_key, raid_guild_slug(raid or {})) else ""
 
 
-def format_signup_roster_line(row, raid_key=""):
+def format_signup_roster_line(row, raid_key="", raid=None):
     player = str(row.get("player") or row.get("char") or "-").strip() or "-"
     role = str(row.get("role") or "").strip()
     class_name = canonical_signup_class(row.get("className") or row.get("klasse"))
     spec = signup_spec_from_note(row.get("note"), role) or role or "Flex"
-    return f"**{player}{p0_player_suffix(player, raid_key)}** · {signup_spec_icon(spec, role, class_name)}"
+    return f"**{player}{p0_player_suffix(player, raid_key, raid)}** · {signup_spec_icon(spec, role, class_name)}"
 
 
 def raid_signup_roster_from_helper(helper):
@@ -4865,12 +4868,12 @@ def add_raid_signup_roster_fields(embed, helper):
 
     fields = []
     if roster["tank"]:
-        value = "\n".join(format_signup_roster_line(row, raid_key) for row in roster["tank"][:10])
+        value = "\n".join(format_signup_roster_line(row, raid_key, raid) for row in roster["tank"][:10])
         fields.append((f"🛡️ Tank ({len(roster['tank'])})", value[:1024]))
 
     for class_name in sorted(roster["classes"].keys(), key=signup_class_sort_key):
         rows = roster["classes"][class_name]
-        value = "\n".join(format_signup_roster_line(row, raid_key) for row in rows[:8])
+        value = "\n".join(format_signup_roster_line(row, raid_key, raid) for row in rows[:8])
         if len(rows) > 8:
             value += f"\n+ {len(rows) - 8} weitere"
         fields.append((signup_class_heading(class_name, len(rows)), value[:1024]))
@@ -4889,21 +4892,21 @@ def add_raid_signup_roster_fields(embed, helper):
 
     if roster["tentative"]:
         value = ", ".join(
-            f"**{str(row.get('player') or row.get('char') or '-').strip()}{p0_player_suffix(str(row.get('player') or row.get('char') or '-').strip(), raid_key)}**"
+            f"**{str(row.get('player') or row.get('char') or '-').strip()}{p0_player_suffix(str(row.get('player') or row.get('char') or '-').strip(), raid_key, raid)}**"
             for row in roster["tentative"][:14]
         )
         embed.add_field(name=f"⚖️ Vorläufig ({len(roster['tentative'])})", value=value[:1024], inline=False)
 
     if roster["bench"]:
         value = ", ".join(
-            f"**{str(row.get('player') or row.get('char') or '-').strip()}{p0_player_suffix(str(row.get('player') or row.get('char') or '-').strip(), raid_key)}**"
+            f"**{str(row.get('player') or row.get('char') or '-').strip()}{p0_player_suffix(str(row.get('player') or row.get('char') or '-').strip(), raid_key, raid)}**"
             for row in roster["bench"][:14]
         )
         embed.add_field(name=f"🪑 Bank ({len(roster['bench'])})", value=value[:1024], inline=False)
 
     if roster["absent"]:
         value = ", ".join(
-            f"**{str(row.get('player') or row.get('char') or '-').strip()}{p0_player_suffix(str(row.get('player') or row.get('char') or '-').strip(), raid_key)}**"
+            f"**{str(row.get('player') or row.get('char') or '-').strip()}{p0_player_suffix(str(row.get('player') or row.get('char') or '-').strip(), raid_key, raid)}**"
             for row in roster["absent"][:18]
         )
         embed.add_field(name=f"🚫 Abwesenheit ({len(roster['absent'])})", value=value[:1024], inline=False)
@@ -4926,7 +4929,8 @@ def raid_signup_class_options():
 
 
 def raid_signup_summary_from_helper(helper):
-    raid_key = raid_key_from_raid(helper.get("raid") or {})
+    raid = helper.get("raid") or {}
+    raid_key = raid_key_from_raid(raid)
     signups = []
     for row in helper.get("signups") or []:
         signups.append(row)
@@ -4952,7 +4956,7 @@ def raid_signup_summary_from_helper(helper):
             player = str(row.get("player") or row.get("char") or "-").strip()
             role = str(row.get("role") or "").strip()
             spec = signup_spec_from_note(row.get("note"), role)
-            lines.append(f"{signup_spec_icon(spec, role, class_name)} {player}{p0_player_suffix(player, raid_key)}")
+            lines.append(f"{signup_spec_icon(spec, role, class_name)} {player}{p0_player_suffix(player, raid_key, raid)}")
             shown += 1
         if shown >= 18:
             break

@@ -568,6 +568,8 @@ def raid_announcement_image_url(raid):
     raid_key = normalize_raid((raid or {}).get("raid") or (raid or {}).get("raidName")).lower()
     guild_slug = normalize_guild_slug((raid or {}).get("guildSlug") or "")
     guild_name = clean((raid or {}).get("guild") or (raid or {}).get("gilde")).lower()
+    if "nachtloot" in guild_name or "nachtw" in guild_name:
+        guild_slug = "nachtloot"
     if not (raid or {}).get("guildSlug") and guild_name:
         for slug_value, data in GUILD_REGISTRY.items():
             candidates = [
