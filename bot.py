@@ -469,6 +469,22 @@ async def refresh_guild_registry():
         if discord_guild_id:
             discord_map[discord_guild_id] = slug_value
 
+    public_url = LICHTLOOT_API_URL + "?" + urllib.parse.urlencode({
+        "action": "listGuilds",
+        "t": int(time.time())
+    })
+    try:
+        with urllib.request.urlopen(public_url, timeout=30) as response:
+            public_result = parse_json_api_response(response, "LichtLoot Gildenlayout", public_url)
+        for row in public_result.get("guilds") or []:
+            slug_value = normalize_guild_slug(row.get("slug"))
+            if slug_value in registry:
+                registry[slug_value].update(row)
+            elif slug_value:
+                registry[slug_value] = row
+    except Exception as error:
+        print("Gildenlayouts konnten nicht geladen werden:", error)
+
     GUILD_REGISTRY = registry
     DISCORD_GUILD_SLUGS = discord_map
     WORLDBUFF_GUILD_SLUGS = configured_worldbuff_guild_slugs()
@@ -4271,7 +4287,11 @@ def download_raid_banner_file(raid):
     try:
         request = urllib.request.Request(
             image_url,
-            headers={"User-Agent": "LichtbuffBot/1.0"}
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; LichtbuffBot/1.0)",
+                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                "Referer": "https://worldofwarcraft.blizzard.com/",
+            }
         )
         with urllib.request.urlopen(request, timeout=20) as response:
             content = response.read(8 * 1024 * 1024)
