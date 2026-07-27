@@ -7291,6 +7291,23 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
                 posted = True
             if not posted:
                 raise RuntimeError(f"Raid-Ankuendigung konnte nicht gepostet werden: {payload}")
+            followup_po = payload.get("followupPoPost")
+            if isinstance(followup_po, dict) and followup_po:
+                followup_result = await asyncio.to_thread(lichtloot_post, {
+                    **followup_po,
+                    "action": "guildQueuePoPost",
+                    "queueToken": LICHTBOT_QUEUE_TOKEN,
+                    "restoreArchived": "true",
+                })
+                if not followup_result.get("success"):
+                    raise RuntimeError(
+                        followup_result.get("error")
+                        or "PO+-Anmelder konnte nach dem Raidpost nicht vorgemerkt werden."
+                    )
+                print(
+                    "PO+-Anmelder nach Raidanmelder vorgemerkt: "
+                    f"{current_guild_slug()}:{followup_po.get('postKey') or '-'}"
+                )
         elif update_type == "raid_announcement_refresh":
             refreshed = await refresh_raid_signup_message_by_id(
                 payload.get("raidId") or payload.get("id"),
