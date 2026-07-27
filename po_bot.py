@@ -890,7 +890,8 @@ def add_raid_signup_roster_fields(embed, helper):
         cls = canonical_signup_class(row.get("className") or row.get("klasse"))
         grouped.setdefault(cls, []).append(row)
     order = ["Warrior", "Druid", "Paladin", "Rogue", "Hunter", "Priest", "Mage", "Warlock", "Shaman", "Ohne Klasse"]
-    for cls in sorted(grouped, key=lambda value: order.index(value) if value in order else 99):
+    sorted_classes = sorted(grouped, key=lambda value: order.index(value) if value in order else 99)
+    for class_index, cls in enumerate(sorted_classes):
         lines = []
         for row in grouped[cls][:8]:
             player = clean(row.get("player") or row.get("char")) or "-"
@@ -899,9 +900,11 @@ def add_raid_signup_roster_fields(embed, helper):
             lines.append(f"**{player}{star}** · {signup_spec_icon(spec, row.get('role'), cls)}")
         embed.add_field(
             name=f"{class_icon(cls)} {cls} ({len(grouped[cls])})",
-            value=("\n".join(lines) + "\n\u200b")[:1024],
-            inline=False,
+            value="\n".join(lines)[:1024],
+            inline=True,
         )
+        if class_index % 2 == 1 and class_index < len(sorted_classes) - 1:
+            embed.add_field(name="\u200b", value="\u200b", inline=False)
     add_raid_signup_links_field(embed, (helper or {}).get("raid") or {})
 
 
