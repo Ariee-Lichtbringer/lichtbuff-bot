@@ -2563,8 +2563,72 @@ async def update_worldbuff_overview_from_all_guilds(force_repost=False):
         CURRENT_GUILD_SLUG.reset(token)
 
 
+def get_hordenbuff_schedule_rows():
+    """
+    Beide Gilden verwenden dieselben Rend-Wurfzeiten aus der LichtLoot-
+    Hordenbuff-Liste. Die Anmeldedaten werden spaeter weiterhin aus der
+    Hordenbuff-Liste im jeweiligen Gildenkontext geladen.
+    """
+    token = CURRENT_GUILD_SLUG.set(LICHTLOOT_GUILD_SLUG)
+    try:
+        return iter_hordenbuff_railway_rows()
+    finally:
+        CURRENT_GUILD_SLUG.reset(token)
+
+
+def sync_hordenbuff_schedule_to_nachtloot():
+    if not LICHTBOT_QUEUE_TOKEN:
+        print("Rend-Termin-Sync nach NachtLoot uebersprungen: LICHTBOT_QUEUE_TOKEN fehlt.")
+        return 0
+
+    source_rows = get_hordenbuff_schedule_rows()
+    token = CURRENT_GUILD_SLUG.set(PANEM_GUILD_SLUG)
+    try:
+        target_rows = iter_hordenbuff_railway_rows()
+        existing = {
+            (str(row.get("datum") or ""), str(row.get("uhrzeit") or ""))
+            for row in target_rows
+            if normalize_buff(row.get("buff", "Rend")) == "Rend"
+        }
+        copied = 0
+        seen = set()
+
+        for row in source_rows:
+            if normalize_buff(row.get("buff", "Rend")) != "Rend":
+                continue
+
+            key = (str(row.get("datum") or ""), str(row.get("uhrzeit") or ""))
+            if not all(key) or key in existing or key in seen:
+                continue
+            seen.add(key)
+
+            result = railway_post({
+                "action": "guildCreateBuffTerm",
+                "queueToken": LICHTBOT_QUEUE_TOKEN,
+                "target": "hordenbuff",
+                "buff": "Rend",
+                "datum": key[0],
+                "uhrzeit": key[1],
+                "gilde": "Horde",
+                "status": "offen",
+                "note": "Rend-Termin automatisch aus LichtLoot übernommen"
+            })
+            if result.get("success"):
+                copied += 1
+                existing.add(key)
+            else:
+                print(f"Rend-Termin {key[0]} {key[1]} konnte nicht nach NachtLoot kopiert werden:", result)
+
+        if copied:
+            clear_hordenbuff_csv_cache()
+            print(f"{copied} Rend-Termin(e) automatisch nach NachtLoot uebertragen.")
+        return copied
+    finally:
+        CURRENT_GUILD_SLUG.reset(token)
+
+
 def get_upcoming_horden_rend_entries(limit=None):
-    rows = iter_hordenbuff_railway_rows()
+    rows = get_hordenbuff_schedule_rows()
     now = datetime.now(BERLIN_TZ).replace(tzinfo=None)
     rend_termine = []
     seen_events = set()
@@ -2624,7 +2688,7 @@ def get_recent_expired_horden_rend():
     Beispiel: Rend 19:35 -> ab 19:40 wird einmalig aufgeraeumt.
     Das Zeitfenster verhindert, dass der Bot beim Neustart alte Termine von gestern bereinigt.
     """
-    buffs = import_buffs_aus_sheet()
+    buffs = get_hordenbuff_schedule_rows()
     now = datetime.now(BERLIN_TZ).replace(tzinfo=None)
     expired = []
 
@@ -3097,6 +3161,20 @@ async def update_hordenbuff_post(force=False):
             except Exception as e:
                 print(f"Hordenbuff-Update Fehler in {channel_id}: {e}")
         return updated_count
+
+
+async def update_hordenbuff_posts_for_all_guilds(force=False):
+    await asyncio.to_thread(sync_hordenbuff_schedule_to_nachtloot)
+    updated_count = 0
+    for guild_slug in [LICHTLOOT_GUILD_SLUG, PANEM_GUILD_SLUG]:
+        token = CURRENT_GUILD_SLUG.set(guild_slug)
+        try:
+            updated_count += await update_hordenbuff_post(force=force)
+        except Exception as e:
+            print(f"Hordenbuff-Update fuer {guild_slug} fehlgeschlagen:", e)
+        finally:
+            CURRENT_GUILD_SLUG.reset(token)
+    return updated_count
 
 
 async def add_rend_spieler(message, charakter):
@@ -7022,10 +7100,10 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             clear_worldbuff_csv_cache()
             await update_worldbuff_overview_from_all_guilds()
         elif update_type == "hordenbuff_update":
-            await update_hordenbuff_post(force=True)
+            await update_hordenbuff_posts_for_all_guilds(force=True)
         else:
             await update_worldbuff_overview_from_all_guilds()
-            await update_hordenbuff_post(force=True)
+            await update_hordenbuff_posts_for_all_guilds(force=True)
 
         if resolve_old_queue and row_number:
             await asyncio.to_thread(lichtloot_post, {
@@ -9887,7 +9965,7 @@ async def handle_ticker_update(message):
     await update_worldbuff_overview_from_all_guilds(force_repost=True)
 
     if any(normalize_buff(b["buff"]) == "Rend" for b in new_buffs):
-        await update_hordenbuff_post(force=True)
+        await update_hordenbuff_posts_for_all_guilds(force=True)
 
     if (
         DELETE_WORLDBUFF_POSTER_SOURCE_MESSAGES
@@ -9947,6 +10025,10 @@ async def on_ready():
     if not hasattr(client, "worldbuff_startup_task_started"):
         client.worldbuff_startup_task_started = True
         client.loop.create_task(update_worldbuff_overview_from_all_guilds())
+
+    if not hasattr(client, "hordenbuff_startup_task_started"):
+        client.hordenbuff_startup_task_started = True
+        client.loop.create_task(update_hordenbuff_posts_for_all_guilds(force=True))
 
     if not hasattr(client, "p0_duplicate_cleanup_started"):
         client.p0_duplicate_cleanup_started = True
