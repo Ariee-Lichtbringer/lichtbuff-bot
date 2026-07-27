@@ -4783,7 +4783,13 @@ def signup_role_bucket(row):
         return "absent"
     if status == "tentative":
         return "tentative"
-    if status == "bench":
+    api_status = status
+    if status == "late":
+        api_status = "signed"
+        note_text = f"Spät: {status_note}" if status_note else "Spät"
+        if existing_note and "spät" not in existing_note.lower():
+            note_text = f"{existing_note} | {note_text}"
+    elif status == "bench":
         return "bench"
 
     role = str(row.get("role") or "").strip().lower()
@@ -5451,7 +5457,12 @@ class RaidSignupStatusModal(discord.ui.Modal):
             return
         try:
             await save_raid_signup_status(interaction, self.raid, char_name, self.status, note)
-            label = "auf die Bank gesetzt" if self.status == "bench" else "als abwesend markiert"
+            label = {
+                "bench": "auf die Bank gesetzt",
+                "late": "als verspätet markiert",
+                "tentative": "als vorläufig markiert",
+                "absent": "als abwesend markiert",
+            }.get(self.status, "aktualisiert")
             await interaction.response.send_message(f"✅ **{char_name}** wurde {label}.", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"⚠️ Status konnte nicht geändert werden: {e}", ephemeral=True)
@@ -5545,6 +5556,12 @@ class RaidSignupClassSelect(discord.ui.Select):
         )
 
 
+class RaidSignupChangeView(discord.ui.View):
+    def __init__(self, raid):
+        super().__init__(timeout=180)
+        self.add_item(RaidSignupClassSelect(raid))
+
+
 class RaidSignupView(discord.ui.View):
     def __init__(self, raid):
         super().__init__(timeout=None)
@@ -5555,9 +5572,25 @@ class RaidSignupView(discord.ui.View):
     async def bench_signup(self, interaction, button):
         await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "bench", "Auf die Bank setzen"))
 
-    @discord.ui.button(label="Abwesend", emoji="🚫", style=discord.ButtonStyle.secondary, custom_id="raid_signup_absent")
+    @discord.ui.button(label="Spät", emoji="🕒", style=discord.ButtonStyle.secondary, custom_id="raid_signup_late")
+    async def late_signup(self, interaction, button):
+        await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "late", "Verspätung eintragen"))
+
+    @discord.ui.button(label="Vorläufig", emoji="⚖️", style=discord.ButtonStyle.secondary, custom_id="raid_signup_tentative")
+    async def tentative_signup(self, interaction, button):
+        await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "tentative", "Vorläufig anmelden"))
+
+    @discord.ui.button(label="Abwesenheit", emoji="🚫", style=discord.ButtonStyle.secondary, custom_id="raid_signup_absent")
     async def absent_signup(self, interaction, button):
         await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "absent", "Als abwesend markieren"))
+
+    @discord.ui.button(label="Ändern", emoji="⚙️", style=discord.ButtonStyle.secondary, custom_id="raid_signup_change")
+    async def change_signup(self, interaction, button):
+        await interaction.response.send_message(
+            "Wähle deine Klasse, um Charakter oder Skillung zu ändern:",
+            view=RaidSignupChangeView(self.raid),
+            ephemeral=True
+        )
 
 
 async def restore_active_raid_signup_views():
@@ -6424,7 +6457,7 @@ async def review_p0_signup(signup, status, interaction, selection):
         "action": "lichtbotReviewP0Signup",
         "queueToken": LICHTBOT_QUEUE_TOKEN,
         "signupId": signup.get("id") or "",
-        "status": status,
+        "status": api_status,
         "reviewerDiscordId": str(interaction.user.id),
         "reviewerDiscordName": str(interaction.user.display_name)
     }
