@@ -773,8 +773,11 @@ async def edit_raid_signup_message_from_helper(raid, helper, origin_channel_id=N
     print(f"Raidanmelder direkt aktualisiert: {clean(fresh_raid.get('raidId') or fresh_raid.get('id'))} mit {raid_signup_row_count(helper)} Anmeldung(en).")
 
 
-async def post_raid_announcement_by_id(raid_id, channel_id=None):
-    helper = await get_raid_helper_by_id(clean(raid_id))
+async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None):
+    helper = await get_raid_helper_for_refresh(payload or clean(raid_id))
+    fallback_helper = raid_helper_snapshot_from_payload(payload) if payload else {}
+    if (not helper or not helper.get("success")) and fallback_helper.get("raid"):
+        helper = fallback_helper
     raid = helper.get("raid") if helper and helper.get("success") else None
     if not raid:
         return "stale"
@@ -3176,7 +3179,8 @@ async def po_queue_loop():
                         if item_type == "raid_announcement":
                             posted = await post_raid_announcement_by_id(
                                 payload.get("raidId") or payload.get("id"),
-                                payload.get("channelId") or payload.get("discordChannelId")
+                                payload.get("channelId") or payload.get("discordChannelId"),
+                                payload
                             )
                             if posted and posted != "stale":
                                 await resolve_queue_item(item.get("rowNumber"))
