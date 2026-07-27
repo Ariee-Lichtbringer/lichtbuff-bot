@@ -3304,7 +3304,7 @@ async def po_queue_loop():
             })
             if result.get("success"):
                 items = result.get("items") or []
-                po_items = [item for item in items if clean(item.get("type")) in {"po_post", "p0_post_refresh", "raid_announcement", "raid_announcement_refresh", "raid_signup_notice"}]
+                po_items = [item for item in items if clean(item.get("type")) in {"po_post", "p0_post_refresh"}]
                 stale_delete_items = [item for item in items if clean(item.get("type")) == "po_post_delete"]
                 for item in stale_delete_items:
                     queue_guild_slug = normalize_guild_slug(item.get("guild") or item.get("guildSlug"))
