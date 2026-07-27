@@ -2886,11 +2886,6 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
         "slot": item_slot,
         "boss": item_boss,
     })
-    await interaction.followup.send(
-        f"✅ Deine PO wurde im Discord gespeichert: **{saved_player}** → **{saved_item}**.\n"
-        "Der PO-Post wird gleich aktualisiert.",
-        ephemeral=True,
-    )
     asyncio.create_task(refresh_po_message_safely(interaction.client, payload))
     prio_result = None
     try:
@@ -2903,6 +2898,12 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
             f"⚠️ Discord-Eintrag ist gespeichert, aber PO+ konnte nicht gespeichert werden: {detail}",
             ephemeral=True,
         )
+        return
+    await interaction.followup.send(
+        f"✅ Deine PO wurde gespeichert: **{saved_player}** → **{saved_item}**.\n"
+        "Der PO-Post wird gleich aktualisiert.",
+        ephemeral=True,
+    )
 
 
 class PoEntryModal(discord.ui.Modal):
