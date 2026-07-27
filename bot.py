@@ -322,7 +322,9 @@ WORLDBUFF_API_CACHE_SECONDS = 60
 WORLDBUFF_CHANNEL_CACHE = {}
 WORLDBUFF_CHANNEL_CACHE_TIME = {}
 WORLDBUFF_CHANNEL_CACHE_SECONDS = 120
-WORLDBUFF_TICKER_HISTORY_LIMIT = int(os.getenv("WORLDBUFF_TICKER_HISTORY_LIMIT", "3000") or 3000)
+WORLDBUFF_TICKER_LAST_POST_SCAN_LIMIT = int(
+    os.getenv("WORLDBUFF_TICKER_LAST_POST_SCAN_LIMIT", "25") or 25
+)
 HORDENBUFF_CSV_URL = "https://docs.google.com/spreadsheets/d/1eItzaMGhpJ28vv4sDA8wwmu0YhUxcbiz-2VLiCVyjv4/export?format=csv&gid=1246908857"
 HORDENBUFF_CSV_CACHE_CONTENT = ""
 HORDENBUFF_CSV_CACHE_TIME = None
@@ -686,6 +688,13 @@ def worldbuff_channel_rank(channel):
 
 def get_configured_worldbuff_channel_id():
     guild_slug = current_guild_slug()
+
+    # LichtLoot besitzt einen festen "Lichtbuff Post"-Channel. Fuer diese
+    # Hauptgilde darf nicht irgendein anderer Channel mit "worldbuff" oder
+    # "buff" im Namen automatisch ausgewaehlt werden.
+    if guild_slug == LICHTLOOT_GUILD_SLUG:
+        return str(WORLDBUFF_REPLACEMENT_WORLDBUFF_CHANNEL_ID or POST_CHANNEL_ID)
+
     now = time.time()
     cached = WORLDBUFF_CHANNEL_CACHE.get(guild_slug)
     cached_at = WORLDBUFF_CHANNEL_CACHE_TIME.get(guild_slug, 0)
@@ -716,8 +725,6 @@ def get_configured_worldbuff_channel_id():
         except Exception as error:
             print(f"Worldbuff-Zielchannel fuer {guild_slug} konnte nicht aus Railway geladen werden: {error}")
 
-    if guild_slug == LICHTLOOT_GUILD_SLUG:
-        return str(POST_CHANNEL_ID)
     return ""
 
 
@@ -2386,10 +2393,11 @@ async def delete_extra_messages(messages):
 
 async def sync_recent_ticker_messages(limit=None):
     if limit is None:
-        limit = WORLDBUFF_TICKER_HISTORY_LIMIT
+        limit = WORLDBUFF_TICKER_LAST_POST_SCAN_LIMIT
 
     cached_rows = await asyncio.to_thread(load_json, worldbuff_file(), [])
     found_buffs = []
+    readable_ticker_channels = 0
 
     for channel_id in ticker_channel_ids_for_current_guild():
         try:
@@ -2399,35 +2407,51 @@ async def sync_recent_ticker_messages(limit=None):
             continue
 
         try:
-            for message_id in WORLDBUFF_POSTER_MESSAGE_IDS:
-                try:
-                    source_msg = await channel.fetch_message(int(message_id))
-                    found_buffs.extend(parse_ticker_message(discord_message_search_text(source_msg)))
-                except discord.NotFound:
-                    pass
-                except Exception as e:
-                    print(f"Worldbuff-Poster-Message {message_id} in Channel {channel_id} konnte nicht gelesen werden:", e)
+            readable_ticker_channels += 1
+            latest_ticker_message = None
+            latest_buffs = []
 
-            try:
-                async for pinned_msg in channel.pins():
-                    found_buffs.extend(parse_ticker_message(discord_message_search_text(pinned_msg)))
-            except Exception as e:
-                print(f"Ticker-Pins {channel_id} konnten nicht gelesen werden:", e)
+            # Nur den neuesten Post verwenden, der tatsaechlich lesbare
+            # Worldbuff-Termine enthaelt. Das kleine Suchfenster erlaubt
+            # Hinweise oder Bot-Statusmeldungen nach dem eigentlichen Post,
+            # ohne die gesamte Channel-Historie einzulesen.
+            async for msg in channel.history(limit=limit, oldest_first=False):
+                parsed_buffs = parse_ticker_message(discord_message_search_text(msg))
+                if parsed_buffs:
+                    latest_ticker_message = msg
+                    latest_buffs = parsed_buffs
+                    break
 
-            async for msg in channel.history(limit=limit):
-                found_buffs.extend(parse_ticker_message(discord_message_search_text(msg)))
+            if latest_ticker_message:
+                found_buffs.extend(latest_buffs)
+                print(
+                    f"Letzten Ticker-Post {latest_ticker_message.id} aus Channel "
+                    f"{channel_id} gelesen: {len(latest_buffs)} Buff-Zeilen."
+                )
+            else:
+                print(
+                    f"Kein lesbarer Worldbuff-Ticker-Post unter den letzten "
+                    f"{limit} Nachrichten in Channel {channel_id} gefunden."
+                )
         except Exception as e:
-            print(f"Ticker-Historie {channel_id} konnte nicht gelesen werden:", e)
+            readable_ticker_channels -= 1
+            print(f"Letzter Ticker-Post aus Channel {channel_id} konnte nicht gelesen werden:", e)
             continue
 
     found_buffs = [buff for buff in found_buffs if not is_deleted_worldbuff(buff)]
 
-    if not found_buffs and not cached_rows:
+    if not found_buffs and not cached_rows and not readable_ticker_channels:
         return 0
 
     railway_rows = await asyncio.to_thread(import_buffs_aus_sheet)
     combined_rows = list(railway_rows)
-    merge_ticker_buffs_preserving_railway(combined_rows, cached_rows)
+
+    # Wenn kein Ticker-Channel erreichbar war, bleibt der letzte Cache als
+    # Ausfallsicherung erhalten. Sobald ein Channel gelesen werden konnte,
+    # wird der alte Ticker-Cache dagegen vollständig durch dessen letzten
+    # Post ersetzt.
+    if not readable_ticker_channels:
+        merge_ticker_buffs_preserving_railway(combined_rows, cached_rows)
     added = merge_ticker_buffs_preserving_railway(combined_rows, found_buffs)
 
     await asyncio.to_thread(save_json, worldbuff_file(), [
@@ -2440,7 +2464,7 @@ async def sync_recent_ticker_messages(limit=None):
         if not is_own_worldbuff(buff)
     ])
 
-    print(f"Ticker-Historie geprüft: {len(found_buffs)} Buff-Zeilen gefunden, {added} neu gespeichert.")
+    print(f"Letzte Ticker-Posts geprüft: {len(found_buffs)} Buff-Zeilen gefunden, {added} neu gespeichert.")
     return added
 
 
@@ -2450,10 +2474,10 @@ async def update_worldbuff_post(sync_ticker=True, force_repost=False):
         print(f"Worldbuff-Uebersicht fuer {current_guild_slug()} uebersprungen: kein Zielchannel konfiguriert.")
         return 0
 
-    channel = client.get_channel(int(channel_id))
-
-    if channel is None:
-        print(f"Ziel-Channel nicht gefunden: {channel_id}")
+    try:
+        channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+    except Exception as error:
+        print(f"Ziel-Channel {channel_id} konnte nicht geladen werden: {error}")
         return 0
 
     if sync_ticker:
@@ -10465,16 +10489,20 @@ async def on_message(message):
     if lower in ["!worldbuff", "!worldbuffs"]:
         status_message = await message.channel.send("🔄 **Worldbuff-Post wird aktualisiert...**")
         try:
-            # Die Worldbuff-Uebersicht kommt aus Railway/Apps Script und kann
-            # direkt neu gepostet werden. Ein kompletter Discord-Ticker-Sync
-            # durchsucht mehrere tausend alte Nachrichten und darf den
-            # manuellen Befehl deshalb nicht blockieren.
+            # Vor dem Posten nur den letzten lesbaren Ticker-Post einlesen.
+            # Der Sync durchsucht nicht mehr die komplette Channel-Historie.
             count = await asyncio.wait_for(
-                update_worldbuff_post(sync_ticker=False, force_repost=True),
+                update_worldbuff_post(sync_ticker=True, force_repost=True),
                 timeout=30
             )
             if count:
-                await status_message.edit(content=f"✅ **Worldbuff-Post aktualisiert.** Posts: **{count}**")
+                target_channel_id = get_configured_worldbuff_channel_id()
+                await status_message.edit(
+                    content=(
+                        f"✅ **Worldbuff-Post aktualisiert.** Posts: **{count}** · "
+                        f"Ziel: <#{target_channel_id}>"
+                    )
+                )
             else:
                 await status_message.edit(content="⚠️ **Worldbuff-Post wurde nicht aktualisiert.** Kein Zielchannel oder keine Termine gefunden.")
             client.loop.create_task(delete_message_later(status_message, 15))
