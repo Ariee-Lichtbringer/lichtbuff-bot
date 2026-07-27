@@ -7298,6 +7298,7 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
                     "action": "guildQueuePoPost",
                     "queueToken": LICHTBOT_QUEUE_TOKEN,
                     "restoreArchived": "true",
+                    "forceNewMessage": "true",
                 })
                 if not followup_result.get("success"):
                     raise RuntimeError(

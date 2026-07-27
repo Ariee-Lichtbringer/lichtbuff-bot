@@ -3258,6 +3258,12 @@ async def post_or_update_from_queue(client, payload):
     state = load_state()
     state_key = po_post_state_key(payload)
     stored = state.get(state_key) or state.get(post_key) or {}
+    force_new_message = clean(
+        payload.get("forceNewMessage") or payload.get("forceRepost")
+    ).lower() in {"1", "true", "yes", "ja"}
+    previous_message_id = clean(
+        stored.get("messageId") or payload.get("messageId") or payload.get("discordMessageId")
+    )
     normalized = {
         **stored,
         **payload,
@@ -3270,11 +3276,13 @@ async def post_or_update_from_queue(client, payload):
         "sourceChannelId": str(source_channel_id),
         "targetChannelId": str(target_channel_id),
         "channelId": str(target_channel_id),
-        "messageId": clean(stored.get("messageId") or payload.get("messageId") or payload.get("discordMessageId")),
+        "messageId": "" if force_new_message else previous_message_id,
     }
     normalized = payload_with_lichtloot_id_from_sources(normalized, stored)
     normalized = await asyncio.to_thread(ensure_payload_lichtloot_raid, normalized)
-    if not normalized.get("messageId"):
+    if force_new_message and not previous_message_id:
+        previous_message_id = await find_existing_message_id(client, normalized)
+    elif not normalized.get("messageId"):
         normalized["messageId"] = await find_existing_message_id(client, normalized)
 
     channel = await fetch_accessible_channel(client, target_channel_id)
@@ -3296,6 +3304,15 @@ async def post_or_update_from_queue(client, payload):
     if message is None:
         message = await send_po_message(channel, embed, view)
         normalized["messageId"] = str(message.id)
+        if force_new_message and previous_message_id and previous_message_id != normalized["messageId"]:
+            try:
+                previous_message = await channel.fetch_message(int(previous_message_id))
+                await previous_message.delete()
+            except Exception as error:
+                print(
+                    f"Alter PO-Anmelder konnte nach dem Neuposten nicht entfernt werden "
+                    f"({post_key}/{previous_message_id}): {error}"
+                )
     state[state_key] = normalized
     if post_key in state and post_key != state_key:
         state.pop(post_key, None)
