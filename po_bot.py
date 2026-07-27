@@ -3413,11 +3413,7 @@ async def po_queue_loop():
                 po_items = [
                     item for item in items
                     if clean(item.get("type")) in {"po_post", "p0_post_refresh"}
-                    or (
-                        clean(item.get("type")) == "raid_announcement"
-                        and isinstance((item.get("payload") or {}).get("followupPoPost"), dict)
-                        and (item.get("payload") or {}).get("followupPoPost")
-                    )
+                    or clean(item.get("type")) == "raid_announcement"
                 ]
                 stale_delete_items = [item for item in items if clean(item.get("type")) == "po_post_delete"]
                 for item in stale_delete_items:
@@ -3455,6 +3451,19 @@ async def po_queue_loop():
                                 or payload.get("discordChannelId")
                                 or raid.get("discordChannelId")
                             )
+                            if not followup:
+                                posted = await post_raid_announcement_by_id(
+                                    payload.get("raidId") or payload.get("id"),
+                                    channel_id,
+                                    payload,
+                                )
+                                if posted or posted == "stale":
+                                    await resolve_queue_item(item.get("rowNumber"))
+                                    print(
+                                        f"Raidanmelder allein vom PO-Bot gepostet: "
+                                        f"{current_guild_slug()}:{payload.get('raidId') or payload.get('id')}"
+                                    )
+                                continue
                             combined_payload = {
                                 **followup,
                                 "guildSlug": queue_guild_slug,

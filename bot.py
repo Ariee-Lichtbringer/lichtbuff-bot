@@ -7282,36 +7282,8 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             print(f"Worldbuff-Loeschung aus Queue verarbeitet, {removed} Cache-Eintraege entfernt.")
 
         if update_type == "raid_announcement":
-            if isinstance(payload.get("followupPoPost"), dict) and payload.get("followupPoPost"):
-                print("Kombinierter Raid-/PO-Anmelder wird vom PO-Bot verarbeitet.")
-                return
-            posted = await post_raid_announcement_by_id(
-                payload.get("raidId") or payload.get("id"),
-                payload.get("channelId") or payload.get("discordChannelId")
-            )
-            if posted == "stale":
-                print(f"Veraltete Raid-Ankuendigung aus Queue uebersprungen: {payload}")
-                posted = True
-            if not posted:
-                raise RuntimeError(f"Raid-Ankuendigung konnte nicht gepostet werden: {payload}")
-            followup_po = payload.get("followupPoPost")
-            if isinstance(followup_po, dict) and followup_po:
-                followup_result = await asyncio.to_thread(lichtloot_post, {
-                    **followup_po,
-                    "action": "guildQueuePoPost",
-                    "queueToken": LICHTBOT_QUEUE_TOKEN,
-                    "restoreArchived": "true",
-                    "forceNewMessage": "true",
-                })
-                if not followup_result.get("success"):
-                    raise RuntimeError(
-                        followup_result.get("error")
-                        or "PO+-Anmelder konnte nach dem Raidpost nicht vorgemerkt werden."
-                    )
-                print(
-                    "PO+-Anmelder nach Raidanmelder vorgemerkt: "
-                    f"{current_guild_slug()}:{followup_po.get('postKey') or '-'}"
-                )
+            print("Raid-Ankuendigung uebersprungen: Alle Raidanmelder werden vom PO-Bot verarbeitet.")
+            return
         elif update_type == "raid_announcement_refresh":
             refreshed = await refresh_raid_signup_message_by_id(
                 payload.get("raidId") or payload.get("id"),
