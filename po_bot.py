@@ -161,6 +161,7 @@ PRIO_SERVER = os.getenv("PO_BOT_PRIO_SERVER", "Lichtbringer")
 PO_HELP_IMAGE_FILENAME = "po-anmelder-hinweis.png"
 PO_HELP_IMAGE_PATH = Path(os.getenv("PO_BOT_HELP_IMAGE", str(Path(__file__).with_name(PO_HELP_IMAGE_FILENAME))))
 LICHTLOOT_PRIO_URL = os.getenv("LICHTLOOT_PRIO_URL", "")
+LICHTLOOT_URL = os.getenv("LICHTLOOT_URL", "https://lichtloot.de")
 
 CLASS_EMOJI_FALLBACKS = {
     "warrior": "⚔️",
@@ -271,6 +272,7 @@ RAID_NAMES = {
 user_classes = {}
 class_emoji_cache = {}
 item_emoji_cache = {}
+RAID_SIGNUP_DM_CACHE = {}
 p0plus_cache = {}
 P0PLUS_CACHE_SECONDS = int(os.getenv("PO_BOT_P0PLUS_CACHE_SECONDS", "60") or "60")
 empty_queue_log_at = 0
@@ -447,6 +449,385 @@ def item_icon(item_name):
 def item_select_emoji(item_name):
     icon = item_icon(item_name)
     return select_emoji(icon) if icon != "◇" else None
+
+
+async def send_silent(channel, *args, **kwargs):
+    kwargs.setdefault("allowed_mentions", discord.AllowedMentions.none())
+    try:
+        kwargs.setdefault("silent", True)
+        return await channel.send(*args, **kwargs)
+    except TypeError:
+        kwargs.pop("silent", None)
+        return await channel.send(*args, **kwargs)
+
+
+RAID_SIGNUP_SPECS = {
+    "Warrior": [("Arms", "arms"), ("Fury", "fury"), ("Tank", "tank")],
+    "Druid": [("Heilung", "heal"), ("Tank", "tank"), ("FeralDD", "feral"), ("Eule", "balance")],
+    "Paladin": [("Holy", "paladin_holy"), ("Retri", "retri"), ("Tank", "tank")],
+    "Rogue": [("Assassination", "assassination"), ("Combat", "combat"), ("Subtlety", "subtlety")],
+    "Hunter": [("Survival", "survival"), ("Marksman", "marksman"), ("Beastmaster", "beastmaster")],
+    "Priest": [("Disziplin", "discipline"), ("Holy", "priest_holy"), ("Schatten", "shadow")],
+    "Mage": [("Fire", "fire"), ("Frost", "frost"), ("Arcane", "arcane")],
+    "Warlock": [("Affliction", "affliction"), ("Demonology", "demonology"), ("Destruction", "destruction")],
+    "Shaman": [("Heilung", "heal"), ("Elemental", "elemental"), ("Enhancement", "enhancement")],
+}
+
+SPEC_EMOJI_FALLBACKS = {
+    "tank": "🛡️",
+    "heal": "➕",
+    "paladin_holy": "✨",
+    "priest_holy": "➕",
+    "discipline": "💠",
+    "shadow": "🌑",
+    "arms": "⚔️",
+    "fury": "⚔️",
+    "retri": "✨",
+    "fire": "🔥",
+    "frost": "❄️",
+    "arcane": "✦",
+    "assassination": "🗡️",
+    "subtlety": "🗡️",
+    "combat": "🗡️",
+    "affliction": "💀",
+    "demonology": "💀",
+    "destruction": "🔥",
+    "feral": "⚔️",
+    "balance": "🌑",
+    "survival": "🏹",
+    "marksman": "🏹",
+    "beastmaster": "🏹",
+    "elemental": "⚡",
+    "enhancement": "⚡",
+}
+
+
+def format_raid_announcement_date(value):
+    raw = clean(value)
+    if not raw:
+        return "noch offen"
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%d.%m.%Y")
+        except ValueError:
+            pass
+    return raw
+
+
+def format_raid_announcement_time(value):
+    raw = clean(value)
+    if not raw:
+        return "noch offen"
+    match = re.search(r"(\d{1,2}):(\d{2})", raw)
+    if match:
+        return f"{int(match.group(1)):02d}:{match.group(2)} Uhr"
+    return raw
+
+
+def raid_announcement_image_url(raid):
+    raid_key = normalize_raid((raid or {}).get("raid") or (raid or {}).get("raidName")).lower()
+    explicit = clean((raid or {}).get("raidImageUrl") or (raid or {}).get("imageUrl"))
+    if explicit.startswith(("http://", "https://")):
+        return explicit
+    if raid_key in {"zg", "aq20", "aq40", "bwl", "mc", "naxx", "ony"}:
+        return f"https://lichtloot-production.up.railway.app/images/raid-banners/{raid_key}.jpg"
+    return ""
+
+
+def build_raid_announcement_embed(raid):
+    raid = raid or {}
+    raid_name = clean(raid.get("raidName") or display_raid(raid.get("raid")) or "Raid")
+    description = clean(raid.get("description")) or "Raidanmeldung ist geöffnet."
+    embed = discord.Embed(title=raid_name.upper(), description=description[:3900], color=0x7c3aed)
+    embed.add_field(name="Raidlead", value=clean(raid.get("createdBy") or raid.get("erstelltVon") or "Gildenleitung"), inline=True)
+    embed.add_field(name="Datum", value=format_raid_announcement_date(raid.get("raidDate")), inline=True)
+    embed.add_field(name="Start", value=format_raid_announcement_time(raid.get("raidTime")), inline=True)
+    deadline = format_raid_announcement_time(raid.get("signupDeadline") or raid.get("signup_deadline"))
+    if deadline != "noch offen":
+        embed.add_field(name="Anmeldeschluss", value=deadline, inline=False)
+    slots = []
+    for label, key in [("Gesamt", "maxPlayers"), ("Tanks", "tankSlots"), ("Heals", "healSlots"), ("DD", "ddSlots")]:
+        value = clean(raid.get(key))
+        if value:
+            slots.append(f"{label} {value}")
+    if slots:
+        embed.add_field(name="Slots", value=" · ".join(slots), inline=False)
+    embed.add_field(name="Prio-PIN", value=f"`{clean(raid.get('playerPin')) or '-'}`", inline=True)
+    embed.add_field(name="Webansicht", value=LICHTLOOT_URL, inline=True)
+    image_url = raid_announcement_image_url(raid)
+    if image_url:
+        embed.set_image(url=image_url)
+    embed.set_footer(text="Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein.")
+    return embed
+
+
+def build_raid_announcement_text(raid):
+    raid = raid or {}
+    return "\n".join([
+        f"**{clean(raid.get('raidName') or display_raid(raid.get('raid')) or 'Raid').upper()}**",
+        "",
+        clean(raid.get("description")) or "Raidanmeldung ist geöffnet.",
+        "",
+        f"📣 **Raidlead:** {clean(raid.get('createdBy') or raid.get('erstelltVon') or 'Gildenleitung')}",
+        f"🗓️ **Datum:** {format_raid_announcement_date(raid.get('raidDate'))}",
+        f"⏰ **Start:** {format_raid_announcement_time(raid.get('raidTime'))}",
+        "",
+        f"🔑 **Prio-PIN:** `{clean(raid.get('playerPin')) or '-'}`",
+        f"🌐 **Webansicht:** {LICHTLOOT_URL}",
+    ])[:1900]
+
+
+def canonical_signup_class(class_name):
+    key = clean(class_name).lower()
+    return {
+        "warrior": "Warrior", "krieger": "Warrior",
+        "druid": "Druid", "druide": "Druid",
+        "paladin": "Paladin",
+        "rogue": "Rogue", "schurke": "Rogue",
+        "hunter": "Hunter", "jäger": "Hunter", "jaeger": "Hunter",
+        "priest": "Priest", "priester": "Priest",
+        "mage": "Mage", "magier": "Mage",
+        "warlock": "Warlock", "hexenmeister": "Warlock",
+        "shaman": "Shaman", "schamane": "Shaman",
+    }.get(key, clean(class_name) or "Ohne Klasse")
+
+
+def signup_spec_from_note(note, role=""):
+    raw = clean(note)
+    if raw.lower().startswith("skillung:"):
+        return raw.split(":", 1)[1].strip()
+    return raw or clean(role)
+
+
+def infer_signup_role(spec_text):
+    text = clean(spec_text).lower()
+    if any(word in text for word in ["tank", "prot", "schutz", "def"]):
+        return "tank"
+    if any(word in text for word in ["heal", "heiler", "holy", "heilig", "resto", "diszi", "discipline"]):
+        return "heal"
+    return "dd"
+
+
+def signup_spec_icon(spec_text, role="", class_name=""):
+    text = clean(spec_text or role).lower()
+    for key, icon in SPEC_EMOJI_FALLBACKS.items():
+        if key in text:
+            return icon
+    return class_icon(class_name) or "✦"
+
+
+def raid_signup_class_options():
+    return [
+        discord.SelectOption(label=name, value=name, emoji=class_select_emoji(name))
+        for name in ["Warrior", "Druid", "Paladin", "Rogue", "Hunter", "Priest", "Mage", "Warlock", "Shaman"]
+    ]
+
+
+def raid_signup_source(interaction, origin_channel_id=None, origin_message_id=None):
+    return f"DiscordSignup:{origin_channel_id or interaction.channel_id}:{origin_message_id or getattr(interaction.message, 'id', '')}"
+
+
+def add_raid_signup_roster_fields(embed, helper):
+    rows = list((helper or {}).get("signups") or []) + list((helper or {}).get("externalSignups") or [])
+    if not rows:
+        embed.add_field(name="Anmeldungen", value="Noch keine Anmeldungen.", inline=False)
+        return
+    grouped = {}
+    raid_key = normalize_raid(((helper or {}).get("raid") or {}).get("raid") or "").lower()
+    for row in rows:
+        cls = canonical_signup_class(row.get("className") or row.get("klasse"))
+        grouped.setdefault(cls, []).append(row)
+    order = ["Warrior", "Druid", "Paladin", "Rogue", "Hunter", "Priest", "Mage", "Warlock", "Shaman", "Ohne Klasse"]
+    for cls in sorted(grouped, key=lambda value: order.index(value) if value in order else 99):
+        lines = []
+        for row in grouped[cls][:8]:
+            player = clean(row.get("player") or row.get("char")) or "-"
+            spec = signup_spec_from_note(row.get("note"), row.get("role")) or "Flex"
+            star = " ★" if has_p0_release(player, raid_key) else ""
+            lines.append(f"**{player}{star}** · {signup_spec_icon(spec, row.get('role'), cls)}")
+        embed.add_field(name=f"{class_icon(cls)} {cls} ({len(grouped[cls])})", value="\n".join(lines)[:1024], inline=True)
+
+
+async def get_raid_helper_by_id(raid_id):
+    return await asyncio.to_thread(api_get, {
+        "action": "getRaidHelper",
+        "raidId": raid_id,
+        "playerPin": raid_id,
+        "t": int(time.time())
+    })
+
+
+async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id=None):
+    helper = await get_raid_helper_by_id(clean(raid_id))
+    if not helper or not helper.get("success"):
+        raise RuntimeError("Raid-Anmelder-Refresh: Raid wurde nicht gefunden.")
+    raid = helper.get("raid") or {}
+    channel_id = clean(channel_id or raid.get("discordChannelId") or raid.get("discord_channel_id"))
+    message_id = clean(message_id or raid.get("discordMessageId") or raid.get("discord_message_id"))
+    if not channel_id or not message_id:
+        return "missing_message"
+    channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+    message = await channel.fetch_message(int(message_id))
+    embed = build_raid_announcement_embed(raid)
+    add_raid_signup_roster_fields(embed, helper)
+    await message.edit(embed=embed, view=RaidSignupView(raid))
+    return True
+
+
+async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None, origin_message_id=None):
+    helper = await get_raid_helper_by_id(clean((raid or {}).get("raidId") or (raid or {}).get("id")))
+    fresh_raid = helper.get("raid") or raid or {}
+    embed = build_raid_announcement_embed(fresh_raid)
+    add_raid_signup_roster_fields(embed, helper)
+    target = getattr(interaction, "message", None)
+    if origin_channel_id and origin_message_id:
+        channel = client.get_channel(int(origin_channel_id)) or await client.fetch_channel(int(origin_channel_id))
+        target = await channel.fetch_message(int(origin_message_id))
+    if target:
+        await target.edit(embed=embed, view=RaidSignupView(fresh_raid))
+
+
+async def post_raid_announcement_by_id(raid_id, channel_id=None):
+    helper = await get_raid_helper_by_id(clean(raid_id))
+    raid = helper.get("raid") if helper and helper.get("success") else None
+    if not raid:
+        return "stale"
+    channel_id = clean(channel_id or raid.get("discordChannelId") or raid.get("discord_channel_id"))
+    if not channel_id:
+        raise RuntimeError("Raid-Ankuendigung: Kein Channel hinterlegt.")
+    channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+    embed = build_raid_announcement_embed(raid)
+    add_raid_signup_roster_fields(embed, helper)
+    try:
+        message = await send_silent(channel, embed=embed, view=RaidSignupView(raid))
+    except discord.HTTPException:
+        message = await send_silent(channel, build_raid_announcement_text(raid))
+    if message:
+        await asyncio.to_thread(api_post, {
+            "action": "lichtbotSetRaidDiscordMessage",
+            "queueToken": QUEUE_TOKEN,
+            "raidId": clean(raid.get("raidId") or raid.get("id") or raid_id),
+            "discordChannelId": channel_id,
+            "discordMessageId": str(message.id)
+        })
+    return True
+
+
+class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
+    char_name = discord.ui.TextInput(label="Charaktername", placeholder="z. B. Ariee", max_length=40)
+
+    def __init__(self, raid, class_name, spec_label, spec_key, origin_channel_id=None, origin_message_id=None):
+        super().__init__()
+        self.raid = raid
+        self.class_name = class_name
+        self.spec_label = spec_label
+        self.spec_key = spec_key
+        self.origin_channel_id = origin_channel_id
+        self.origin_message_id = origin_message_id
+
+    async def on_submit(self, interaction):
+        char_name = clean(self.char_name.value)
+        result = await asyncio.to_thread(api_post, {
+            "action": "saveDiscordSignupRows",
+            "queueToken": QUEUE_TOKEN,
+            "raidId": clean(self.raid.get("raidId") or self.raid.get("id")),
+            "raid": self.raid.get("raid") or self.raid.get("raidName") or "",
+            "raidDate": self.raid.get("raidDate") or "",
+            "raidTime": self.raid.get("raidTime") or "",
+            "discordChannelId": str(self.origin_channel_id or interaction.channel_id or ""),
+            "raidHelperMessageId": str(self.origin_message_id or getattr(interaction.message, "id", "") or ""),
+            "rows": [{
+                "char": char_name,
+                "spieler": char_name,
+                "klasse": self.class_name,
+                "role": infer_signup_role(self.spec_label),
+                "status": "signed",
+                "note": f"Skillung: {self.spec_label}",
+                "discordUserId": str(interaction.user.id),
+                "discordName": str(interaction.user.display_name),
+                "source": raid_signup_source(interaction, self.origin_channel_id, self.origin_message_id)
+            }]
+        })
+        if not result.get("success"):
+            await interaction.response.send_message(f"⚠️ Anmeldung fehlgeschlagen: {result.get('error') or 'unbekannter Fehler'}", ephemeral=True)
+            return
+        await interaction.response.send_message(f"✅ Anmeldung gespeichert: **{char_name}** · {self.class_name} · {self.spec_label}", ephemeral=True)
+        await refresh_raid_signup_message(interaction, self.raid, self.origin_channel_id, self.origin_message_id)
+
+
+class RaidSignupSpecSelect(discord.ui.Select):
+    def __init__(self, raid, class_name, origin_channel_id=None, origin_message_id=None):
+        self.raid = raid
+        self.class_name = class_name
+        self.origin_channel_id = origin_channel_id
+        self.origin_message_id = origin_message_id
+        options = [discord.SelectOption(label=label, value=key, emoji=select_emoji(SPEC_EMOJI_FALLBACKS.get(key, "✦"))) for label, key in RAID_SIGNUP_SPECS.get(class_name, [("Flex", "flex")])]
+        super().__init__(placeholder=f"Skillung für {class_name} wählen", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction):
+        spec_key = self.values[0]
+        spec_label = next((label for label, key in RAID_SIGNUP_SPECS.get(self.class_name, []) if key == spec_key), spec_key)
+        await interaction.response.send_modal(RaidSignupModal(self.raid, self.class_name, spec_label, spec_key, self.origin_channel_id, self.origin_message_id))
+
+
+class RaidSignupSpecView(discord.ui.View):
+    def __init__(self, raid, class_name, origin_channel_id=None, origin_message_id=None):
+        super().__init__(timeout=180)
+        self.add_item(RaidSignupSpecSelect(raid, class_name, origin_channel_id, origin_message_id))
+
+
+class RaidSignupClassSelect(discord.ui.Select):
+    def __init__(self, raid):
+        self.raid = raid
+        super().__init__(custom_id="raid_signup_class_select", placeholder="Klasse wählen und Charakter anmelden", min_values=1, max_values=1, options=raid_signup_class_options())
+
+    async def callback(self, interaction):
+        class_name = self.values[0]
+        await interaction.response.send_message(f"Skillung für **{class_name}** wählen:", view=RaidSignupSpecView(self.raid, class_name, interaction.channel_id, getattr(interaction.message, "id", "")), ephemeral=True)
+
+
+class RaidSignupStatusModal(discord.ui.Modal):
+    char_name = discord.ui.TextInput(label="Charaktername", placeholder="z. B. Ariee", max_length=40)
+
+    def __init__(self, raid, status, title):
+        super().__init__(title=title)
+        self.raid = raid
+        self.status = status
+
+    async def on_submit(self, interaction):
+        await interaction.response.send_message("Statusänderung ist im PO-Bot registriert. Bitte bei Bedarf im Raidleadpanel verwalten.", ephemeral=True)
+
+
+class RaidSignupView(discord.ui.View):
+    def __init__(self, raid):
+        super().__init__(timeout=None)
+        self.raid = raid
+        self.add_item(RaidSignupClassSelect(raid))
+
+    @discord.ui.button(label="Bank", emoji="🪑", style=discord.ButtonStyle.secondary, custom_id="raid_signup_bench")
+    async def bench_signup(self, interaction, button):
+        await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "bench", "Auf die Bank setzen"))
+
+    @discord.ui.button(label="Abwesend", emoji="🚫", style=discord.ButtonStyle.secondary, custom_id="raid_signup_absent")
+    async def absent_signup(self, interaction, button):
+        await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "absent", "Als abwesend markieren"))
+
+
+async def restore_active_raid_signup_views():
+    await client.wait_until_ready()
+    await asyncio.sleep(3)
+    try:
+        result = await asyncio.to_thread(api_get, {"action": "getActiveRaids", "t": int(time.time())})
+        restored = 0
+        for raid in result.get("allRaids") or result.get("raids") or []:
+            channel_id = clean(raid.get("discordChannelId") or raid.get("discord_channel_id"))
+            message_id = clean(raid.get("discordMessageId") or raid.get("discord_message_id"))
+            if channel_id and message_id:
+                client.add_view(RaidSignupView(raid), message_id=int(message_id))
+                restored += 1
+        print(f"Raid-Anmelder-Views im PO-Bot wiederhergestellt: {restored}.")
+    except Exception as error:
+        print(f"Raid-Anmelder-Views konnten beim PO-Bot-Start nicht wiederhergestellt werden: {error}")
 
 
 async def sync_accessible_discord_channels():
@@ -2565,7 +2946,7 @@ async def po_queue_loop():
             })
             if result.get("success"):
                 items = result.get("items") or []
-                po_items = [item for item in items if clean(item.get("type")) in {"po_post", "p0_post_refresh"}]
+                po_items = [item for item in items if clean(item.get("type")) in {"po_post", "p0_post_refresh", "raid_announcement", "raid_announcement_refresh", "raid_signup_notice"}]
                 stale_delete_items = [item for item in items if clean(item.get("type")) == "po_post_delete"]
                 for item in stale_delete_items:
                     queue_guild_slug = normalize_guild_slug(item.get("guild") or item.get("guildSlug"))
@@ -2590,6 +2971,32 @@ async def po_queue_loop():
                     mode = clean(payload.get("mode")).lower() or "signup"
                     try:
                         item_type = clean(item.get("type"))
+                        if item_type == "raid_announcement":
+                            posted = await post_raid_announcement_by_id(
+                                payload.get("raidId") or payload.get("id"),
+                                payload.get("channelId") or payload.get("discordChannelId")
+                            )
+                            if posted and posted != "stale":
+                                await resolve_queue_item(item.get("rowNumber"))
+                                print(f"Raidanmelder vom PO-Bot gepostet: {current_guild_slug()}:{payload.get('raidId') or payload.get('id')}")
+                            elif posted == "stale":
+                                await resolve_queue_item(item.get("rowNumber"))
+                                print(f"Veralteter Raidanmelder-Auftrag erledigt markiert: {payload}")
+                            continue
+                        if item_type == "raid_announcement_refresh":
+                            refreshed = await refresh_raid_signup_message_by_id(
+                                payload.get("raidId") or payload.get("id"),
+                                payload.get("channelId") or payload.get("discordChannelId"),
+                                payload.get("messageId") or payload.get("discordMessageId") or payload.get("raidHelperMessageId")
+                            )
+                            if refreshed:
+                                await resolve_queue_item(item.get("rowNumber"))
+                                print(f"Raidanmelder vom PO-Bot aktualisiert: {current_guild_slug()}:{payload.get('raidId') or payload.get('id')}")
+                            continue
+                        if item_type == "raid_signup_notice":
+                            await resolve_queue_item(item.get("rowNumber"))
+                            print("Raidanmelder-Hinweis erledigt markiert; direkte DM ist im PO-Bot deaktiviert.")
+                            continue
                         if item_type == "p0_post_refresh":
                             payload["source"] = payload.get("source") or "p0_review"
                             payload["mode"] = payload.get("mode") or "po-anmelder"
@@ -2620,6 +3027,7 @@ class PoBot(discord.Client):
 
     async def setup_hook(self):
         self.bg_task = asyncio.create_task(po_queue_loop())
+        self.raid_signup_restore_task = asyncio.create_task(restore_active_raid_signup_views())
         if TEST_GUILD_ID:
             guild = discord.Object(id=int(TEST_GUILD_ID))
             self.tree.copy_global_to(guild=guild)
