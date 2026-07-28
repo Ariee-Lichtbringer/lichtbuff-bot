@@ -2670,6 +2670,7 @@ async def review_entry(payload, entry, user):
         "player": entry.get("player") or "",
         "item": entry.get("item") or entry.get("itemName") or "",
         "status": "approved",
+        "approvalNoticeHandled": "true",
         "reviewer": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user),
     })
     if not result.get("success"):
@@ -2720,6 +2721,21 @@ async def send_po_rejection_message(client, entry, reason):
         return True
     except Exception as error:
         print(f"PO-Ablehnung: DM konnte nicht gesendet werden: {error}")
+        return False
+
+
+async def send_po_approval_message(client, entry):
+    user_id = clean(entry.get("discordUserId") or entry.get("discord_user_id"))
+    if not user_id:
+        return False
+    try:
+        user = client.get_user(int(user_id)) or await client.fetch_user(int(user_id))
+        player = clean(entry.get("player")) or "dein Charakter"
+        item = clean(entry.get("item") or entry.get("itemName")) or "deine PO"
+        await user.send(f"✅ Deine PO für **{player}** auf **{item}** wurde freigegeben.")
+        return True
+    except Exception as error:
+        print(f"PO-Freigabe: DM konnte nicht gesendet werden: {error}")
         return False
 
 
@@ -3336,8 +3352,10 @@ class PoReviewSelect(discord.ui.Select):
             result = await review_entry(self.payload, entry, interaction.user)
             saved = result.get("entry") or entry
             await refresh_po_message(interaction.client, self.payload)
+            dm_sent = await send_po_approval_message(interaction.client, saved)
             await interaction.followup.send(
-                f"✅ Freigegeben: **{saved.get('player') or entry.get('player')}** → **{saved.get('item') or entry.get('item')}**.",
+                f"✅ Freigegeben: **{saved.get('player') or entry.get('player')}** → **{saved.get('item') or entry.get('item')}**."
+                + (" Nachricht wurde gesendet." if dm_sent else " Nachricht konnte nicht per DM gesendet werden."),
                 ephemeral=True,
             )
         except Exception as error:
@@ -3783,7 +3801,7 @@ async def po_queue_loop():
                 po_items = [
                     item for item in items
                     if clean(item.get("type")) in {"po_post", "p0_post_refresh"}
-                    or clean(item.get("type")) in {"raid_announcement", "po_rejection_notice"}
+                    or clean(item.get("type")) in {"raid_announcement", "po_rejection_notice", "po_approval_notice"}
                 ]
                 stale_delete_items = [item for item in items if clean(item.get("type")) == "po_post_delete"]
                 for item in stale_delete_items:
@@ -3818,6 +3836,15 @@ async def po_queue_loop():
                             await resolve_queue_item(item.get("rowNumber"))
                             print(
                                 "PO-Ablehnungsnachricht "
+                                + ("gesendet" if sent else "konnte nicht gesendet werden")
+                                + f": {current_guild_slug()}:{payload.get('player') or '?'}"
+                            )
+                            continue
+                        if item_type == "po_approval_notice":
+                            sent = await send_po_approval_message(client, payload)
+                            await resolve_queue_item(item.get("rowNumber"))
+                            print(
+                                "PO-Freigabenachricht "
                                 + ("gesendet" if sent else "konnte nicht gesendet werden")
                                 + f": {current_guild_slug()}:{payload.get('player') or '?'}"
                             )
