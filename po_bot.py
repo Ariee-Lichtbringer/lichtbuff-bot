@@ -3784,6 +3784,20 @@ async def post_or_update_from_queue(client, payload):
     payload = dict(payload or {})
     payload["guildSlug"] = payload_guild_slug(payload)
     post_key = clean(payload.get("postKey") or payload.get("poPostKey") or payload.get("postId"))
+    queue_type = clean(payload.get("_queueType")).lower()
+    if not post_key and queue_type == "po_post":
+        raid_key = normalize_raid(payload.get("raid") or payload.get("raidName")) or "raid"
+        queue_identity = clean(
+            payload.get("raidId")
+            or payload.get("id")
+            or payload.get("raidPin")
+            or payload.get("prioPin")
+            or payload.get("_queueRowNumber")
+            or int(time.time())
+        )
+        post_key = f"{slug(raid_key)}-po-anmelder-{slug(queue_identity)}"
+        payload["postKey"] = post_key
+        payload["poPostKey"] = post_key
     if not post_key and clean(payload.get("source")).lower() == "p0_review":
         raid_key = normalize_raid(payload.get("raid") or payload.get("raidName"))
         raid_id = clean(payload.get("raidId") or payload.get("id") or payload.get("raidPin") or payload.get("prioPin"))
@@ -3937,6 +3951,8 @@ async def po_queue_loop():
                     token = CURRENT_GUILD_SLUG.set(queue_guild_slug)
                     payload = item.get("payload") or {}
                     payload["guildSlug"] = queue_guild_slug
+                    payload["_queueType"] = clean(item.get("type"))
+                    payload["_queueRowNumber"] = clean(item.get("rowNumber"))
                     mode = clean(payload.get("mode")).lower() or "signup"
                     try:
                         item_type = clean(item.get("type"))
@@ -4046,7 +4062,15 @@ async def po_queue_loop():
                         await resolve_queue_item(item.get("rowNumber"))
                         print(f"PO-Anmelder aus Gildenleitung gepostet: {current_guild_slug()}:{normalized.get('postKey')}")
                     except Exception as error:
-                        print(f"PO-Anmelder-Queue konnte nicht verarbeitet werden: {error}")
+                        error_text = str(error)
+                        if item_type == "p0_post_refresh" and (
+                            "ohne Post-ID" in error_text
+                            or "Unknown Message" in error_text
+                        ):
+                            await resolve_queue_item(item.get("rowNumber"))
+                            print(f"Veralteter P0-Refresh abgeschlossen: {error_text}")
+                        else:
+                            print(f"PO-Anmelder-Queue konnte nicht verarbeitet werden: {error}")
                     finally:
                         CURRENT_GUILD_SLUG.reset(token)
             else:
