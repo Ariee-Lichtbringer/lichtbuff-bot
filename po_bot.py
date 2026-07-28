@@ -926,9 +926,12 @@ def add_raid_signup_roster_fields(embed, helper):
     add_raid_signup_links_field(embed, (helper or {}).get("raid") or {})
 
 
-async def get_raid_helper_by_id(raid_id):
+async def get_raid_helper_by_id(raid_id, guild_slug=None):
+    resolved_guild_slug = normalize_guild_slug(guild_slug or current_guild_slug())
     return await asyncio.to_thread(api_get, {
         "action": "getRaidHelper",
+        "guild": resolved_guild_slug,
+        "guildSlug": resolved_guild_slug,
         "raidId": raid_id,
         "playerPin": raid_id,
         "t": int(time.time())
@@ -978,6 +981,7 @@ def raid_helper_snapshot_from_payload(payload):
 async def get_raid_helper_for_refresh(payload_or_raid_id):
     if isinstance(payload_or_raid_id, dict):
         payload = payload_or_raid_id
+        guild_slug = payload_guild_slug(payload)
         candidates = []
         for key in ["raidId", "id", "playerPin", "prioPin", "raidPin"]:
             value = clean(payload.get(key))
@@ -985,7 +989,7 @@ async def get_raid_helper_for_refresh(payload_or_raid_id):
                 candidates.append(value)
         for candidate in candidates:
             try:
-                helper = await get_raid_helper_by_id(candidate)
+                helper = await get_raid_helper_by_id(candidate, guild_slug)
                 if helper and helper.get("success"):
                     return helper
             except Exception:
@@ -995,13 +999,15 @@ async def get_raid_helper_for_refresh(payload_or_raid_id):
         if raid and raid_date:
             return await asyncio.to_thread(api_get, {
                 "action": "getRaidHelper",
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
                 "raid": raid,
                 "raidDate": raid_date,
                 "raidTime": clean(payload.get("raidTime")),
                 "t": int(time.time())
             })
         return {}
-    return await get_raid_helper_by_id(clean(payload_or_raid_id))
+    return await get_raid_helper_by_id(clean(payload_or_raid_id), current_guild_slug())
 
 
 def combined_po_payload_for_message(message_id):
@@ -1071,12 +1077,16 @@ async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None,
     try:
         raid_lookup_id = clean((raid or {}).get("raidId") or (raid or {}).get("id"))
         raid_pin = clean((raid or {}).get("playerPin") or (raid or {}).get("prioPin"))
+        guild_slug = guild_slug_for_discord_server(
+            getattr(interaction, "guild", None),
+            payload_guild_slug(raid or {})
+        )
         helper_queries = []
         if raid_lookup_id:
-            helper_queries.append({"action": "getRaidHelper", "raidId": raid_lookup_id, "playerPin": raid_lookup_id, "t": int(time.time())})
-            helper_queries.append({"action": "getRaidHelper", "raidId": raid_lookup_id, "t": int(time.time())})
+            helper_queries.append({"action": "getRaidHelper", "guild": guild_slug, "guildSlug": guild_slug, "raidId": raid_lookup_id, "playerPin": raid_lookup_id, "t": int(time.time())})
+            helper_queries.append({"action": "getRaidHelper", "guild": guild_slug, "guildSlug": guild_slug, "raidId": raid_lookup_id, "t": int(time.time())})
         if raid_pin and raid_pin != raid_lookup_id:
-            helper_queries.append({"action": "getRaidHelper", "playerPin": raid_pin, "t": int(time.time())})
+            helper_queries.append({"action": "getRaidHelper", "guild": guild_slug, "guildSlug": guild_slug, "playerPin": raid_pin, "t": int(time.time())})
 
         helper = None
         last_error = None
