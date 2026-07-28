@@ -4389,7 +4389,11 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def start_health_server():
     port = int(os.getenv("PORT", "8080"))
-    server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+    try:
+        server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+    except OSError:
+        print(f"PO-Bot Health-Port {port} wird bereits vom Hauptbot verwendet.")
+        return
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
 
