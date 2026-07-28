@@ -2828,8 +2828,9 @@ def make_embed(payload, entries, p0plus_labels=None):
         for row in sorted(rows, key=lambda entry: clean(entry.get("player")).lower()):
             class_name = class_display_name(row.get("className") or row.get("Klasse"))
             icon = class_icon(class_name)
-            approved = " ✅" if row.get("approved") or row.get("approvalStatus") == "approved" else ""
-            players.append(f"{icon} {clean(row.get('player'))}{approved}")
+            approval_status = clean(row.get("approvalStatus")).lower()
+            status_icon = " ✅" if row.get("approved") or approval_status == "approved" else " ❌" if approval_status == "rejected" else ""
+            players.append(f"{icon} {clean(row.get('player'))}{status_icon}")
         lines.append(", ".join(players) or "-")
 
     embed.description = "\n".join(lines)[:3900]
