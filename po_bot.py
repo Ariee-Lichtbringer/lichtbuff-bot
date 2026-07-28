@@ -925,13 +925,19 @@ def add_raid_signup_roster_fields(embed, helper):
     heal_max = clean(raid.get("healSlots"))
     dd_max = clean(raid.get("ddSlots"))
     embed.add_field(
-        name="Aufstellung",
-        value=" · ".join([
-            f"🛡️ **Tanks {role_counts['tank']}{('/' + tank_max) if tank_max else ''}**",
-            f"➕ **Heals {role_counts['heal']}{('/' + heal_max) if heal_max else ''}**",
-            f"⚔️ **DD {role_counts['dd']}{('/' + dd_max) if dd_max else ''}**",
-        ]),
-        inline=False,
+        name="🛡️ Tanks",
+        value=f"**{role_counts['tank']}{('/' + tank_max) if tank_max else ''}**",
+        inline=True,
+    )
+    embed.add_field(
+        name="➕ Heals",
+        value=f"**{role_counts['heal']}{('/' + heal_max) if heal_max else ''}**",
+        inline=True,
+    )
+    embed.add_field(
+        name="⚔️ DD",
+        value=f"**{role_counts['dd']}{('/' + dd_max) if dd_max else ''}**",
+        inline=True,
     )
 
     grouped = {}
@@ -940,6 +946,18 @@ def add_raid_signup_roster_fields(embed, helper):
         cls = canonical_signup_class(row.get("className") or row.get("klasse"))
         grouped.setdefault(cls, []).append(row)
     order = ["Warrior", "Druid", "Paladin", "Rogue", "Hunter", "Priest", "Mage", "Warlock", "Shaman", "Ohne Klasse"]
+    german_class_names = {
+        "Warrior": "Krieger",
+        "Druid": "Druide",
+        "Paladin": "Paladin",
+        "Rogue": "Schurke",
+        "Hunter": "Jäger",
+        "Priest": "Priester",
+        "Mage": "Magier",
+        "Warlock": "Hexenmeister",
+        "Shaman": "Schamane",
+        "Ohne Klasse": "Ohne Klasse",
+    }
     sorted_classes = sorted(grouped, key=lambda value: order.index(value) if value in order else 99)
     for class_index, cls in enumerate(sorted_classes):
         lines = []
@@ -953,12 +971,13 @@ def add_raid_signup_roster_fields(embed, helper):
             ) else ""
             lines.append(f"`{position}` **{player}{star}** · {signup_spec_icon(spec, row.get('role'), cls)}")
         embed.add_field(
-            name=f"{class_icon(cls)} {cls} ({len(grouped[cls])})",
-            value="\n".join(lines)[:1024],
+            name=f"{class_icon(cls)} {german_class_names.get(cls, cls)} ({len(grouped[cls])})",
+            value=("\n".join(lines) + "\n\u200b\n\u200b")[:1024],
             inline=True,
         )
-        if class_index % 3 == 2 and class_index < len(sorted_classes) - 1:
-            embed.add_field(name="\u200b", value="\u200b", inline=False)
+    missing_class_columns = (-len(sorted_classes)) % 3
+    for _ in range(missing_class_columns):
+        embed.add_field(name="\u200b", value="\u200b\n\u200b\n\u200b", inline=True)
     absent = [
         f"`{signup_positions.get(id(row), 0)}` {clean(row.get('player') or row.get('char'))}"
         for row in rows
@@ -1186,6 +1205,7 @@ async def edit_raid_signup_message_from_helper(raid, helper, origin_channel_id=N
 
 
 async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None):
+    payload = payload or {}
     helper = await get_raid_helper_for_refresh(payload or clean(raid_id))
     fallback_helper = raid_helper_snapshot_from_payload(payload) if payload else {}
     if (not helper or not helper.get("success")) and fallback_helper.get("raid"):
@@ -1197,6 +1217,27 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None):
     if not channel_id:
         raise RuntimeError("Raid-Ankuendigung: Kein Channel hinterlegt.")
     channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+    existing_message_id = clean(
+        payload.get("messageId")
+        or payload.get("discordMessageId")
+        or raid.get("discordMessageId")
+        or raid.get("discord_message_id")
+    )
+    if existing_message_id:
+        try:
+            existing_message = await channel.fetch_message(int(existing_message_id))
+            await edit_raid_message_preserving_po(existing_message, raid, helper)
+            await asyncio.to_thread(api_post, {
+                "action": "lichtbotSetRaidDiscordMessage",
+                "queueToken": QUEUE_TOKEN,
+                "raidId": clean(raid.get("raidId") or raid.get("id") or raid_id),
+                "discordChannelId": channel_id,
+                "discordMessageId": existing_message_id
+            })
+            print(f"Bestehender Raidanmelder aktualisiert: {raid_id} in {channel_id}/{existing_message_id}")
+            return True
+        except (discord.NotFound, discord.Forbidden):
+            print(f"Bestehender Raidanmelder nicht erreichbar, erstelle neu: {raid_id} in {channel_id}/{existing_message_id}")
     embed = build_raid_announcement_embed(raid)
     add_raid_signup_roster_fields(embed, helper)
     banner, _ = raid_banner_file(raid)
