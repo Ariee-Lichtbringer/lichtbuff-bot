@@ -657,6 +657,7 @@ def build_raid_announcement_embed(raid):
     worldbuff_block = current_worldbuff_announcement_block(raid_guild_slug)
     if worldbuff_block:
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
+        embed.add_field(name="\u200b", value="\u200b\n\u200b", inline=False)
     attachment_name = raid_banner_attachment_name(raid)
     if attachment_name:
         embed.set_image(url=f"attachment://{attachment_name}")
