@@ -914,7 +914,11 @@ def add_raid_signup_roster_fields(embed, helper):
     raid = (helper or {}).get("raid") or {}
     active_rows = [
         row for row in rows
-        if clean(row.get("status")).lower() not in {"absent", "abwesend", "bench", "bank"}
+        if clean(row.get("status")).lower() not in {
+            "absent", "abwesend", "bench", "bank",
+            "late", "spät", "spaet",
+            "tentative", "vorläufig", "vorlaeufig",
+        }
     ]
     role_counts = {"tank": 0, "heal": 0, "dd": 0}
     for row in active_rows:
@@ -979,20 +983,25 @@ def add_raid_signup_roster_fields(embed, helper):
     missing_class_columns = (-len(sorted_classes)) % 3
     for _ in range(missing_class_columns):
         embed.add_field(name="\u200b", value="\u200b\n\u200b\n\u200b", inline=True)
-    absent = [
-        f"`{signup_positions.get(id(row), 0)}` {clean(row.get('player') or row.get('char'))}"
-        for row in rows
-        if clean(row.get("status")).lower() in {"absent", "abwesend"}
+    status_groups = [
+        ("🪑 Bank", {"bench", "bank"}),
+        ("🕒 Spät", {"late", "spät", "spaet"}),
+        ("⚖️ Vorläufig", {"tentative", "vorläufig", "vorlaeufig"}),
+        ("🚫 Abwesenheit", {"absent", "abwesend"}),
     ]
-    bench = [
-        f"`{signup_positions.get(id(row), 0)}` {clean(row.get('player') or row.get('char'))}"
-        for row in rows
-        if clean(row.get("status")).lower() in {"bench", "bank"}
-    ]
-    if absent:
-        embed.add_field(name=f"🚫 Abwesend ({len(absent)})", value=", ".join(filter(None, absent))[:1024], inline=False)
-    if bench:
-        embed.add_field(name=f"🪑 Bank ({len(bench)})", value=", ".join(filter(None, bench))[:1024], inline=False)
+    for label, statuses in status_groups:
+        status_rows = [row for row in rows if clean(row.get("status")).lower() in statuses]
+        if not status_rows:
+            continue
+        players = [
+            f"`{signup_positions.get(id(row), 0)}` {clean(row.get('player') or row.get('char'))}"
+            for row in sorted(status_rows, key=lambda row: signup_positions.get(id(row), 0))
+        ]
+        embed.add_field(
+            name=f"{label} ({len(players)})",
+            value=", ".join(filter(None, players))[:1024],
+            inline=False,
+        )
     add_raid_signup_links_field(embed, (helper or {}).get("raid") or {})
 
 
