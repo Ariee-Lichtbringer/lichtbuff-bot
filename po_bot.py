@@ -653,7 +653,8 @@ def build_raid_announcement_embed(raid):
     if slots:
         embed.add_field(name="Slots", value=" · ".join(slots), inline=False)
     embed.add_field(name="Prio-PIN", value=f"`{clean(raid.get('playerPin')) or '-'}`", inline=True)
-    worldbuff_block = current_worldbuff_announcement_block()
+    raid_guild_slug = normalize_guild_slug(raid.get("guildSlug") or current_guild_slug())
+    worldbuff_block = current_worldbuff_announcement_block(raid_guild_slug)
     if worldbuff_block:
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
     attachment_name = raid_banner_attachment_name(raid)
@@ -704,13 +705,14 @@ def add_raid_signup_links_field(embed, raid):
     )
 
 
-def current_worldbuff_announcement_block(max_lines=8):
+def current_worldbuff_announcement_block(guild_slug=None, max_lines=8):
+    resolved_guild_slug = normalize_guild_slug(guild_slug or current_guild_slug())
     try:
         result = api_get({
             "action": "guildGetWorldbuffs",
             "queueToken": QUEUE_TOKEN,
-            "guild": current_guild_slug(),
-            "guildSlug": current_guild_slug(),
+            "guild": resolved_guild_slug,
+            "guildSlug": resolved_guild_slug,
             "source": "railway",
             "days": "all",
             "t": int(time.time()),
@@ -1109,6 +1111,8 @@ async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None,
                 helper = dict(helper)
                 helper["externalSignups"] = list(helper.get("externalSignups") or []) + [optimistic_signup]
         fresh_raid = helper.get("raid") or raid or {}
+        fresh_raid = dict(fresh_raid)
+        fresh_raid["guildSlug"] = guild_slug
         target = getattr(interaction, "message", None)
         if origin_channel_id and origin_message_id:
             channel = client.get_channel(int(origin_channel_id)) or await client.fetch_channel(int(origin_channel_id))
