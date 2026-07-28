@@ -7293,22 +7293,9 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             removed = await asyncio.to_thread(remove_deleted_worldbuff_from_all_caches, payload)
             print(f"Worldbuff-Loeschung aus Queue verarbeitet, {removed} Cache-Eintraege entfernt.")
 
-        if update_type == "raid_announcement":
-            print("Raid-Ankuendigung uebersprungen: Alle Raidanmelder werden vom PO-Bot verarbeitet.")
+        if update_type in {"raid_announcement", "raid_announcement_refresh", "raid_signup_notice"}:
+            print(f"Raid-Anmelder-Auftrag {update_type} uebersprungen: wird ausschliesslich vom PO-Bot verarbeitet.")
             return
-        elif update_type == "raid_announcement_refresh":
-            refreshed = await refresh_raid_signup_message_by_id(
-                payload.get("raidId") or payload.get("id"),
-                payload.get("channelId") or payload.get("discordChannelId"),
-                payload.get("messageId") or payload.get("discordMessageId") or payload.get("raidHelperMessageId")
-            )
-            if refreshed == "missing_message":
-                print(f"Raid-Anmelder-Refresh ohne gespeicherte Discord-Nachricht uebersprungen: {payload}")
-                refreshed = True
-            if not refreshed:
-                raise RuntimeError(f"Raid-Anmelder konnte nicht aktualisiert werden: {payload}")
-        elif update_type == "raid_signup_notice":
-            await send_raid_signup_notice(payload)
         elif update_type == "po_post":
             print("PO-Auftrag uebersprungen: wird vom separaten PO-Bot verarbeitet.")
             return
@@ -7400,8 +7387,15 @@ async def lichtloot_queue_loop():
                     guild_slug = normalize_guild_slug(item.get("guild") or item.get("guildSlug") or LICHTLOOT_GUILD_SLUG)
                     token = CURRENT_GUILD_SLUG.set(guild_slug)
                     try:
-                        if str(item.get("type") or "").strip() in {"po_post", "po_post_delete", "p0_post_refresh"}:
-                            print("PO/P0-Auftrag in Railway-Queue uebersprungen: separater PO-Bot ist zustaendig.")
+                        if str(item.get("type") or "").strip() in {
+                            "po_post",
+                            "po_post_delete",
+                            "p0_post_refresh",
+                            "raid_announcement",
+                            "raid_announcement_refresh",
+                            "raid_signup_notice",
+                        }:
+                            print("PO-/Raid-Anmelder-Auftrag uebersprungen: ausschliesslich der PO-Bot ist zustaendig.")
                             continue
                         await handle_lichtloot_queue_item(item, resolve_old_queue=False)
                         row_number = item.get("rowNumber")
