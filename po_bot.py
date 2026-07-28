@@ -4025,9 +4025,11 @@ async def po_queue_loop():
                                 payload.get("messageId") or payload.get("discordMessageId") or payload.get("raidHelperMessageId"),
                                 payload
                             )
+                            await resolve_queue_item(item.get("rowNumber"))
                             if refreshed:
-                                await resolve_queue_item(item.get("rowNumber"))
                                 print(f"Raidanmelder vom PO-Bot aktualisiert: {current_guild_slug()}:{payload.get('raidId') or payload.get('id')}")
+                            else:
+                                print(f"Veralteter Raidanmelder-Refresh abgeschlossen: {current_guild_slug()}:{payload.get('raidId') or payload.get('id')}")
                             continue
                         if item_type == "raid_signup_notice":
                             await resolve_queue_item(item.get("rowNumber"))
