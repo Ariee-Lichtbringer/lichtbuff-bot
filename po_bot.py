@@ -24,7 +24,7 @@ except Exception:
     pass
 
 
-TOKEN = os.getenv("PO_BOT_TOKEN", "") or os.getenv("DISCORD_TOKEN", "")
+TOKEN = os.getenv("PO_BOT_TOKEN", "").strip()
 TEST_GUILD_ID = str(os.getenv("PO_BOT_GUILD_ID", "") or "").strip()
 GUILD_SLUG = os.getenv("LICHTLOOT_GUILD", "") or os.getenv("LICHTLOOT_GUILD_SLUG", "") or "lichtloot"
 if GUILD_SLUG.strip().lower() == "lichtbringer":

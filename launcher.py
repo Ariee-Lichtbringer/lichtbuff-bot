@@ -21,8 +21,9 @@ while True:
 
     po_code = po_bot.poll()
     if po_code is not None:
-        print(f"PO-Bot wurde beendet (Code {po_code}). Neustart in 5 Sekunden.", flush=True)
-        time.sleep(5)
-        po_bot = start("PO-Bot", "po_bot.py")
+        print(f"PO-Bot wurde beendet (Code {po_code}). Container wird neu gestartet.", flush=True)
+        if main_bot.poll() is None:
+            main_bot.terminate()
+        raise SystemExit(po_code or 1)
 
     time.sleep(1)

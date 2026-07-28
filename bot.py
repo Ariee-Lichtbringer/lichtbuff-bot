@@ -47,7 +47,7 @@ async def send_silent(channel, *args, **kwargs):
             return await channel.send(*args, **kwargs)
         raise
 
-TOKEN = os.getenv("DISCORD_TOKEN", "MTUxMDY3NzM0Njc4NzY1OTc3Nw.G_-vuz._ocUI4y-Nv7o9Kn0erGGra7cQfrHvFjKfBaeRc")
+TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
 LICHTBOT_QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
 def normalize_role_name(value):
     text = re.sub(r"[^a-z0-9]+", "", str(value or "").strip().casefold())
