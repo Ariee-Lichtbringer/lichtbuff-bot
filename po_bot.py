@@ -1282,6 +1282,13 @@ class RaidSignupCharacterSelect(discord.ui.Select):
             content=f"✅ Anmeldung gespeichert: **{char_name}** · {class_display_name(char_class)} · {self.spec_label}",
             view=None
         )
+        await send_raid_signup_confirmation(
+            interaction,
+            refresh_raid,
+            char_name,
+            char_class,
+            self.spec_label
+        )
         try:
             await refresh_raid_signup_message(
                 interaction,
@@ -2690,6 +2697,7 @@ async def reject_entry(payload, entry, user, reason=""):
         "item": entry.get("item") or entry.get("itemName") or "",
         "status": "rejected",
         "reason": reason,
+        "rejectionNoticeHandled": "true",
         "reviewer": getattr(user, "display_name", None) or getattr(user, "name", None) or str(user),
     })
     if not result.get("success"):
@@ -2712,6 +2720,34 @@ async def send_po_rejection_message(client, entry, reason):
         return True
     except Exception as error:
         print(f"PO-Ablehnung: DM konnte nicht gesendet werden: {error}")
+        return False
+
+
+async def send_raid_signup_confirmation(interaction, raid, char_name, class_name, spec):
+    try:
+        raid_name = clean((raid or {}).get("raidName") or (raid or {}).get("raid")) or "Raid"
+        raid_date = format_raid_announcement_date((raid or {}).get("raidDate") or "")
+        raid_time = format_raid_announcement_time((raid or {}).get("raidTime") or "")
+        raid_key = clean((raid or {}).get("raidId") or (raid or {}).get("id") or raid_name)
+        cache_key = f"{interaction.user.id}:{raid_key}:{clean(char_name).lower()}"
+        now = time.time()
+        if now - RAID_SIGNUP_DM_CACHE.get(cache_key, 0) < 120:
+            return False
+        RAID_SIGNUP_DM_CACHE[cache_key] = now
+        embed = discord.Embed(
+            title="Raidanmeldung gespeichert",
+            description=f"Du bist für **{raid_name}** angemeldet.",
+            color=0x22C55E,
+        )
+        embed.add_field(name="Charakter", value=clean(char_name) or "-", inline=True)
+        embed.add_field(name="Klasse", value=class_display_name(class_name) or "-", inline=True)
+        embed.add_field(name="Skillung", value=clean(spec) or "-", inline=True)
+        if raid_date != "noch offen" or raid_time != "noch offen":
+            embed.add_field(name="Termin", value=f"{raid_date} · {raid_time}", inline=False)
+        await interaction.user.send(embed=embed)
+        return True
+    except Exception as error:
+        print(f"Raid-Anmelder-DM nach Anmeldung konnte nicht gesendet werden: {error}")
         return False
 
 
@@ -3319,7 +3355,7 @@ class PoRejectModal(discord.ui.Modal):
         self.message = discord.ui.TextInput(
             label="Nachricht an den Spieler",
             placeholder="z. B. Bitte anderes Item wählen / passt nicht zur Lootregel.",
-            required=False,
+            required=True,
             style=discord.TextStyle.paragraph,
             max_length=500,
         )
@@ -3746,7 +3782,7 @@ async def po_queue_loop():
                 po_items = [
                     item for item in items
                     if clean(item.get("type")) in {"po_post", "p0_post_refresh"}
-                    or clean(item.get("type")) == "raid_announcement"
+                    or clean(item.get("type")) in {"raid_announcement", "po_rejection_notice"}
                 ]
                 stale_delete_items = [item for item in items if clean(item.get("type")) == "po_post_delete"]
                 for item in stale_delete_items:
@@ -3772,6 +3808,19 @@ async def po_queue_loop():
                     mode = clean(payload.get("mode")).lower() or "signup"
                     try:
                         item_type = clean(item.get("type"))
+                        if item_type == "po_rejection_notice":
+                            sent = await send_po_rejection_message(
+                                client,
+                                payload,
+                                clean(payload.get("reason") or payload.get("rejectionReason"))
+                            )
+                            await resolve_queue_item(item.get("rowNumber"))
+                            print(
+                                "PO-Ablehnungsnachricht "
+                                + ("gesendet" if sent else "konnte nicht gesendet werden")
+                                + f": {current_guild_slug()}:{payload.get('player') or '?'}"
+                            )
+                            continue
                         if item_type == "raid_announcement":
                             helper = await get_raid_helper_for_refresh(payload)
                             fallback_helper = raid_helper_snapshot_from_payload(payload)
