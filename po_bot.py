@@ -3946,6 +3946,7 @@ async def po_queue_loop():
                         queue_types = ", ".join(clean(item.get("type")) or "?" for item in items) or "leer"
                         print(f"PO-Bot Queue: kein po_post gefunden. Antwort-Typen: {queue_types}")
                         empty_queue_log_at = now
+                handled_po_post_keys = set()
                 for item in po_items:
                     queue_guild_slug = normalize_guild_slug(item.get("guild") or item.get("guildSlug"))
                     token = CURRENT_GUILD_SLUG.set(queue_guild_slug)
@@ -4009,8 +4010,8 @@ async def po_queue_loop():
                                 "sourceChannelId": clean(followup.get("sourceChannelId") or channel_id),
                                 "targetChannelId": channel_id,
                                 "channelId": channel_id,
-                                "restoreArchived": "true",
-                                "forceNewMessage": "true",
+                                "restoreArchived": "",
+                                "forceNewMessage": "",
                                 "lichtlootRaidId": clean(
                                     followup.get("lichtlootRaidId")
                                     or raid.get("raidId")
@@ -4021,6 +4022,13 @@ async def po_queue_loop():
                                 "combinedRaidExternalSignups": helper.get("externalSignups") or [],
                             }
                             normalized = await post_or_update_from_queue(client, combined_payload)
+                            handled_key = clean(
+                                normalized.get("postKey")
+                                or followup.get("postKey")
+                                or followup.get("poPostKey")
+                            )
+                            if handled_key:
+                                handled_po_post_keys.add(handled_key)
                             await asyncio.to_thread(api_post, {
                                 "action": "lichtbotSetRaidDiscordMessage",
                                 "queueToken": QUEUE_TOKEN,
@@ -4034,6 +4042,15 @@ async def po_queue_loop():
                                 f"{current_guild_slug()}:{payload.get('raidId') or payload.get('id')}"
                             )
                             continue
+                        if item_type == "po_post":
+                            queued_post_key = clean(payload.get("postKey") or payload.get("poPostKey"))
+                            if queued_post_key and queued_post_key in handled_po_post_keys:
+                                await resolve_queue_item(item.get("rowNumber"))
+                                print(
+                                    f"Doppelter PO-Auftrag erledigt: kombinierter Post wurde bereits erstellt: "
+                                    f"{current_guild_slug()}:{queued_post_key}"
+                                )
+                                continue
                         if item_type == "raid_announcement_refresh":
                             refreshed = await refresh_raid_signup_message_by_id(
                                 payload.get("raidId") or payload.get("id"),
