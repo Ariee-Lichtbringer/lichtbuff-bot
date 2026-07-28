@@ -4080,12 +4080,23 @@ async def po_queue_loop():
                         print(f"PO-Anmelder aus Gildenleitung gepostet: {current_guild_slug()}:{normalized.get('postKey')}")
                     except Exception as error:
                         error_text = str(error)
-                        if item_type == "p0_post_refresh" and (
-                            "ohne Post-ID" in error_text
-                            or "Unknown Message" in error_text
+                        terminal_queue_error = any(
+                            marker in error_text
+                            for marker in (
+                                "Unknown Message",
+                                "Unknown Channel",
+                                "Raid wurde nicht gefunden",
+                            )
+                        )
+                        if terminal_queue_error or (
+                            item_type == "p0_post_refresh"
+                            and "ohne Post-ID" in error_text
                         ):
                             await resolve_queue_item(item.get("rowNumber"))
-                            print(f"Veralteter P0-Refresh abgeschlossen: {error_text}")
+                            print(
+                                f"Veralteter {item_type or 'PO'}-Auftrag abgeschlossen "
+                                f"({item.get('rowNumber')}): {error_text}"
+                            )
                         else:
                             print(f"PO-Anmelder-Queue konnte nicht verarbeitet werden: {error}")
                     finally:
