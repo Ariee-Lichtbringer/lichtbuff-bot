@@ -7328,6 +7328,17 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             await post_worldbuff_replacement_from_queue(payload)
         elif update_type == "boss_token_notice":
             await post_boss_token_notice_from_queue(payload)
+        elif update_type == "update_notice":
+            channel_id = int(payload.get("channelId") or payload.get("discordChannelId") or 0)
+            if not channel_id:
+                raise RuntimeError("Update-Hinweis ohne Discord-Channel erhalten.")
+            channel = client.get_channel(channel_id)
+            if channel is None:
+                channel = await client.fetch_channel(channel_id)
+            await channel.send(
+                "Bitte um Geduld, aktuell wird ein Update durchgeführt.",
+                allowed_mentions=discord.AllowedMentions.none()
+            )
         elif update_type == "worldbuff_update":
             clear_worldbuff_csv_cache()
             await update_worldbuff_overview_from_all_guilds()
