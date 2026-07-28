@@ -3907,7 +3907,7 @@ async def po_queue_loop():
                 po_items = [
                     item for item in items
                     if clean(item.get("type")) in {"po_post", "p0_post_refresh"}
-                    or clean(item.get("type")) in {"raid_announcement", "po_rejection_notice", "po_approval_notice", "update_notice"}
+                    or clean(item.get("type")) in {"raid_announcement", "po_rejection_notice", "po_approval_notice"}
                 ]
                 stale_delete_items = [item for item in items if clean(item.get("type")) == "po_post_delete"]
                 for item in stale_delete_items:
@@ -3933,25 +3933,6 @@ async def po_queue_loop():
                     mode = clean(payload.get("mode")).lower() or "signup"
                     try:
                         item_type = clean(item.get("type"))
-                        if item_type == "update_notice":
-                            channel_id = int(
-                                payload.get("channelId")
-                                or payload.get("discordChannelId")
-                                or payload.get("targetChannelId")
-                                or 0
-                            )
-                            if not channel_id:
-                                raise RuntimeError("Update-Hinweis ohne Discord-Channel erhalten.")
-                            channel = client.get_channel(channel_id)
-                            if channel is None:
-                                channel = await client.fetch_channel(channel_id)
-                            await channel.send(
-                                "Bitte um Geduld, aktuell wird ein Update durchgeführt.",
-                                allowed_mentions=discord.AllowedMentions.none()
-                            )
-                            await resolve_queue_item(item.get("rowNumber"))
-                            print(f"Update-Hinweis vom PO-Bot gesendet: {current_guild_slug()}:{channel_id}")
-                            continue
                         if item_type == "po_rejection_notice":
                             sent = await send_po_rejection_message(
                                 client,
