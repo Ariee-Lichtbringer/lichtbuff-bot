@@ -901,9 +901,42 @@ def add_raid_signup_roster_fields(embed, helper):
         embed.add_field(name="Anmeldungen", value="Noch keine Anmeldungen.", inline=False)
         add_raid_signup_links_field(embed, (helper or {}).get("raid") or {})
         return
+    signup_order = sorted(
+        rows,
+        key=lambda row: (
+            clean(row.get("createdAt") or row.get("created_at") or "9999-12-31T23:59:59"),
+            clean(row.get("id")),
+            clean(row.get("player") or row.get("char")).lower(),
+        ),
+    )
+    signup_positions = {id(row): index + 1 for index, row in enumerate(signup_order)}
+    raid = (helper or {}).get("raid") or {}
+    active_rows = [
+        row for row in rows
+        if clean(row.get("status")).lower() not in {"absent", "abwesend", "bench", "bank"}
+    ]
+    role_counts = {"tank": 0, "heal": 0, "dd": 0}
+    for row in active_rows:
+        role = clean(row.get("role")).lower()
+        if role not in role_counts:
+            role = infer_signup_role(signup_spec_from_note(row.get("note"), role))
+        role_counts[role if role in role_counts else "dd"] += 1
+    tank_max = clean(raid.get("tankSlots"))
+    heal_max = clean(raid.get("healSlots"))
+    dd_max = clean(raid.get("ddSlots"))
+    embed.add_field(
+        name="Aufstellung",
+        value=" · ".join([
+            f"🛡️ **Tanks {role_counts['tank']}{('/' + tank_max) if tank_max else ''}**",
+            f"➕ **Heals {role_counts['heal']}{('/' + heal_max) if heal_max else ''}**",
+            f"⚔️ **DD {role_counts['dd']}{('/' + dd_max) if dd_max else ''}**",
+        ]),
+        inline=False,
+    )
+
     grouped = {}
-    raid_key = normalize_raid(((helper or {}).get("raid") or {}).get("raid") or "").lower()
-    for row in rows:
+    raid_key = normalize_raid(raid.get("raid") or "").lower()
+    for row in active_rows:
         cls = canonical_signup_class(row.get("className") or row.get("klasse"))
         grouped.setdefault(cls, []).append(row)
     order = ["Warrior", "Druid", "Paladin", "Rogue", "Hunter", "Priest", "Mage", "Warlock", "Shaman", "Ohne Klasse"]
@@ -912,19 +945,34 @@ def add_raid_signup_roster_fields(embed, helper):
         lines = []
         for row in grouped[cls][:8]:
             player = clean(row.get("player") or row.get("char")) or "-"
+            position = signup_positions.get(id(row), 0)
             spec = signup_spec_from_note(row.get("note"), row.get("role")) or "Flex"
             star = " ★" if any(
                 row.get(key) is True or clean(row.get(key)).lower() in {"1", "true", "yes", "ja", "freigegeben"}
                 for key in ("p0Released", "poReleased", "p0PlusReleased", "poPlusReleased")
             ) else ""
-            lines.append(f"**{player}{star}** · {signup_spec_icon(spec, row.get('role'), cls)}")
+            lines.append(f"`{position}` **{player}{star}** · {signup_spec_icon(spec, row.get('role'), cls)}")
         embed.add_field(
             name=f"{class_icon(cls)} {cls} ({len(grouped[cls])})",
             value="\n".join(lines)[:1024],
             inline=True,
         )
-        if class_index % 2 == 1 and class_index < len(sorted_classes) - 1:
+        if class_index % 3 == 2 and class_index < len(sorted_classes) - 1:
             embed.add_field(name="\u200b", value="\u200b", inline=False)
+    absent = [
+        f"`{signup_positions.get(id(row), 0)}` {clean(row.get('player') or row.get('char'))}"
+        for row in rows
+        if clean(row.get("status")).lower() in {"absent", "abwesend"}
+    ]
+    bench = [
+        f"`{signup_positions.get(id(row), 0)}` {clean(row.get('player') or row.get('char'))}"
+        for row in rows
+        if clean(row.get("status")).lower() in {"bench", "bank"}
+    ]
+    if absent:
+        embed.add_field(name=f"🚫 Abwesend ({len(absent)})", value=", ".join(filter(None, absent))[:1024], inline=False)
+    if bench:
+        embed.add_field(name=f"🪑 Bank ({len(bench)})", value=", ".join(filter(None, bench))[:1024], inline=False)
     add_raid_signup_links_field(embed, (helper or {}).get("raid") or {})
 
 
