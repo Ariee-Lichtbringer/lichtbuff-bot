@@ -5041,22 +5041,34 @@ async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None,
     try:
         raid_lookup_id = str(raid.get("raidId") or raid.get("id") or "").strip()
         raid_pin = str(raid.get("playerPin") or raid.get("prioPin") or "").strip()
+        guild_slug = guild_slug_for_discord_server(
+            getattr(interaction, "guild", None),
+            raid.get("guildSlug")
+            or raid.get("guild")
+            or guild_slug_for_channel(getattr(interaction, "channel_id", 0) or 0)
+        )
         helper_queries = []
         if raid_lookup_id:
             helper_queries.append({
                 "action": "getRaidHelper",
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
                 "raidId": raid_lookup_id,
                 "playerPin": raid_lookup_id,
                 "t": int(time.time())
             })
             helper_queries.append({
                 "action": "getRaidHelper",
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
                 "raidId": raid_lookup_id,
                 "t": int(time.time())
             })
         if raid_pin and raid_pin != raid_lookup_id:
             helper_queries.append({
                 "action": "getRaidHelper",
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
                 "playerPin": raid_pin,
                 "t": int(time.time())
             })
@@ -5093,12 +5105,15 @@ async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None,
         print("Raid-Anmelder-Message konnte nicht aktualisiert werden:", e)
 
 
-async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id=None):
+async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id=None, guild_slug=None):
     raid_id = str(raid_id or "").strip()
     if not raid_id:
         raise RuntimeError("Raid-Anmelder-Refresh: Raid-ID fehlt.")
+    resolved_guild_slug = str(guild_slug or current_guild_slug() or "").strip()
     helper = await asyncio.to_thread(lichtloot_get, {
         "action": "getRaidHelper",
+        "guild": resolved_guild_slug,
+        "guildSlug": resolved_guild_slug,
         "raidId": raid_id,
         "playerPin": raid_id,
         "t": int(time.time())
@@ -7300,7 +7315,8 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             refreshed = await refresh_raid_signup_message_by_id(
                 payload.get("raidId") or payload.get("id"),
                 payload.get("channelId") or payload.get("discordChannelId"),
-                payload.get("messageId") or payload.get("discordMessageId") or payload.get("raidHelperMessageId")
+                payload.get("messageId") or payload.get("discordMessageId") or payload.get("raidHelperMessageId"),
+                queue_guild_slug
             )
             if refreshed == "missing_message":
                 print(f"Raid-Anmelder-Refresh ohne gespeicherte Discord-Nachricht uebersprungen: {payload}")
