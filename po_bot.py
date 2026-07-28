@@ -989,11 +989,14 @@ def add_raid_signup_roster_fields(embed, helper):
         ("⚖️ Vorläufig", {"tentative", "vorläufig", "vorlaeufig"}),
         ("🚫 Abwesenheit", {"absent", "abwesend"}),
     ]
+    if any(clean(row.get("status")).lower() in statuses for _, statuses in status_groups for row in rows):
+        embed.add_field(name="\u200b", value="\u200b\n\u200b", inline=False)
     for label, statuses in status_groups:
         status_rows = [row for row in rows if clean(row.get("status")).lower() in statuses]
         if not status_rows:
             continue
         players = [
+            f"{class_icon(canonical_signup_class(row.get('className') or row.get('klasse')))} "
             f"`{signup_positions.get(id(row), 0)}` {clean(row.get('player') or row.get('char'))}"
             for row in sorted(status_rows, key=lambda row: signup_positions.get(id(row), 0))
         ]
