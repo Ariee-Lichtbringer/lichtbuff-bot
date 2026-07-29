@@ -289,6 +289,17 @@ def clean(value):
     return str(value or "").strip()
 
 
+def character_server(character):
+    """Liest den tatsächlichen Realm eines Charakters ohne Everlook-Fallback."""
+    character = character or {}
+    return clean(
+        character.get("server")
+        or character.get("realm")
+        or character.get("serverName")
+        or character.get("server_name")
+    )
+
+
 def normalize_raid(value):
     text = clean(value).upper().replace(" ", "").replace("-", "")
     if text in {"ZGMITTWOCH", "ZULGURUBMITTWOCH"}:
@@ -1337,7 +1348,7 @@ class RaidSignupCharacterSelect(discord.ui.Select):
         for index, character in enumerate(self.characters):
             char_class = canonical_signup_class(character.get("className") or character.get("Klasse") or character.get("class_name") or class_name)
             label = clean(character.get("name"))
-            server = clean(character.get("server"))
+            server = character_server(character)
             description = " · ".join(part for part in [server, class_display_name(char_class)] if part)[:100]
             options.append(discord.SelectOption(
                 label=label[:100],
@@ -1350,7 +1361,7 @@ class RaidSignupCharacterSelect(discord.ui.Select):
     async def callback(self, interaction):
         character = self.characters[int(self.values[0])]
         char_name = clean(character.get("name"))
-        server = clean(character.get("server"))
+        server = character_server(character)
         char_class = canonical_signup_class(character.get("className") or character.get("Klasse") or character.get("class_name") or self.class_name)
         guild_slug = payload_guild_slug(payload_for_interaction(self.raid, interaction))
         result = await asyncio.to_thread(api_post, {
@@ -3130,7 +3141,7 @@ class PoKnownCharacterSelect(discord.ui.Select):
         for index, char in enumerate(self.characters):
             label = clean(char.get("name"))[:100]
             description = " · ".join(
-                part for part in [clean(char.get("className")), clean(char.get("server"))] if part
+                part for part in [clean(char.get("className")), character_server(char)] if part
             )[:100]
             options.append(discord.SelectOption(label=label, value=str(index), description=description or None))
         super().__init__(
@@ -3156,7 +3167,7 @@ class PoKnownCharacterSelect(discord.ui.Select):
             class_name,
             char.get("name"),
             char.get("playerPin"),
-            char.get("server"),
+            character_server(char),
         )
 
 
@@ -3171,7 +3182,7 @@ class PoPlayerLoginCharacterSelect(discord.ui.Select):
         for index, char in enumerate(self.characters):
             label = clean(char.get("name"))[:100]
             description = " · ".join(
-                part for part in [clean(char.get("className")), clean(char.get("server"))] if part
+                part for part in [clean(char.get("className")), character_server(char)] if part
             )[:100]
             options.append(discord.SelectOption(label=label, value=str(index), description=description or None))
         super().__init__(
@@ -3197,7 +3208,7 @@ class PoPlayerLoginCharacterSelect(discord.ui.Select):
             class_name,
             char.get("name"),
             self.player_login,
-            char.get("server"),
+            character_server(char),
         )
 
 
@@ -4223,7 +4234,10 @@ async def po_anmelder(interaction, raid: str, datum: str, uhrzeit: str, titel: s
             "sourceChannelId": str(interaction.channel_id),
             "targetChannelId": str(interaction.channel_id),
             "messageId": "",
-            "server": clean(guild_info.get("server")) or "Everlook",
+            # Der Anmelder gehört zur Gilde, nicht zu einem festen Realm.
+            # Der tatsächliche Realm (z. B. Lakeshire oder Everlook) wird erst
+            # mit dem ausgewählten Charakter an LichtLoot übertragen.
+            "server": "",
             "guildName": clean(guild_info.get("name")) or current_guild_slug(),
             "createdBy": "Gildenleitung",
         }
