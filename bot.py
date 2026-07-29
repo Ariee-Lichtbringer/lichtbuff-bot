@@ -47,7 +47,7 @@ async def send_silent(channel, *args, **kwargs):
             return await channel.send(*args, **kwargs)
         raise
 
-TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
+TOKEN = os.getenv("DISCORD_TOKEN", "MTUxMDY3NzM0Njc4NzY1OTc3Nw.G_-vuz._ocUI4y-Nv7o9Kn0erGGra7cQfrHvFjKfBaeRc")
 LICHTBOT_QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
 def normalize_role_name(value):
     text = re.sub(r"[^a-z0-9]+", "", str(value or "").strip().casefold())
@@ -77,6 +77,7 @@ NACHTLOOT_WORLDBUFF_CHANNEL_ID = int(
     os.getenv("NACHTLOOT_WORLDBUFF_CHANNEL_ID", "1327704903975440477") or 1327704903975440477
 )
 LOG_ANALYSIS_CHANNEL_ID = 1279032487628242995
+PLAYER_LOGIN_APPROVAL_CHANNEL_ID = int(os.getenv("PLAYER_LOGIN_APPROVAL_CHANNEL_ID", "0") or 0)
 WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_ID = int(os.getenv("WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_ID", "1118795108968574987") or 1118795108968574987)
 WORLDBUFF_REPLACEMENT_WORLDBUFF_CHANNEL_ID = int(os.getenv("WORLDBUFF_REPLACEMENT_WORLDBUFF_CHANNEL_ID", str(POST_CHANNEL_ID)) or POST_CHANNEL_ID)
 WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_NAMES = [
@@ -4091,6 +4092,81 @@ async def post_boss_token_notice_from_queue(payload):
     print(f"Bosskopf-/Herz-Meldung gepostet in {channel_id}: {payload.get('player')} {payload.get('token')}")
 
 
+def normalized_discord_name(value):
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().casefold())
+
+
+async def post_player_login_approval_notice(payload):
+    registry_entry = GUILD_REGISTRY.get(current_guild_slug()) or {}
+    discord_guild_id = str(registry_entry.get("discordGuildId") or "").strip()
+    discord_guild = client.get_guild(int(discord_guild_id)) if discord_guild_id.isdigit() else None
+    if discord_guild is None and current_guild_slug() == LICHTLOOT_GUILD_SLUG:
+        discord_guild = next(
+            (guild for guild in client.guilds if "lichtbringer" in str(getattr(guild, "name", "")).casefold()),
+            None
+        )
+    if discord_guild is None:
+        raise RuntimeError(f"Discord-Server fuer {current_guild_slug()} wurde nicht gefunden.")
+
+    wanted_roles = {
+        "raidoffiziere",
+        "pofreigeber",
+        "p0freigeber",
+        "gildenleitung",
+        "offiziere",
+        "gildenoffiziere",
+    }
+    roles = [
+        role for role in getattr(discord_guild, "roles", [])
+        if normalized_discord_name(getattr(role, "name", "")) in wanted_roles
+    ]
+    role_mentions = " ".join(role.mention for role in roles)
+
+    channel = None
+    if PLAYER_LOGIN_APPROVAL_CHANNEL_ID:
+        candidate = client.get_channel(PLAYER_LOGIN_APPROVAL_CHANNEL_ID)
+        if candidate and getattr(candidate, "guild", None) == discord_guild:
+            channel = candidate
+    if channel is None:
+        ranked_channels = sorted(
+            getattr(discord_guild, "text_channels", []),
+            key=lambda candidate: (
+                0 if any(term in normalized_discord_name(candidate.name) for term in ("raidoffizier", "pofreigabe", "offizier")) else 1,
+                int(getattr(candidate, "position", 999999) or 999999)
+            )
+        )
+        channel = next(
+            (candidate for candidate in ranked_channels if candidate.permissions_for(discord_guild.me).send_messages),
+            None
+        )
+    if channel is None:
+        raise RuntimeError(f"Kein beschreibbarer Discord-Channel fuer {current_guild_slug()} gefunden.")
+
+    character = str(payload.get("character") or "Unbekannt").strip()
+    server = str(payload.get("server") or "").strip()
+    class_name = str(payload.get("className") or "").strip()
+    character_label = f"{character}-{server}" if server else character
+    lines = [
+        role_mentions,
+        "🔐 **Neuer SpielerLogin wartet auf Freigabe**",
+        "",
+        f"**Charakter:** {character_label}",
+    ]
+    if class_name:
+        lines.append(f"**Klasse:** {class_name}")
+    lines.extend([
+        "",
+        "Bitte den neuen SpielerLogin in der Gildenleitung prüfen und freigeben."
+    ])
+    await channel.send(
+        "\n".join(line for line in lines if line is not None),
+        allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
+        silent=False
+    )
+    found_roles = ", ".join(role.name for role in roles) or "keine passende Rolle gefunden"
+    print(f"SpielerLogin-Freigabehinweis in #{channel.name} gepostet; Rollen: {found_roles}.")
+
+
 def format_raid_announcement_date(value):
     raw = str(value or "").strip()
     if not raw:
@@ -7293,9 +7369,22 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             removed = await asyncio.to_thread(remove_deleted_worldbuff_from_all_caches, payload)
             print(f"Worldbuff-Loeschung aus Queue verarbeitet, {removed} Cache-Eintraege entfernt.")
 
-        if update_type in {"raid_announcement", "raid_announcement_refresh", "raid_signup_notice"}:
-            print(f"Raid-Anmelder-Auftrag {update_type} uebersprungen: wird ausschliesslich vom PO-Bot verarbeitet.")
+        if update_type == "raid_announcement":
+            print("Raid-Ankuendigung uebersprungen: Alle Raidanmelder werden vom PO-Bot verarbeitet.")
             return
+        elif update_type == "raid_announcement_refresh":
+            refreshed = await refresh_raid_signup_message_by_id(
+                payload.get("raidId") or payload.get("id"),
+                payload.get("channelId") or payload.get("discordChannelId"),
+                payload.get("messageId") or payload.get("discordMessageId") or payload.get("raidHelperMessageId")
+            )
+            if refreshed == "missing_message":
+                print(f"Raid-Anmelder-Refresh ohne gespeicherte Discord-Nachricht uebersprungen: {payload}")
+                refreshed = True
+            if not refreshed:
+                raise RuntimeError(f"Raid-Anmelder konnte nicht aktualisiert werden: {payload}")
+        elif update_type == "raid_signup_notice":
+            await send_raid_signup_notice(payload)
         elif update_type == "po_post":
             print("PO-Auftrag uebersprungen: wird vom separaten PO-Bot verarbeitet.")
             return
@@ -7315,6 +7404,8 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             await post_worldbuff_replacement_from_queue(payload)
         elif update_type == "boss_token_notice":
             await post_boss_token_notice_from_queue(payload)
+        elif update_type == "player_login_approval_notice":
+            await post_player_login_approval_notice(payload)
         elif update_type == "worldbuff_update":
             clear_worldbuff_csv_cache()
             await update_worldbuff_overview_from_all_guilds()
@@ -7387,15 +7478,8 @@ async def lichtloot_queue_loop():
                     guild_slug = normalize_guild_slug(item.get("guild") or item.get("guildSlug") or LICHTLOOT_GUILD_SLUG)
                     token = CURRENT_GUILD_SLUG.set(guild_slug)
                     try:
-                        if str(item.get("type") or "").strip() in {
-                            "po_post",
-                            "po_post_delete",
-                            "p0_post_refresh",
-                            "raid_announcement",
-                            "raid_announcement_refresh",
-                            "raid_signup_notice",
-                        }:
-                            print("PO-/Raid-Anmelder-Auftrag uebersprungen: ausschliesslich der PO-Bot ist zustaendig.")
+                        if str(item.get("type") or "").strip() in {"po_post", "po_post_delete", "p0_post_refresh"}:
+                            print("PO/P0-Auftrag in Railway-Queue uebersprungen: separater PO-Bot ist zustaendig.")
                             continue
                         await handle_lichtloot_queue_item(item, resolve_old_queue=False)
                         row_number = item.get("rowNumber")
