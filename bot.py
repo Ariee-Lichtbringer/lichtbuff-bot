@@ -4113,7 +4113,9 @@ async def post_player_login_approval_notice(payload):
         "pofreigeber",
         "p0freigeber",
         "gildenleitung",
+        "offizier",
         "offiziere",
+        "gildenoffizier",
         "gildenoffiziere",
     }
     roles = [
