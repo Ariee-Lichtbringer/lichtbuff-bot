@@ -526,6 +526,38 @@ def guild_slug_for_discord_server(guild, fallback=""):
     return normalize_guild_slug(fallback)
 
 
+async def sync_discord_roles_to_lichtloot():
+    if not LICHTBOT_QUEUE_TOKEN:
+        return
+    for discord_guild in client.guilds:
+        guild_slug = guild_slug_for_discord_server(discord_guild, "")
+        if not guild_slug:
+            continue
+        roles = [
+            {
+                "id": str(role.id),
+                "name": str(role.name),
+                "color": int(getattr(role.color, "value", 0) or 0),
+                "position": int(getattr(role, "position", 0) or 0),
+                "discordGuildId": str(discord_guild.id),
+            }
+            for role in discord_guild.roles
+            if not role.is_default()
+        ]
+        token = CURRENT_GUILD_SLUG.set(guild_slug)
+        try:
+            await asyncio.to_thread(lichtloot_post, {
+                "action": "lichtbotSaveDiscordRoles",
+                "queueToken": LICHTBOT_QUEUE_TOKEN,
+                "roles": roles,
+            })
+            print(f"Discord-Rollen fuer {guild_slug} synchronisiert: {len(roles)}")
+        except Exception as error:
+            print(f"Discord-Rollen fuer {guild_slug} konnten nicht synchronisiert werden: {error}")
+        finally:
+            CURRENT_GUILD_SLUG.reset(token)
+
+
 def current_guild_slug():
     return CURRENT_GUILD_SLUG.get()
 
@@ -4205,6 +4237,7 @@ def build_raid_announcement_text(raid):
     heal_slots = str(raid.get("healSlots") or "").strip()
     dd_slots = str(raid.get("ddSlots") or "").strip()
     signup_deadline = format_raid_announcement_time(raid.get("signupDeadline") or raid.get("signup_deadline") or "")
+    loot_master = str(raid.get("lootMaster") or raid.get("pluendermeister") or "").strip()
     created_by = str(
         raid.get("createdBy") or
         raid.get("erstelltVon") or
@@ -4224,6 +4257,8 @@ def build_raid_announcement_text(raid):
         f"🗓️ **Datum:** {raid_date}",
         f"⏰ **Start:** {raid_time}",
     ])
+    if loot_master:
+        lines.append(f"🪙 **Plündermeister:** {loot_master}")
 
     if max_players or tank_slots or heal_slots or dd_slots:
         slot_parts = []
@@ -4266,6 +4301,7 @@ def build_raid_announcement_embed(raid):
     heal_slots = str(raid.get("healSlots") or "").strip()
     dd_slots = str(raid.get("ddSlots") or "").strip()
     signup_deadline = format_raid_announcement_time(raid.get("signupDeadline") or raid.get("signup_deadline") or "")
+    loot_master = str(raid.get("lootMaster") or raid.get("pluendermeister") or "").strip()
     created_by = str(
         raid.get("createdBy") or
         raid.get("erstelltVon") or
@@ -4282,6 +4318,8 @@ def build_raid_announcement_embed(raid):
     embed.add_field(name="Raidlead", value=created_by, inline=True)
     embed.add_field(name="Datum", value=raid_date, inline=True)
     embed.add_field(name="Start", value=raid_time, inline=True)
+    if loot_master:
+        embed.add_field(name="Plündermeister", value=loot_master, inline=False)
     if signup_deadline != "noch offen":
         embed.add_field(name="Anmeldeschluss", value=signup_deadline, inline=False)
 
@@ -4980,7 +5018,7 @@ def raid_signup_status_line(helper):
         f"{tank_icon} Tanks **{counts['tank']}** · "
         f"{melee_icon} Melee **{counts['melee']}** · "
         f"{ranged_icon} Ranged **{counts['ranged']}** · "
-        f"{heal_icon} Healers **{heal_text}**"
+        f"{heal_icon} Heiler **{heal_text}**"
     )
 
 
@@ -4995,7 +5033,7 @@ def add_raid_signup_role_fields(embed, helper):
     heal_icon = spec_emoji_cache.get("heal") or SPEC_EMOJI_FALLBACKS["heal"]
     value = (
         f"{tank_icon} Tanks **{counts['tank']}** · {melee_icon} Melee **{counts['melee']}**\n"
-        f"{ranged_icon} Ranged **{counts['ranged']}** · {heal_icon} Healers **{heal_text}**"
+        f"{ranged_icon} Ranged **{counts['ranged']}** · {heal_icon} Heiler **{heal_text}**"
     )
     embed.add_field(name="Rollen", value=value, inline=False)
 
@@ -5257,6 +5295,75 @@ async def send_raid_signup_notice(payload):
     await user.send(embed=embed)
     print(f"Raid-Anmelder-DM gesendet: user={user_id} raid={raid_name} player={player} action={payload.get('action')}")
     return True
+
+
+async def send_raid_status_staff_notice(payload, discord_guild=None):
+    targets = list(payload.get("targets") or [])
+    for name in (payload.get("createdBy"), payload.get("lootMaster")):
+        if str(name or "").strip():
+            targets.append({"type": "name", "value": str(name).strip()})
+    wanted_names = {
+        normalized_discord_name(target.get("value") or target.get("name"))
+        for target in targets if str(target.get("type") or "name").lower() == "name"
+    }
+    wanted_role_ids = {
+        str(target.get("value") or target.get("id") or "").strip()
+        for target in targets if str(target.get("type") or "").lower() == "role"
+    }
+    guilds = [discord_guild] if discord_guild else list(client.guilds)
+    action_label = raid_signup_notice_action_label(payload.get("action"))
+    embed = discord.Embed(
+        title="Statusänderung im Raidanmelder",
+        description=f"**{payload.get('player') or 'Ein Spieler'}** wurde für **{payload.get('raidName') or 'Raid'}** **{action_label}**.",
+        color=raid_signup_notice_color(payload.get("action")),
+    )
+    embed.add_field(name="Geändert von", value=str(payload.get("changedBy") or "Spieler"), inline=True)
+    if payload.get("message"):
+        embed.add_field(name="Hinweis", value=str(payload.get("message"))[:1024], inline=False)
+    sent = set()
+    for guild in [entry for entry in guilds if entry]:
+        for member in guild.members:
+            member_names = {
+                normalized_discord_name(getattr(member, "name", "")),
+                normalized_discord_name(getattr(member, "display_name", "")),
+                normalized_discord_name(getattr(member, "global_name", "")),
+            }
+            member_roles = {str(role.id) for role in getattr(member, "roles", [])}
+            if not (wanted_names.intersection(member_names) or wanted_role_ids.intersection(member_roles)):
+                continue
+            if member.id in sent or member.bot:
+                continue
+            try:
+                await member.send(embed=embed)
+                sent.add(member.id)
+            except Exception as error:
+                print(f"Raidstatus-DM an {member} fehlgeschlagen: {error}")
+    return len(sent)
+
+
+async def send_own_raid_status_confirmation(interaction, raid, char_name, status, note=""):
+    payload = {
+        "player": char_name,
+        "raidName": raid.get("raidName") or raid.get("raid") or "Raid",
+        "action": status,
+        "message": note,
+        "changedBy": interaction.user.display_name,
+        "createdBy": raid.get("createdBy") or raid.get("erstelltVon") or "",
+        "lootMaster": raid.get("lootMaster") or raid.get("pluendermeister") or "",
+        "targets": raid.get("statusNotifyTargets") or [],
+    }
+    own_embed = discord.Embed(
+        title="Dein Raidstatus wurde geändert",
+        description=f"**{char_name}** wurde **{raid_signup_notice_action_label(status)}**.",
+        color=raid_signup_notice_color(status),
+    )
+    if note:
+        own_embed.add_field(name="Deine Notiz", value=note[:1024], inline=False)
+    try:
+        await interaction.user.send(embed=own_embed)
+    except Exception as error:
+        print(f"Eigene Raidstatus-DM fehlgeschlagen: {error}")
+    await send_raid_status_staff_notice(payload, getattr(interaction, "guild", None))
 
 
 async def send_own_raid_signup_confirmation(interaction, raid, char_name, class_name, spec):
@@ -5554,6 +5661,7 @@ class RaidSignupStatusModal(discord.ui.Modal):
                 "absent": "als abwesend markiert",
             }.get(self.status, "aktualisiert")
             await interaction.response.send_message(f"✅ **{char_name}** wurde {label}.", ephemeral=True)
+            await send_own_raid_status_confirmation(interaction, self.raid, char_name, self.status, note)
         except Exception as e:
             await interaction.response.send_message(f"⚠️ Status konnte nicht geändert werden: {e}", ephemeral=True)
             return
@@ -7375,18 +7483,12 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             print("Raid-Ankuendigung uebersprungen: Alle Raidanmelder werden vom PO-Bot verarbeitet.")
             return
         elif update_type == "raid_announcement_refresh":
-            refreshed = await refresh_raid_signup_message_by_id(
-                payload.get("raidId") or payload.get("id"),
-                payload.get("channelId") or payload.get("discordChannelId"),
-                payload.get("messageId") or payload.get("discordMessageId") or payload.get("raidHelperMessageId")
-            )
-            if refreshed == "missing_message":
-                print(f"Raid-Anmelder-Refresh ohne gespeicherte Discord-Nachricht uebersprungen: {payload}")
-                refreshed = True
-            if not refreshed:
-                raise RuntimeError(f"Raid-Anmelder konnte nicht aktualisiert werden: {payload}")
+            print("Raid-Anmelder-Refresh uebersprungen: wird vom separaten PO-Bot verarbeitet.")
+            return
         elif update_type == "raid_signup_notice":
             await send_raid_signup_notice(payload)
+        elif update_type == "raid_status_staff_notice":
+            await send_raid_status_staff_notice(payload)
         elif update_type == "po_post":
             print("PO-Auftrag uebersprungen: wird vom separaten PO-Bot verarbeitet.")
             return
@@ -7408,6 +7510,8 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             await post_boss_token_notice_from_queue(payload)
         elif update_type == "player_login_approval_notice":
             await post_player_login_approval_notice(payload)
+        elif update_type == "worldbuff_player_change_notice":
+            await send_worldbuff_player_change_notice(payload)
         elif update_type == "worldbuff_update":
             clear_worldbuff_csv_cache()
             await update_worldbuff_overview_from_all_guilds()
@@ -7426,6 +7530,40 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
         LICHTLOOT_QUEUE_RECENTLY_DONE[queue_key] = time.time()
     finally:
         LICHTLOOT_QUEUE_IN_PROGRESS.discard(queue_key)
+
+
+async def send_worldbuff_player_change_notice(payload):
+    recipient_name = str(payload.get("recipient") or "Ariee").strip().lower()
+    character = str(payload.get("character") or "Unbekannter Charakter").strip()
+    action_label = str(payload.get("actionLabel") or "geändert").strip()
+    reason = str(payload.get("reason") or "-").strip()
+    old_slot = str(payload.get("from") or "-").strip()
+    new_slot = str(payload.get("to") or "").strip()
+    lines = [
+        f"🌍 **Worldbuff-Termin {action_label}**",
+        f"**Charakter:** {character}",
+        f"**Bisheriger Termin:** {old_slot}",
+    ]
+    if new_slot:
+        lines.append(f"**Neuer Termin:** {new_slot}")
+    lines.append(f"**Grund:** {reason}")
+    message = "\n".join(lines)
+
+    for guild in client.guilds:
+        for member in guild.members:
+            candidates = {
+                str(member.name or "").strip().lower(),
+                str(member.display_name or "").strip().lower(),
+                str(getattr(member, "global_name", "") or "").strip().lower(),
+            }
+            if recipient_name in candidates or any(recipient_name in candidate for candidate in candidates if candidate):
+                try:
+                    await member.send(message)
+                    print(f"Worldbuff-Aenderung per DM an {member} gesendet.")
+                    return
+                except Exception as error:
+                    print(f"Worldbuff-DM an {member} fehlgeschlagen: {error}")
+    print(f"Discord-Empfaenger fuer Worldbuff-Aenderung nicht gefunden: {recipient_name}")
 
 
 async def lichtloot_queue_loop():
@@ -10307,6 +10445,7 @@ async def handle_ticker_update(message):
 async def on_ready():
     print(f"Bot online als {client.user}")
     await refresh_guild_registry()
+    await sync_discord_roles_to_lichtloot()
     print(f"Überwache Ticker-Channels: {sorted(TICKER_CHANNEL_IDS)}")
     print("Postet Worldbuff-Uebersichten in den gildenabhaengig gespeicherten Worldbuff-Channel.")
     print(f"Hordenbuff-Channels: {sorted(HORDENBUFF_CHANNEL_IDS)}")
