@@ -662,7 +662,6 @@ def build_raid_announcement_embed(raid):
         value="Hat ein Spieler seine Prio für diesen Raid auf LichtLoot eingetragen, erscheint vor seinem Namen eine Schatztruhe.",
         inline=False,
     )
-    embed.add_field(name="\u200b", value="\u200b\n\u200b", inline=False)
     attachment_name = raid_banner_attachment_name(raid)
     if attachment_name:
         embed.set_image(url=f"attachment://{attachment_name}")
@@ -935,7 +934,6 @@ def add_raid_signup_roster_fields(embed, helper):
     heal_max = clean(raid.get("healSlots"))
     dd_max = clean(raid.get("ddSlots"))
     tank_role_icon = signup_spec_icon("Tank", "tank", "Warrior")
-    embed.add_field(name="\u200b", value="\u200b\n\u200b", inline=False)
     embed.add_field(
         name=f"{tank_role_icon} Tanks",
         value=f"**{role_counts['tank']}{('/' + tank_max) if tank_max else ''}**",
@@ -951,6 +949,7 @@ def add_raid_signup_roster_fields(embed, helper):
         value=f"**{role_counts['dd']}{('/' + dd_max) if dd_max else ''}**",
         inline=True,
     )
+    embed.add_field(name="\u200b", value="\u200b", inline=False)
 
     grouped = {}
     raid_key = normalize_raid(raid.get("raid") or "").lower()
@@ -1019,9 +1018,47 @@ def add_raid_signup_roster_fields(embed, helper):
     add_raid_signup_links_field(embed, (helper or {}).get("raid") or {})
 
 
+def normalized_prio_player_name(value):
+    text = clean(value).casefold()
+    for source, target in {
+        "ä": "a", "ö": "o", "ü": "u", "ß": "ss",
+        "á": "a", "à": "a", "â": "a", "é": "e", "è": "e", "ê": "e",
+        "í": "i", "ì": "i", "ó": "o", "ò": "o", "ú": "u", "ù": "u",
+    }.items():
+        text = text.replace(source, target)
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def hydrate_helper_prio_flags(helper, guild_slug):
+    if not helper or not helper.get("success"):
+        return helper
+    raid = helper.get("raid") or {}
+    params = {
+        "action": "getPublishedPrios",
+        "guild": normalize_guild_slug(guild_slug),
+        "guildSlug": normalize_guild_slug(guild_slug),
+        "raidId": clean(raid.get("raidId") or raid.get("id")),
+        "playerPin": clean(raid.get("playerPin") or raid.get("prioPin") or raid.get("raidPin")),
+        "t": int(time.time()),
+    }
+    try:
+        result = api_get(params)
+        prio_players = {
+            normalized_prio_player_name(row.get("player") or row.get("Spieler"))
+            for row in result.get("prios") or []
+            if normalized_prio_player_name(row.get("player") or row.get("Spieler"))
+        }
+        for row in list(helper.get("signups") or []) + list(helper.get("externalSignups") or []):
+            player_key = normalized_prio_player_name(row.get("player") or row.get("char"))
+            row["hasPrio"] = bool(player_key and player_key in prio_players)
+    except Exception as error:
+        print(f"Prio-Symbole konnten nicht geladen werden: {error}")
+    return helper
+
+
 async def get_raid_helper_by_id(raid_id, guild_slug=None):
     resolved_guild_slug = normalize_guild_slug(guild_slug or current_guild_slug())
-    return await asyncio.to_thread(api_get, {
+    helper = await asyncio.to_thread(api_get, {
         "action": "getRaidHelper",
         "guild": resolved_guild_slug,
         "guildSlug": resolved_guild_slug,
@@ -1029,6 +1066,7 @@ async def get_raid_helper_by_id(raid_id, guild_slug=None):
         "playerPin": raid_id,
         "t": int(time.time())
     })
+    return await asyncio.to_thread(hydrate_helper_prio_flags, helper, resolved_guild_slug)
 
 
 def raid_signup_row_count(helper):
@@ -1090,7 +1128,7 @@ async def get_raid_helper_for_refresh(payload_or_raid_id):
         raid = clean(payload.get("raid"))
         raid_date = clean(payload.get("raidDate"))
         if raid and raid_date:
-            return await asyncio.to_thread(api_get, {
+            helper = await asyncio.to_thread(api_get, {
                 "action": "getRaidHelper",
                 "guild": guild_slug,
                 "guildSlug": guild_slug,
@@ -1099,6 +1137,7 @@ async def get_raid_helper_for_refresh(payload_or_raid_id):
                 "raidTime": clean(payload.get("raidTime")),
                 "t": int(time.time())
             })
+            return await asyncio.to_thread(hydrate_helper_prio_flags, helper, guild_slug)
         return {}
     return await get_raid_helper_by_id(clean(payload_or_raid_id), current_guild_slug())
 
@@ -1192,6 +1231,7 @@ async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None,
                 last_error = error
         if helper is None:
             raise last_error or RuntimeError("Raid-Anmelder konnte nicht geladen werden.")
+        helper = await asyncio.to_thread(hydrate_helper_prio_flags, helper, guild_slug)
         if optimistic_signup:
             all_rows = list(helper.get("signups") or []) + list(helper.get("externalSignups") or [])
             optimistic_char = clean(optimistic_signup.get("char") or optimistic_signup.get("player")).lower()
