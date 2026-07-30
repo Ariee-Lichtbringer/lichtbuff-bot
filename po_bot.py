@@ -626,6 +626,12 @@ def raid_announcement_image_url(raid):
     return ""
 
 
+def custom_emoji(name, fallback):
+    """Use the guild emoji uploaded in Discord and keep a portable fallback."""
+    emoji = discord.utils.get(getattr(client, "emojis", []), name=name)
+    return str(emoji) if emoji else fallback
+
+
 def build_raid_announcement_embed(raid):
     raid = raid or {}
     raid_name = clean(raid.get("raidName") or display_raid(raid.get("raid")) or "Raid")
@@ -663,9 +669,9 @@ def build_raid_announcement_embed(raid):
     embed.add_field(
         name="\u200b",
         value=(
-            "🟨🧰 **P1, P2, P3 auf LichtLoot:** Gelber Koffer vor dem Namen = P1, P2 oder P3 für diesen Raid eingetragen.\n"
-            "🟧🧰 **PO auf LichtLoot eingetragen:** Oranger Koffer = PO angemeldet, aber noch nicht freigegeben.\n"
-            "🟩🧰 **PO auf LichtLoot freigegeben:** Grüner Koffer = PO für diesen Raid eingetragen und freigegeben."
+            f"{custom_emoji('kofferrot', '🧰')} **P1, P2, P3 auf LichtLoot:** Roter Koffer vor dem Namen = P1, P2 oder P3 für diesen Raid eingetragen.\n"
+            f"{custom_emoji('kofferorange', '🟧🧰')} **PO auf LichtLoot eingetragen:** Oranger Koffer = PO angemeldet, aber noch nicht freigegeben.\n"
+            f"{custom_emoji('koffergrun', '🟩🧰')} **PO auf LichtLoot freigegeben:** Grüner Koffer = PO für diesen Raid eingetragen und freigegeben."
         ),
         inline=False,
     )
@@ -993,11 +999,11 @@ def add_raid_signup_roster_fields(embed, helper):
             position = signup_positions.get(id(row), 0)
             po_status = clean(row.get("poApprovalStatus") or row.get("po_approval_status")).lower()
             if po_status in {"approved", "freigegeben"}:
-                prio_icon = " 🟩🧰"
+                prio_icon = f" {custom_emoji('koffergrun', '🟩🧰')}"
             elif po_status in {"pending", "offen", "wartet"}:
-                prio_icon = " 🟧🧰"
+                prio_icon = f" {custom_emoji('kofferorange', '🟧🧰')}"
             elif row.get("hasPrio") is True or clean(row.get("hasPrio")).lower() in {"1", "true", "yes", "ja"}:
-                prio_icon = " 🟨🧰"
+                prio_icon = f" {custom_emoji('kofferrot', '🧰')}"
             else:
                 prio_icon = ""
             spec = signup_spec_from_note(row.get("note"), row.get("role")) or "Flex"
