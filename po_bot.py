@@ -3957,7 +3957,7 @@ async def po_queue_loop():
                 po_items = [
                     item for item in items
                     if clean(item.get("type")) in {"po_post", "p0_post_refresh"}
-                    or clean(item.get("type")) in {"raid_announcement", "po_rejection_notice", "po_approval_notice"}
+                    or clean(item.get("type")) in {"raid_announcement", "raid_announcement_refresh", "po_rejection_notice", "po_approval_notice"}
                 ]
                 stale_delete_items = [item for item in items if clean(item.get("type")) == "po_post_delete"]
                 for item in stale_delete_items:
