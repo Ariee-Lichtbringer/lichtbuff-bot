@@ -1965,6 +1965,12 @@ def build_fixed_po_header(payload):
     if lichtloot_id:
         lines.append(f"ID: `{lichtloot_id}`")
     lines.append("PO wird mit LichtLoot synchronisiert.")
+    lines.append(
+        f"{custom_emoji('kofferorange', '🟧🧰')} **PO eingetragen:** wartet noch auf Freigabe."
+    )
+    lines.append(
+        f"{custom_emoji('koffergrun', '🟩🧰')} **PO freigegeben:** wurde durch die Gildenleitung freigegeben."
+    )
     lines.append("")
     return lines
 
@@ -3235,7 +3241,13 @@ def make_embed(payload, entries, p0plus_labels=None):
             class_name = class_display_name(row.get("className") or row.get("Klasse"))
             icon = class_icon(class_name)
             approval_status = clean(row.get("approvalStatus")).lower()
-            status_icon = " ✅" if row.get("approved") or approval_status == "approved" else " ❌" if approval_status == "rejected" else ""
+            status_icon = (
+                f" {custom_emoji('koffergrun', '🟩🧰')}"
+                if row.get("approved") or approval_status == "approved"
+                else " ❌"
+                if approval_status == "rejected"
+                else f" {custom_emoji('kofferorange', '🟧🧰')}"
+            )
             players.append(f"{icon} {clean(row.get('player'))}{status_icon}")
         lines.append(", ".join(players) or "-")
 
@@ -4191,7 +4203,14 @@ async def po_queue_loop():
                 po_items = [
                     item for item in items
                     if clean(item.get("type")) in {"po_post", "p0_post_refresh"}
-                    or clean(item.get("type")) in {"raid_announcement", "raid_announcement_refresh", "po_rejection_notice", "po_approval_notice"}
+                    or clean(item.get("type")) in {
+                        "raid_announcement",
+                        "raid_announcement_refresh",
+                        "raid_announcement_role_notice",
+                        "raid_status_staff_notice",
+                        "po_rejection_notice",
+                        "po_approval_notice",
+                    }
                 ]
                 stale_delete_items = [item for item in items if clean(item.get("type")) == "po_post_delete"]
                 for item in stale_delete_items:
