@@ -2989,11 +2989,16 @@ def raid_notice_targets(raid):
 async def send_raid_player_status_confirmation(interaction, raid, char_name, action, note=""):
     try:
         raid_name = clean((raid or {}).get("raidName") or (raid or {}).get("raid")) or "Raid"
+        raid_date = format_raid_announcement_date((raid or {}).get("raidDate") or "")
+        raid_time = format_raid_announcement_time((raid or {}).get("raidTime") or "")
         embed = discord.Embed(
             title="Dein Raidstatus wurde geändert",
             description=f"**{char_name}** wurde für **{raid_name}** **{raid_signup_action_label(action)}**.",
             color=0xF59E0B,
         )
+        embed.add_field(name="Raid", value=raid_name, inline=True)
+        embed.add_field(name="Datum", value=raid_date, inline=True)
+        embed.add_field(name="Uhrzeit", value=raid_time, inline=True)
         if clean(note):
             embed.add_field(name="Deine Notiz", value=clean(note)[:1024], inline=False)
         await interaction.user.send(embed=embed)
@@ -3017,11 +3022,16 @@ async def send_raid_staff_action_notice(interaction, raid, char_name, action, no
     }
     wanted_roles.discard("")
     raid_name = clean((raid or {}).get("raidName") or (raid or {}).get("raid")) or "Raid"
+    raid_date = format_raid_announcement_date((raid or {}).get("raidDate") or "")
+    raid_time = format_raid_announcement_time((raid or {}).get("raidTime") or "")
     embed = discord.Embed(
         title="Änderung im Raidanmelder",
         description=f"**{char_name}** wurde für **{raid_name}** **{raid_signup_action_label(action)}**.",
         color=0x7C3AED,
     )
+    embed.add_field(name="Raid", value=raid_name, inline=True)
+    embed.add_field(name="Datum", value=raid_date, inline=True)
+    embed.add_field(name="Uhrzeit", value=raid_time, inline=True)
     embed.add_field(name="Ausgeführt von", value=str(interaction.user.display_name), inline=True)
     if clean(note):
         embed.add_field(name="Hinweis", value=clean(note)[:1024], inline=False)

@@ -5317,6 +5317,9 @@ async def send_raid_status_staff_notice(payload, discord_guild=None):
         description=f"**{payload.get('player') or 'Ein Spieler'}** wurde für **{payload.get('raidName') or 'Raid'}** **{action_label}**.",
         color=raid_signup_notice_color(payload.get("action")),
     )
+    embed.add_field(name="Raid", value=str(payload.get("raidName") or "Raid"), inline=True)
+    embed.add_field(name="Datum", value=format_raid_announcement_date(payload.get("raidDate") or ""), inline=True)
+    embed.add_field(name="Uhrzeit", value=format_raid_announcement_time(payload.get("raidTime") or ""), inline=True)
     embed.add_field(name="Geändert von", value=str(payload.get("changedBy") or "Spieler"), inline=True)
     if payload.get("message"):
         embed.add_field(name="Hinweis", value=str(payload.get("message"))[:1024], inline=False)
@@ -5341,6 +5344,63 @@ async def send_raid_status_staff_notice(payload, discord_guild=None):
     return len(sent)
 
 
+async def send_raid_announcement_role_notice(payload):
+    role_targets = list(payload.get("targets") or payload.get("roleTargets") or [])
+    role_ids = {
+        str(target.get("value") or target.get("id") or "").strip()
+        for target in role_targets
+        if str(target.get("type") or "role").lower() == "role"
+    }
+    role_ids.discard("")
+    wanted_names = {
+        normalized_discord_name(target.get("value") or target.get("name"))
+        for target in role_targets
+        if str(target.get("type") or "").lower() == "name"
+    }
+    if not role_ids and not wanted_names:
+        return 0
+    raid_name = str(payload.get("raidName") or "Raid").strip()
+    raid_date = format_raid_announcement_date(payload.get("raidDate") or "")
+    raid_time = format_raid_announcement_time(payload.get("raidTime") or "")
+    channel_id = str(payload.get("channelId") or "").strip()
+    channel_label = f"<#{channel_id}>" if channel_id else "dem vorgesehenen Raid-Channel"
+    embed = discord.Embed(
+        title="Neuer Raidanmelder",
+        description=(
+            f"Der neue Anmelder für **{raid_name}** wurde in {channel_label} "
+            f"für den **{raid_date} um {raid_time}** erstellt.\n\n"
+            "Bitte meldet euch rechtzeitig an und tragt eure Prios ein."
+        ),
+        color=0x7C3AED,
+    )
+    signup_url = str(payload.get("signupUrl") or "").strip()
+    if signup_url:
+        embed.add_field(name="Direkt zum Anmelder", value=f"[Raidanmelder öffnen]({signup_url})", inline=False)
+    sent = set()
+    for guild in client.guilds:
+        guild_role_ids = {str(role.id) for role in guild.roles}
+        if not role_ids.intersection(guild_role_ids):
+            continue
+        for member in guild.members:
+            if member.bot or member.id in sent:
+                continue
+            member_role_ids = {str(role.id) for role in getattr(member, "roles", [])}
+            member_names = {
+                normalized_discord_name(getattr(member, "name", "")),
+                normalized_discord_name(getattr(member, "display_name", "")),
+                normalized_discord_name(getattr(member, "global_name", "")),
+            }
+            if not (role_ids.intersection(member_role_ids) or wanted_names.intersection(member_names)):
+                continue
+            try:
+                await member.send(embed=embed)
+                sent.add(member.id)
+            except Exception as error:
+                print(f"Raidankündigungs-DM an {member} fehlgeschlagen: {error}")
+    print(f"Raidankündigungs-DM an {len(sent)} Rollen-Mitglied(er) gesendet: {raid_name}")
+    return len(sent)
+
+
 async def send_own_raid_status_confirmation(interaction, raid, char_name, status, note=""):
     payload = {
         "player": char_name,
@@ -5357,6 +5417,9 @@ async def send_own_raid_status_confirmation(interaction, raid, char_name, status
         description=f"**{char_name}** wurde **{raid_signup_notice_action_label(status)}**.",
         color=raid_signup_notice_color(status),
     )
+    own_embed.add_field(name="Raid", value=str(raid.get("raidName") or raid.get("raid") or "Raid"), inline=True)
+    own_embed.add_field(name="Datum", value=format_raid_announcement_date(raid.get("raidDate") or ""), inline=True)
+    own_embed.add_field(name="Uhrzeit", value=format_raid_announcement_time(raid.get("raidTime") or ""), inline=True)
     if note:
         own_embed.add_field(name="Deine Notiz", value=note[:1024], inline=False)
     try:
@@ -7489,6 +7552,8 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             await send_raid_signup_notice(payload)
         elif update_type == "raid_status_staff_notice":
             await send_raid_status_staff_notice(payload)
+        elif update_type == "raid_announcement_role_notice":
+            await send_raid_announcement_role_notice(payload)
         elif update_type == "po_post":
             print("PO-Auftrag uebersprungen: wird vom separaten PO-Bot verarbeitet.")
             return
