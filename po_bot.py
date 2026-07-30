@@ -662,7 +662,11 @@ def build_raid_announcement_embed(raid):
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
     embed.add_field(
         name="\u200b",
-        value="🧰 **Prio auf LichtLoot:** Schatztruhe vor dem Namen = Prio für diesen Raid eingetragen.",
+        value=(
+            "🟨🧰 **P1, P2, P3 auf LichtLoot:** Gelber Koffer vor dem Namen = P1, P2 oder P3 für diesen Raid eingetragen.\n"
+            "🟧🧰 **PO auf LichtLoot eingetragen:** Oranger Koffer = PO angemeldet, aber noch nicht freigegeben.\n"
+            "🟩🧰 **PO auf LichtLoot freigegeben:** Grüner Koffer = PO für diesen Raid eingetragen und freigegeben."
+        ),
         inline=False,
     )
     attachment_name = raid_banner_attachment_name(raid)
@@ -987,7 +991,15 @@ def add_raid_signup_roster_fields(embed, helper):
         for row in grouped[cls][:8]:
             player = clean(row.get("player") or row.get("char")) or "-"
             position = signup_positions.get(id(row), 0)
-            prio_icon = " 🧰" if row.get("hasPrio") is True or clean(row.get("hasPrio")).lower() in {"1", "true", "yes", "ja"} else ""
+            po_status = clean(row.get("poApprovalStatus") or row.get("po_approval_status")).lower()
+            if po_status in {"approved", "freigegeben"}:
+                prio_icon = " 🟩🧰"
+            elif po_status in {"pending", "offen", "wartet"}:
+                prio_icon = " 🟧🧰"
+            elif row.get("hasPrio") is True or clean(row.get("hasPrio")).lower() in {"1", "true", "yes", "ja"}:
+                prio_icon = " 🟨🧰"
+            else:
+                prio_icon = ""
             spec = signup_spec_from_note(row.get("note"), row.get("role")) or "Flex"
             star = " ★" if any(
                 row.get(key) is True or clean(row.get(key)).lower() in {"1", "true", "yes", "ja", "freigegeben"}
@@ -3059,6 +3071,86 @@ async def send_raid_staff_action_notice(interaction, raid, char_name, action, no
     return len(sent)
 
 
+async def send_queue_targeted_embed(payload, embed):
+    targets = list(payload.get("targets") or payload.get("roleTargets") or [])
+    wanted_names = {
+        normalized_prio_player_name(target.get("value") or target.get("name"))
+        for target in targets
+        if clean(target.get("type") or "name").lower() == "name"
+    }
+    wanted_roles = {
+        clean(target.get("value") or target.get("id"))
+        for target in targets
+        if clean(target.get("type")).lower() == "role"
+    }
+    wanted_roles.discard("")
+    sent = set()
+    for guild in client.guilds:
+        guild_role_ids = {str(role.id) for role in guild.roles}
+        if wanted_roles and not wanted_roles.intersection(guild_role_ids) and not wanted_names:
+            continue
+        for member in guild.members:
+            if member.bot or member.id in sent:
+                continue
+            member_names = {
+                normalized_prio_player_name(getattr(member, "name", "")),
+                normalized_prio_player_name(getattr(member, "display_name", "")),
+                normalized_prio_player_name(getattr(member, "global_name", "")),
+            }
+            member_roles = {str(role.id) for role in getattr(member, "roles", [])}
+            if not (wanted_names.intersection(member_names) or wanted_roles.intersection(member_roles)):
+                continue
+            try:
+                await member.send(embed=embed)
+                sent.add(member.id)
+            except Exception as error:
+                print(f"Raid-DM an {member} fehlgeschlagen: {error}")
+    return len(sent)
+
+
+async def send_raid_announcement_notice_from_queue(payload):
+    raid_name = clean(payload.get("raidName")) or "Raid"
+    raid_date = format_raid_announcement_date(payload.get("raidDate") or "")
+    raid_time = format_raid_announcement_time(payload.get("raidTime") or "")
+    channel_id = clean(payload.get("channelId"))
+    channel_label = f"<#{channel_id}>" if channel_id else "dem vorgesehenen Raid-Channel"
+    embed = discord.Embed(
+        title="Neuer Raidanmelder",
+        description=(
+            f"Der neue Anmelder für **{raid_name}** wurde in {channel_label} "
+            f"für den **{raid_date} um {raid_time}** erstellt.\n\n"
+            "Bitte meldet euch rechtzeitig an und tragt eure Prios ein."
+        ),
+        color=0x7C3AED,
+    )
+    signup_url = clean(payload.get("signupUrl"))
+    if signup_url:
+        embed.add_field(name="Direkt zum Anmelder", value=f"[Raidanmelder öffnen]({signup_url})", inline=False)
+    count = await send_queue_targeted_embed(payload, embed)
+    print(f"Raidankündigungs-DM an {count} Empfänger gesendet: {raid_name}")
+    return count
+
+
+async def send_raid_status_notice_from_queue(payload):
+    raid_name = clean(payload.get("raidName")) or "Raid"
+    action = clean(payload.get("action"))
+    embed = discord.Embed(
+        title="Änderung im Raidanmelder",
+        description=f"**{clean(payload.get('player')) or 'Ein Spieler'}** wurde für **{raid_name}** **{raid_signup_action_label(action)}**.",
+        color=0x7C3AED,
+    )
+    embed.add_field(name="Raid", value=raid_name, inline=True)
+    embed.add_field(name="Datum", value=format_raid_announcement_date(payload.get("raidDate") or ""), inline=True)
+    embed.add_field(name="Uhrzeit", value=format_raid_announcement_time(payload.get("raidTime") or ""), inline=True)
+    if clean(payload.get("changedBy")):
+        embed.add_field(name="Geändert von", value=clean(payload.get("changedBy")), inline=True)
+    if clean(payload.get("message")):
+        embed.add_field(name="Hinweis", value=clean(payload.get("message"))[:1024], inline=False)
+    count = await send_queue_targeted_embed(payload, embed)
+    print(f"Raidstatus-Queue-DM an {count} Empfänger gesendet: {raid_name}")
+    return count
+
+
 async def delete_entry(payload, entry, user):
     raid_pin = payload_lichtloot_raid_pin(payload)
     result = await asyncio.to_thread(api_post, {
@@ -4208,11 +4300,16 @@ async def po_queue_loop():
                                 await resolve_queue_item(item.get("rowNumber"))
                                 print(f"Raidanmelder vom PO-Bot aktualisiert: {current_guild_slug()}:{payload.get('raidId') or payload.get('id')}")
                             continue
-                        if item_type in {"raid_signup_notice", "raid_status_staff_notice", "raid_announcement_role_notice"}:
-                            print(
-                                "Raidstatus-Benachrichtigung bleibt für den LichtLoot-Hauptbot offen: "
-                                f"{current_guild_slug()}:{item_type}:{item.get('rowNumber')}"
-                            )
+                        if item_type == "raid_announcement_role_notice":
+                            await send_raid_announcement_notice_from_queue(payload)
+                            await resolve_queue_item(item.get("rowNumber"))
+                            continue
+                        if item_type == "raid_status_staff_notice":
+                            await send_raid_status_notice_from_queue(payload)
+                            await resolve_queue_item(item.get("rowNumber"))
+                            continue
+                        if item_type == "raid_signup_notice":
+                            print(f"Spieler-DM bleibt für den Hauptbot offen: {current_guild_slug()}:{item.get('rowNumber')}")
                             continue
                         if item_type == "p0_post_refresh":
                             payload["source"] = payload.get("source") or "p0_review"
@@ -4239,6 +4336,7 @@ class PoBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.members = True
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
 
