@@ -1466,6 +1466,13 @@ class RaidSignupCharacterSelect(discord.ui.Select):
             char_class,
             self.spec_label
         )
+        await send_raid_staff_action_notice(
+            interaction,
+            refresh_raid,
+            char_name,
+            "signed",
+            f"{class_display_name(char_class)} · {self.spec_label}",
+        )
         try:
             await refresh_raid_signup_message(
                 interaction,
@@ -1633,6 +1640,7 @@ class RaidSignupStatusModal(discord.ui.Modal):
             })
             if not result.get("success"):
                 raise RuntimeError(result.get("error") or "Status konnte nicht gespeichert werden.")
+            fresh_raid = (helper or {}).get("raid") or self.raid
             label = {
                 "bench": "auf die Bank gesetzt",
                 "late": "als verspätet markiert",
@@ -1640,6 +1648,8 @@ class RaidSignupStatusModal(discord.ui.Modal):
                 "absent": "als abwesend markiert",
             }.get(self.status, "aktualisiert")
             await interaction.response.send_message(f"✅ **{char_name}** wurde {label}.", ephemeral=True)
+            await send_raid_player_status_confirmation(interaction, fresh_raid, char_name, self.status, note)
+            await send_raid_staff_action_notice(interaction, fresh_raid, char_name, self.status, note)
             await refresh_raid_signup_message(interaction, self.raid)
         except Exception as error:
             if interaction.response.is_done():
@@ -2944,6 +2954,101 @@ async def send_raid_signup_confirmation(interaction, raid, char_name, class_name
         return False
 
 
+def raid_signup_action_label(action):
+    return {
+        "signed": "angemeldet",
+        "active": "aktiv angemeldet",
+        "bench": "auf die Bank gesetzt",
+        "late": "als verspätet markiert",
+        "tentative": "als vorläufig markiert",
+        "absent": "als abwesend markiert",
+        "deleted": "abgemeldet",
+        "removed": "aus der Anmeldung entfernt",
+    }.get(clean(action).lower(), "aktualisiert")
+
+
+def raid_notice_targets(raid):
+    raw = (raid or {}).get("statusNotifyTargets") or (raid or {}).get("status_notify_targets") or []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = []
+    targets = list(raw) if isinstance(raw, list) else []
+    for name in (
+        (raid or {}).get("createdBy"),
+        (raid or {}).get("erstelltVon"),
+        (raid or {}).get("lootMaster"),
+        (raid or {}).get("pluendermeister"),
+    ):
+        if clean(name):
+            targets.append({"type": "name", "value": clean(name)})
+    return targets
+
+
+async def send_raid_player_status_confirmation(interaction, raid, char_name, action, note=""):
+    try:
+        raid_name = clean((raid or {}).get("raidName") or (raid or {}).get("raid")) or "Raid"
+        embed = discord.Embed(
+            title="Dein Raidstatus wurde geändert",
+            description=f"**{char_name}** wurde für **{raid_name}** **{raid_signup_action_label(action)}**.",
+            color=0xF59E0B,
+        )
+        if clean(note):
+            embed.add_field(name="Deine Notiz", value=clean(note)[:1024], inline=False)
+        await interaction.user.send(embed=embed)
+        return True
+    except Exception as error:
+        print(f"Eigene Raidstatus-DM fehlgeschlagen: {error}")
+        return False
+
+
+async def send_raid_staff_action_notice(interaction, raid, char_name, action, note=""):
+    targets = raid_notice_targets(raid)
+    wanted_names = {
+        normalized_prio_player_name(target.get("value") or target.get("name"))
+        for target in targets
+        if clean(target.get("type") or "name").lower() == "name"
+    }
+    wanted_roles = {
+        clean(target.get("value") or target.get("id"))
+        for target in targets
+        if clean(target.get("type")).lower() == "role"
+    }
+    wanted_roles.discard("")
+    raid_name = clean((raid or {}).get("raidName") or (raid or {}).get("raid")) or "Raid"
+    embed = discord.Embed(
+        title="Änderung im Raidanmelder",
+        description=f"**{char_name}** wurde für **{raid_name}** **{raid_signup_action_label(action)}**.",
+        color=0x7C3AED,
+    )
+    embed.add_field(name="Ausgeführt von", value=str(interaction.user.display_name), inline=True)
+    if clean(note):
+        embed.add_field(name="Hinweis", value=clean(note)[:1024], inline=False)
+    guild = getattr(interaction, "guild", None)
+    if not guild:
+        return 0
+    sent = set()
+    for member in guild.members:
+        if member.bot or member.id == interaction.user.id or member.id in sent:
+            continue
+        member_names = {
+            normalized_prio_player_name(getattr(member, "name", "")),
+            normalized_prio_player_name(getattr(member, "display_name", "")),
+            normalized_prio_player_name(getattr(member, "global_name", "")),
+        }
+        member_roles = {str(role.id) for role in getattr(member, "roles", [])}
+        if not (wanted_names.intersection(member_names) or wanted_roles.intersection(member_roles)):
+            continue
+        try:
+            await member.send(embed=embed)
+            sent.add(member.id)
+        except Exception as error:
+            print(f"Raidstatus-DM an {member} fehlgeschlagen: {error}")
+    print(f"Raidstatus-DM an {len(sent)} Empfänger gesendet: {raid_name}/{char_name}/{action}")
+    return len(sent)
+
+
 async def delete_entry(payload, entry, user):
     raid_pin = payload_lichtloot_raid_pin(payload)
     result = await asyncio.to_thread(api_post, {
@@ -4093,7 +4198,7 @@ async def po_queue_loop():
                                 await resolve_queue_item(item.get("rowNumber"))
                                 print(f"Raidanmelder vom PO-Bot aktualisiert: {current_guild_slug()}:{payload.get('raidId') or payload.get('id')}")
                             continue
-                        if item_type in {"raid_signup_notice", "raid_status_staff_notice"}:
+                        if item_type in {"raid_signup_notice", "raid_status_staff_notice", "raid_announcement_role_notice"}:
                             print(
                                 "Raidstatus-Benachrichtigung bleibt für den LichtLoot-Hauptbot offen: "
                                 f"{current_guild_slug()}:{item_type}:{item.get('rowNumber')}"
