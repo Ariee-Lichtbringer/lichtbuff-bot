@@ -669,7 +669,7 @@ def build_raid_announcement_embed(raid):
     embed.add_field(
         name="\u200b",
         value=(
-            f"{custom_emoji('kofferrot', '🧰')} **P1, P2, P3 auf LichtLoot:** Roter Koffer vor dem Namen = P1, P2 oder P3 für diesen Raid eingetragen.\n"
+            f"{custom_emoji('Kofferlila', '🟪🧰')} **P1, P2, P3 auf LichtLoot:** P1, P2 oder P3 für diesen Raid eingetragen.\n"
             f"{custom_emoji('kofferorange', '🟧🧰')} **PO auf LichtLoot eingetragen:** Oranger Koffer = PO angemeldet, aber noch nicht freigegeben.\n"
             f"{custom_emoji('koffergrun', '🟩🧰')} **PO auf LichtLoot freigegeben:** Grüner Koffer = PO für diesen Raid eingetragen und freigegeben."
         ),
@@ -1003,7 +1003,7 @@ def add_raid_signup_roster_fields(embed, helper):
             elif po_status in {"pending", "offen", "wartet"}:
                 prio_icon = f" {custom_emoji('kofferorange', '🟧🧰')}"
             elif row.get("hasPrio") is True or clean(row.get("hasPrio")).lower() in {"1", "true", "yes", "ja"}:
-                prio_icon = f" {custom_emoji('kofferrot', '🧰')}"
+                prio_icon = f" {custom_emoji('Kofferlila', '🟪🧰')}"
             else:
                 prio_icon = ""
             spec = signup_spec_from_note(row.get("note"), row.get("role")) or "Flex"
