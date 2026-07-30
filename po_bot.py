@@ -49,6 +49,7 @@ API_URL = normalize_api_url(
     os.getenv("PO_BOT_API_URL", "") or os.getenv("LICHTLOOT_RAILWAY_API_URL", "") or RAILWAY_API_URL
 )
 QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
+BOT_STARTED_AT = time.time()
 
 
 def normalize_guild_slug(value):
@@ -4182,6 +4183,16 @@ async def resolve_queue_item(row_number):
     })
 
 
+def queue_item_created_timestamp(item):
+    value = clean((item or {}).get("createdAt"))
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
+
+
 async def po_queue_loop():
     global empty_queue_log_at
     await client.wait_until_ready()
@@ -4236,6 +4247,16 @@ async def po_queue_loop():
                     mode = clean(payload.get("mode")).lower() or "signup"
                     try:
                         item_type = clean(item.get("type"))
+                        if (
+                            item_type == "raid_announcement_role_notice"
+                            and queue_item_created_timestamp(item) < BOT_STARTED_AT
+                        ):
+                            await resolve_queue_item(item.get("rowNumber"))
+                            print(
+                                "Alte Raidankündigungs-DM beim Neustart verworfen: "
+                                f"{queue_guild_slug}:{payload.get('raidId') or item.get('rowNumber')}"
+                            )
+                            continue
                         if item_type == "po_rejection_notice":
                             sent = await send_po_rejection_message(
                                 client,
