@@ -630,7 +630,8 @@ def build_raid_announcement_embed(raid):
     raid = raid or {}
     raid_name = clean(raid.get("raidName") or display_raid(raid.get("raid")) or "Raid")
     description = clean(raid.get("description")) or "Raidanmeldung ist geöffnet."
-    embed = discord.Embed(title=raid_name.upper(), description=description[:3900], color=0x7c3aed)
+    width_spacer = "\u00a0" * 24
+    embed = discord.Embed(title=raid_name.upper() + width_spacer, description=description[:3900], color=0x7c3aed)
     embed.add_field(name="Raidlead", value=clean(raid.get("createdBy") or raid.get("erstelltVon") or "Gildenleitung"), inline=True)
     embed.add_field(
         name="Tag / Datum",
@@ -659,7 +660,7 @@ def build_raid_announcement_embed(raid):
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
     embed.add_field(
         name="🧰 Prio auf LichtLoot",
-        value="Hat ein Spieler seine Prio für diesen Raid auf LichtLoot eingetragen, erscheint vor seinem Namen eine Schatztruhe.",
+        value="🧰 vor dem Spielernamen = Prio für diesen Raid eingetragen.",
         inline=False,
     )
     attachment_name = raid_banner_attachment_name(raid)
