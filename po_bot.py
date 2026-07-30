@@ -642,6 +642,9 @@ def build_raid_announcement_embed(raid):
         value=f"**__{format_raid_announcement_time(raid.get('raidTime'))}__**",
         inline=True,
     )
+    loot_master = clean(raid.get("lootMaster") or raid.get("pluendermeister"))
+    if loot_master:
+        embed.add_field(name="Plündermeister", value=loot_master, inline=False)
     deadline = format_raid_announcement_time(raid.get("signupDeadline") or raid.get("signup_deadline"))
     if deadline != "noch offen":
         embed.add_field(name="Anmeldeschluss", value=deadline, inline=False)
@@ -760,7 +763,7 @@ def current_worldbuff_announcement_block(guild_slug=None, max_lines=8):
 
 def build_raid_announcement_text(raid):
     raid = raid or {}
-    return "\n".join([
+    lines = [
         f"**{clean(raid.get('raidName') or display_raid(raid.get('raid')) or 'Raid').upper()}**",
         "",
         clean(raid.get("description")) or "Raidanmeldung ist geöffnet.",
@@ -768,10 +771,16 @@ def build_raid_announcement_text(raid):
         f"📣 **Raidlead:** {clean(raid.get('createdBy') or raid.get('erstelltVon') or 'Gildenleitung')}",
         f"🗓️ **Datum:** {format_raid_announcement_date(raid.get('raidDate'))}",
         f"⏰ **Start:** {format_raid_announcement_time(raid.get('raidTime'))}",
+    ]
+    loot_master = clean(raid.get("lootMaster") or raid.get("pluendermeister"))
+    if loot_master:
+        lines.append(f"🪙 **Plündermeister:** {loot_master}")
+    lines.extend([
         "",
         f"🔑 **Prio-PIN:** `{clean(raid.get('playerPin')) or '-'}`",
         f"🌐 **Webansicht:** {LICHTLOOT_URL}",
-    ])[:1900]
+    ])
+    return "\n".join(lines)[:1900]
 
 
 def canonical_signup_class(class_name):
@@ -1276,6 +1285,18 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None):
     raid = helper.get("raid") if helper and helper.get("success") else None
     if not raid:
         return "stale"
+    raid = dict(raid)
+    payload_raid = payload.get("raidSnapshot") if isinstance(payload.get("raidSnapshot"), dict) else {}
+    for key in (
+        "raid", "raidName", "raidDate", "raidTime", "createdBy", "guild", "guildName",
+        "maxPlayers", "tankSlots", "healSlots", "ddSlots", "description", "raidImageUrl",
+        "lootMaster", "pluendermeister", "statusNotifyTargets"
+    ):
+        value = payload.get(key)
+        if value in (None, ""):
+            value = payload_raid.get(key)
+        if value not in (None, ""):
+            raid[key] = value
     channel_id = clean(channel_id or raid.get("discordChannelId") or raid.get("discord_channel_id"))
     if not channel_id:
         raise RuntimeError("Raid-Ankuendigung: Kein Channel hinterlegt.")
@@ -4072,9 +4093,11 @@ async def po_queue_loop():
                                 await resolve_queue_item(item.get("rowNumber"))
                                 print(f"Raidanmelder vom PO-Bot aktualisiert: {current_guild_slug()}:{payload.get('raidId') or payload.get('id')}")
                             continue
-                        if item_type == "raid_signup_notice":
-                            await resolve_queue_item(item.get("rowNumber"))
-                            print("Raidanmelder-Hinweis erledigt markiert; direkte DM ist im PO-Bot deaktiviert.")
+                        if item_type in {"raid_signup_notice", "raid_status_staff_notice"}:
+                            print(
+                                "Raidstatus-Benachrichtigung bleibt für den LichtLoot-Hauptbot offen: "
+                                f"{current_guild_slug()}:{item_type}:{item.get('rowNumber')}"
+                            )
                             continue
                         if item_type == "p0_post_refresh":
                             payload["source"] = payload.get("source") or "p0_review"
