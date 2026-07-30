@@ -630,7 +630,10 @@ def build_raid_announcement_embed(raid):
     raid = raid or {}
     raid_name = clean(raid.get("raidName") or display_raid(raid.get("raid")) or "Raid")
     description = clean(raid.get("description")) or "Raidanmeldung ist geöffnet."
-    width_spacer = "\u00a0" * 96
+    # Discord entfernt normale Leerzeichen am Titelende. Das unsichtbare
+    # Braille-Leerzeichen besitzt dagegen eine feste Breite und bringt den
+    # Raid-Embed zuverlässig auf dieselbe Breite wie den PO-Embed.
+    width_spacer = "\u2800" * 48
     embed = discord.Embed(title=raid_name.upper() + width_spacer, description=description[:3900], color=0x7c3aed)
     embed.add_field(name="Raidlead", value=clean(raid.get("createdBy") or raid.get("erstelltVon") or "Gildenleitung"), inline=True)
     embed.add_field(
@@ -659,8 +662,8 @@ def build_raid_announcement_embed(raid):
     if worldbuff_block:
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
     embed.add_field(
-        name="🧰 Prio auf LichtLoot",
-        value="Hat ein Spieler seine Prio für diesen Raid auf LichtLoot eingetragen, erscheint vor seinem Namen eine Schatztruhe.",
+        name="\u200b",
+        value="🧰 **Prio auf LichtLoot:** Schatztruhe vor dem Namen = Prio für diesen Raid eingetragen.",
         inline=False,
     )
     attachment_name = raid_banner_attachment_name(raid)
@@ -670,7 +673,7 @@ def build_raid_announcement_embed(raid):
         image_url = raid_announcement_image_url(raid)
         if image_url:
             embed.set_image(url=image_url)
-    embed.set_footer(text="Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein." + ("\u00a0" * 64))
+    embed.set_footer(text="Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein.")
     return embed
 
 
