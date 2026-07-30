@@ -657,7 +657,12 @@ def build_raid_announcement_embed(raid):
     worldbuff_block = current_worldbuff_announcement_block(raid_guild_slug)
     if worldbuff_block:
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
-        embed.add_field(name="\u200b", value="\u200b\n\u200b", inline=False)
+    embed.add_field(
+        name="🧰 Prio auf LichtLoot",
+        value="Hat ein Spieler seine Prio für diesen Raid auf LichtLoot eingetragen, erscheint vor seinem Namen eine Schatztruhe.",
+        inline=False,
+    )
+    embed.add_field(name="\u200b", value="\u200b\n\u200b", inline=False)
     attachment_name = raid_banner_attachment_name(raid)
     if attachment_name:
         embed.set_image(url=f"attachment://{attachment_name}")
@@ -930,6 +935,7 @@ def add_raid_signup_roster_fields(embed, helper):
     heal_max = clean(raid.get("healSlots"))
     dd_max = clean(raid.get("ddSlots"))
     tank_role_icon = signup_spec_icon("Tank", "tank", "Warrior")
+    embed.add_field(name="\u200b", value="\u200b\n\u200b", inline=False)
     embed.add_field(
         name=f"{tank_role_icon} Tanks",
         value=f"**{role_counts['tank']}{('/' + tank_max) if tank_max else ''}**",
@@ -973,12 +979,13 @@ def add_raid_signup_roster_fields(embed, helper):
         for row in grouped[cls][:8]:
             player = clean(row.get("player") or row.get("char")) or "-"
             position = signup_positions.get(id(row), 0)
+            prio_icon = " 🧰" if row.get("hasPrio") is True or clean(row.get("hasPrio")).lower() in {"1", "true", "yes", "ja"} else ""
             spec = signup_spec_from_note(row.get("note"), row.get("role")) or "Flex"
             star = " ★" if any(
                 row.get(key) is True or clean(row.get(key)).lower() in {"1", "true", "yes", "ja", "freigegeben"}
                 for key in ("p0Released", "poReleased", "p0PlusReleased", "poPlusReleased")
             ) else ""
-            lines.append(f"`{position}` **{player}{star}** · {signup_spec_icon(spec, row.get('role'), cls)}")
+            lines.append(f"`{position}`{prio_icon} **{player}{star}** · {signup_spec_icon(spec, row.get('role'), cls)}")
         embed.add_field(
             name=f"{tank_role_icon if cls == 'Tank' else class_icon(cls)} {german_class_names.get(cls, cls)} ({len(grouped[cls])})",
             value=("\n".join(lines) + "\n\u200b\n\u200b")[:1024],
