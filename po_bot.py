@@ -633,7 +633,7 @@ def build_raid_announcement_embed(raid):
     # Discord entfernt normale Leerzeichen am Titelende. Das unsichtbare
     # Braille-Leerzeichen besitzt dagegen eine feste Breite und bringt den
     # Raid-Embed zuverlässig auf dieselbe Breite wie den PO-Embed.
-    width_spacer = "\u2800" * 48
+    width_spacer = "\u2800" * 80
     embed = discord.Embed(title=raid_name.upper() + width_spacer, description=description[:3900], color=0x7c3aed)
     embed.add_field(name="Raidlead", value=clean(raid.get("createdBy") or raid.get("erstelltVon") or "Gildenleitung"), inline=True)
     embed.add_field(
