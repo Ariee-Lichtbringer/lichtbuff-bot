@@ -24,7 +24,7 @@ except Exception:
     pass
 
 
-TOKEN = os.getenv("PO_BOT_TOKEN", "").strip()
+TOKEN = os.getenv("PO_BOT_TOKEN", "") or os.getenv("DISCORD_TOKEN", "")
 TEST_GUILD_ID = str(os.getenv("PO_BOT_GUILD_ID", "") or "").strip()
 GUILD_SLUG = os.getenv("LICHTLOOT_GUILD", "") or os.getenv("LICHTLOOT_GUILD_SLUG", "") or "lichtloot"
 if GUILD_SLUG.strip().lower() == "lichtbringer":
@@ -287,17 +287,6 @@ slash_commands_synced_for_guilds = False
 
 def clean(value):
     return str(value or "").strip()
-
-
-def character_server(character):
-    """Liest den tatsächlichen Realm eines Charakters ohne Everlook-Fallback."""
-    character = character or {}
-    return clean(
-        character.get("server")
-        or character.get("realm")
-        or character.get("serverName")
-        or character.get("server_name")
-    )
 
 
 def normalize_raid(value):
@@ -940,8 +929,9 @@ def add_raid_signup_roster_fields(embed, helper):
     tank_max = clean(raid.get("tankSlots"))
     heal_max = clean(raid.get("healSlots"))
     dd_max = clean(raid.get("ddSlots"))
+    tank_role_icon = signup_spec_icon("Tank", "tank", "Warrior")
     embed.add_field(
-        name="🛡️ Tanks",
+        name=f"{tank_role_icon} Tanks",
         value=f"**{role_counts['tank']}{('/' + tank_max) if tank_max else ''}**",
         inline=True,
     )
@@ -959,10 +949,13 @@ def add_raid_signup_roster_fields(embed, helper):
     grouped = {}
     raid_key = normalize_raid(raid.get("raid") or "").lower()
     for row in active_rows:
-        cls = canonical_signup_class(row.get("className") or row.get("klasse"))
-        grouped.setdefault(cls, []).append(row)
-    order = ["Warrior", "Druid", "Paladin", "Rogue", "Hunter", "Priest", "Mage", "Warlock", "Shaman", "Ohne Klasse"]
+        role = clean(row.get("role")).lower()
+        resolved_role = role if role in role_counts else infer_signup_role(signup_spec_from_note(row.get("note"), role))
+        group = "Tank" if resolved_role == "tank" else canonical_signup_class(row.get("className") or row.get("klasse"))
+        grouped.setdefault(group, []).append(row)
+    order = ["Tank", "Warrior", "Druid", "Paladin", "Rogue", "Hunter", "Priest", "Mage", "Warlock", "Shaman", "Ohne Klasse"]
     german_class_names = {
+        "Tank": "Tank",
         "Warrior": "Krieger",
         "Druid": "Druide",
         "Paladin": "Paladin",
@@ -987,7 +980,7 @@ def add_raid_signup_roster_fields(embed, helper):
             ) else ""
             lines.append(f"`{position}` **{player}{star}** · {signup_spec_icon(spec, row.get('role'), cls)}")
         embed.add_field(
-            name=f"{class_icon(cls)} {german_class_names.get(cls, cls)} ({len(grouped[cls])})",
+            name=f"{tank_role_icon if cls == 'Tank' else class_icon(cls)} {german_class_names.get(cls, cls)} ({len(grouped[cls])})",
             value=("\n".join(lines) + "\n\u200b\n\u200b")[:1024],
             inline=True,
         )
@@ -1348,7 +1341,7 @@ class RaidSignupCharacterSelect(discord.ui.Select):
         for index, character in enumerate(self.characters):
             char_class = canonical_signup_class(character.get("className") or character.get("Klasse") or character.get("class_name") or class_name)
             label = clean(character.get("name"))
-            server = character_server(character)
+            server = clean(character.get("server"))
             description = " · ".join(part for part in [server, class_display_name(char_class)] if part)[:100]
             options.append(discord.SelectOption(
                 label=label[:100],
@@ -1361,7 +1354,7 @@ class RaidSignupCharacterSelect(discord.ui.Select):
     async def callback(self, interaction):
         character = self.characters[int(self.values[0])]
         char_name = clean(character.get("name"))
-        server = character_server(character)
+        server = clean(character.get("server"))
         char_class = canonical_signup_class(character.get("className") or character.get("Klasse") or character.get("class_name") or self.class_name)
         guild_slug = payload_guild_slug(payload_for_interaction(self.raid, interaction))
         result = await asyncio.to_thread(api_post, {
@@ -3141,7 +3134,7 @@ class PoKnownCharacterSelect(discord.ui.Select):
         for index, char in enumerate(self.characters):
             label = clean(char.get("name"))[:100]
             description = " · ".join(
-                part for part in [clean(char.get("className")), character_server(char)] if part
+                part for part in [clean(char.get("className")), clean(char.get("server"))] if part
             )[:100]
             options.append(discord.SelectOption(label=label, value=str(index), description=description or None))
         super().__init__(
@@ -3167,7 +3160,7 @@ class PoKnownCharacterSelect(discord.ui.Select):
             class_name,
             char.get("name"),
             char.get("playerPin"),
-            character_server(char),
+            char.get("server"),
         )
 
 
@@ -3182,7 +3175,7 @@ class PoPlayerLoginCharacterSelect(discord.ui.Select):
         for index, char in enumerate(self.characters):
             label = clean(char.get("name"))[:100]
             description = " · ".join(
-                part for part in [clean(char.get("className")), character_server(char)] if part
+                part for part in [clean(char.get("className")), clean(char.get("server"))] if part
             )[:100]
             options.append(discord.SelectOption(label=label, value=str(index), description=description or None))
         super().__init__(
@@ -3208,7 +3201,7 @@ class PoPlayerLoginCharacterSelect(discord.ui.Select):
             class_name,
             char.get("name"),
             self.player_login,
-            character_server(char),
+            char.get("server"),
         )
 
 
@@ -3795,20 +3788,6 @@ async def post_or_update_from_queue(client, payload):
     payload = dict(payload or {})
     payload["guildSlug"] = payload_guild_slug(payload)
     post_key = clean(payload.get("postKey") or payload.get("poPostKey") or payload.get("postId"))
-    queue_type = clean(payload.get("_queueType")).lower()
-    if not post_key and queue_type == "po_post":
-        raid_key = normalize_raid(payload.get("raid") or payload.get("raidName")) or "raid"
-        queue_identity = clean(
-            payload.get("raidId")
-            or payload.get("id")
-            or payload.get("raidPin")
-            or payload.get("prioPin")
-            or payload.get("_queueRowNumber")
-            or int(time.time())
-        )
-        post_key = f"{slug(raid_key)}-po-anmelder-{slug(queue_identity)}"
-        payload["postKey"] = post_key
-        payload["poPostKey"] = post_key
     if not post_key and clean(payload.get("source")).lower() == "p0_review":
         raid_key = normalize_raid(payload.get("raid") or payload.get("raidName"))
         raid_id = clean(payload.get("raidId") or payload.get("id") or payload.get("raidPin") or payload.get("prioPin"))
@@ -3931,15 +3910,8 @@ async def po_queue_loop():
                 items = result.get("items") or []
                 po_items = [
                     item for item in items
-                    if clean(item.get("type")) in {
-                        "po_post",
-                        "p0_post_refresh",
-                        "raid_announcement",
-                        "raid_announcement_refresh",
-                        "raid_signup_notice",
-                        "po_rejection_notice",
-                        "po_approval_notice",
-                    }
+                    if clean(item.get("type")) in {"po_post", "p0_post_refresh"}
+                    or clean(item.get("type")) in {"raid_announcement", "po_rejection_notice", "po_approval_notice"}
                 ]
                 stale_delete_items = [item for item in items if clean(item.get("type")) == "po_post_delete"]
                 for item in stale_delete_items:
@@ -3957,14 +3929,11 @@ async def po_queue_loop():
                         queue_types = ", ".join(clean(item.get("type")) or "?" for item in items) or "leer"
                         print(f"PO-Bot Queue: kein po_post gefunden. Antwort-Typen: {queue_types}")
                         empty_queue_log_at = now
-                handled_po_post_keys = set()
                 for item in po_items:
                     queue_guild_slug = normalize_guild_slug(item.get("guild") or item.get("guildSlug"))
                     token = CURRENT_GUILD_SLUG.set(queue_guild_slug)
                     payload = item.get("payload") or {}
                     payload["guildSlug"] = queue_guild_slug
-                    payload["_queueType"] = clean(item.get("type"))
-                    payload["_queueRowNumber"] = clean(item.get("rowNumber"))
                     mode = clean(payload.get("mode")).lower() or "signup"
                     try:
                         item_type = clean(item.get("type"))
@@ -4021,8 +3990,8 @@ async def po_queue_loop():
                                 "sourceChannelId": clean(followup.get("sourceChannelId") or channel_id),
                                 "targetChannelId": channel_id,
                                 "channelId": channel_id,
-                                "restoreArchived": "",
-                                "forceNewMessage": "",
+                                "restoreArchived": "true",
+                                "forceNewMessage": "true",
                                 "lichtlootRaidId": clean(
                                     followup.get("lichtlootRaidId")
                                     or raid.get("raidId")
@@ -4033,13 +4002,6 @@ async def po_queue_loop():
                                 "combinedRaidExternalSignups": helper.get("externalSignups") or [],
                             }
                             normalized = await post_or_update_from_queue(client, combined_payload)
-                            handled_key = clean(
-                                normalized.get("postKey")
-                                or followup.get("postKey")
-                                or followup.get("poPostKey")
-                            )
-                            if handled_key:
-                                handled_po_post_keys.add(handled_key)
                             await asyncio.to_thread(api_post, {
                                 "action": "lichtbotSetRaidDiscordMessage",
                                 "queueToken": QUEUE_TOKEN,
@@ -4053,15 +4015,6 @@ async def po_queue_loop():
                                 f"{current_guild_slug()}:{payload.get('raidId') or payload.get('id')}"
                             )
                             continue
-                        if item_type == "po_post":
-                            queued_post_key = clean(payload.get("postKey") or payload.get("poPostKey"))
-                            if queued_post_key and queued_post_key in handled_po_post_keys:
-                                await resolve_queue_item(item.get("rowNumber"))
-                                print(
-                                    f"Doppelter PO-Auftrag erledigt: kombinierter Post wurde bereits erstellt: "
-                                    f"{current_guild_slug()}:{queued_post_key}"
-                                )
-                                continue
                         if item_type == "raid_announcement_refresh":
                             refreshed = await refresh_raid_signup_message_by_id(
                                 payload.get("raidId") or payload.get("id"),
@@ -4069,11 +4022,9 @@ async def po_queue_loop():
                                 payload.get("messageId") or payload.get("discordMessageId") or payload.get("raidHelperMessageId"),
                                 payload
                             )
-                            await resolve_queue_item(item.get("rowNumber"))
                             if refreshed:
+                                await resolve_queue_item(item.get("rowNumber"))
                                 print(f"Raidanmelder vom PO-Bot aktualisiert: {current_guild_slug()}:{payload.get('raidId') or payload.get('id')}")
-                            else:
-                                print(f"Veralteter Raidanmelder-Refresh abgeschlossen: {current_guild_slug()}:{payload.get('raidId') or payload.get('id')}")
                             continue
                         if item_type == "raid_signup_notice":
                             await resolve_queue_item(item.get("rowNumber"))
@@ -4090,26 +4041,7 @@ async def po_queue_loop():
                         await resolve_queue_item(item.get("rowNumber"))
                         print(f"PO-Anmelder aus Gildenleitung gepostet: {current_guild_slug()}:{normalized.get('postKey')}")
                     except Exception as error:
-                        error_text = str(error)
-                        terminal_queue_error = any(
-                            marker in error_text
-                            for marker in (
-                                "Unknown Message",
-                                "Unknown Channel",
-                                "Raid wurde nicht gefunden",
-                            )
-                        )
-                        if terminal_queue_error or (
-                            item_type == "p0_post_refresh"
-                            and "ohne Post-ID" in error_text
-                        ):
-                            await resolve_queue_item(item.get("rowNumber"))
-                            print(
-                                f"Veralteter {item_type or 'PO'}-Auftrag abgeschlossen "
-                                f"({item.get('rowNumber')}): {error_text}"
-                            )
-                        else:
-                            print(f"PO-Anmelder-Queue konnte nicht verarbeitet werden: {error}")
+                        print(f"PO-Anmelder-Queue konnte nicht verarbeitet werden: {error}")
                     finally:
                         CURRENT_GUILD_SLUG.reset(token)
             else:
@@ -4234,10 +4166,7 @@ async def po_anmelder(interaction, raid: str, datum: str, uhrzeit: str, titel: s
             "sourceChannelId": str(interaction.channel_id),
             "targetChannelId": str(interaction.channel_id),
             "messageId": "",
-            # Der Anmelder gehört zur Gilde, nicht zu einem festen Realm.
-            # Der tatsächliche Realm (z. B. Lakeshire oder Everlook) wird erst
-            # mit dem ausgewählten Charakter an LichtLoot übertragen.
-            "server": "",
+            "server": clean(guild_info.get("server")) or "Everlook",
             "guildName": clean(guild_info.get("name")) or current_guild_slug(),
             "createdBy": "Gildenleitung",
         }
@@ -4464,11 +4393,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def start_health_server():
     port = int(os.getenv("PORT", "8080"))
-    try:
-        server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
-    except OSError:
-        print(f"PO-Bot Health-Port {port} wird bereits vom Hauptbot verwendet.")
-        return
+    server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
 
