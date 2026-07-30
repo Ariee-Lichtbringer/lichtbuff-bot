@@ -630,11 +630,7 @@ def build_raid_announcement_embed(raid):
     raid = raid or {}
     raid_name = clean(raid.get("raidName") or display_raid(raid.get("raid")) or "Raid")
     description = clean(raid.get("description")) or "Raidanmeldung ist geöffnet."
-    # Discord entfernt normale Leerzeichen am Titelende. Das unsichtbare
-    # Braille-Leerzeichen besitzt dagegen eine feste Breite und bringt den
-    # Raid-Embed zuverlässig auf dieselbe Breite wie den PO-Embed.
-    width_spacer = "\u2800" * 80
-    embed = discord.Embed(title=raid_name.upper() + width_spacer, description=description[:3900], color=0x7c3aed)
+    embed = discord.Embed(title=raid_name.upper(), description=description[:3900], color=0x7c3aed)
     embed.add_field(name="Raidlead", value=clean(raid.get("createdBy") or raid.get("erstelltVon") or "Gildenleitung"), inline=True)
     embed.add_field(
         name="Tag / Datum",
@@ -988,7 +984,8 @@ def add_raid_signup_roster_fields(embed, helper):
                 row.get(key) is True or clean(row.get(key)).lower() in {"1", "true", "yes", "ja", "freigegeben"}
                 for key in ("p0Released", "poReleased", "p0PlusReleased", "poPlusReleased")
             ) else ""
-            lines.append(f"`{position}`{prio_icon} **{player}{star}** · {signup_spec_icon(spec, row.get('role'), cls)}")
+            role_icon = signup_spec_icon(spec, row.get("role"), cls)
+            lines.append(f"`{position}`{prio_icon} {role_icon} **{player}{star}**")
         embed.add_field(
             name=f"{tank_role_icon if cls == 'Tank' else class_icon(cls)} {german_class_names.get(cls, cls)} ({len(grouped[cls])})",
             value=("\n".join(lines) + "\n\u200b\n\u200b")[:1024],
