@@ -984,16 +984,14 @@ def add_raid_signup_roster_fields(embed, helper):
                 row.get(key) is True or clean(row.get(key)).lower() in {"1", "true", "yes", "ja", "freigegeben"}
                 for key in ("p0Released", "poReleased", "p0PlusReleased", "poPlusReleased")
             ) else ""
-            role_icon = signup_spec_icon(spec, row.get("role"), cls)
-            lines.append(f"`{position}`{prio_icon} {role_icon} **{player}{star}**")
+            lines.append(f"`{position}`{prio_icon} **{player}{star}** · {signup_spec_icon(spec, row.get('role'), cls)}")
         embed.add_field(
             name=f"{tank_role_icon if cls == 'Tank' else class_icon(cls)} {german_class_names.get(cls, cls)} ({len(grouped[cls])})",
-            value=("\n".join(lines) + "\n\u200b\n\u200b")[:1024],
+            value=("\n".join(lines) or "\u200b")[:1024],
             inline=True,
         )
-    missing_class_columns = (-len(sorted_classes)) % 3
-    for _ in range(missing_class_columns):
-        embed.add_field(name="\u200b", value="\u200b\n\u200b\n\u200b", inline=True)
+        if (class_index + 1) % 2 == 0 and class_index < len(sorted_classes) - 1:
+            embed.add_field(name="\u200b", value="\u200b", inline=False)
     status_groups = [
         ("🪑 Bank", {"bench", "bank"}),
         ("🕒 Spät", {"late", "spät", "spaet"}),
