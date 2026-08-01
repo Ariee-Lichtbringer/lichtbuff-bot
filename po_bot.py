@@ -4461,8 +4461,6 @@ async def on_ready():
         token = CURRENT_GUILD_SLUG.set(normalize_guild_slug(payload.get("guildSlug") or payload.get("guild")))
         try:
             await restore_po_view_fast(client, payload)
-            await remember_po_message(payload)
-            await refresh_po_message(client, payload)
         except Exception as error:
             print(f"PO View konnte nicht wiederhergestellt werden ({payload.get('postKey')}): {error}")
         finally:
@@ -4479,7 +4477,6 @@ async def on_ready():
                     continue
                 try:
                     items, entries = await restore_po_view_fast(client, payload)
-                    await refresh_po_view_only(client, payload)
                     state[state_key] = payload
                     known_posts.add(state_key)
                     restored += 1

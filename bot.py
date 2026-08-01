@@ -413,7 +413,13 @@ TAG_LANG = {
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
+# Der Hauptbot muss auch dann starten, wenn der privilegierte Members-Intent
+# in der Discord-Anwendung noch nicht freigeschaltet wurde. Rollenbasierte
+# Mitgliederlisten funktionieren erst wieder, wenn der Intent im Developer
+# Portal aktiviert und DISCORD_MEMBERS_INTENT=true gesetzt wurde.
+intents.members = os.getenv("DISCORD_MEMBERS_INTENT", "false").strip().lower() in {
+    "1", "true", "yes", "ja", "on"
+}
 
 client = discord.Client(intents=intents)
 
