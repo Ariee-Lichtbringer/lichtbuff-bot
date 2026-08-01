@@ -7538,6 +7538,24 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
     LICHTLOOT_QUEUE_IN_PROGRESS.add(queue_key)
     payload = {}
 
+    # Diese Aufträge gehören ausschließlich dem separaten PO-Bot. Würden
+    # Hauptbot und PO-Bot sie parallel abholen, könnten beide dieselbe DM oder
+    # denselben Raidpost senden, bevor der Queue-Eintrag auf erledigt steht.
+    po_bot_owned_types = {
+        "raid_announcement",
+        "raid_announcement_refresh",
+        "raid_announcement_role_notice",
+        "raid_status_staff_notice",
+        "po_post",
+        "po_post_delete",
+        "p0_post_refresh",
+        "po_rejection_notice",
+        "po_approval_notice",
+    }
+    if update_type in po_bot_owned_types:
+        print(f"{update_type} uebersprungen: ausschliesslich der PO-Bot ist zustaendig.")
+        return "po_bot_owned"
+
     try:
         raw_payload = item.get("payload") or {}
         payload = raw_payload if isinstance(raw_payload, dict) else json.loads(raw_payload or "{}")
@@ -7549,27 +7567,8 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             removed = await asyncio.to_thread(remove_deleted_worldbuff_from_all_caches, payload)
             print(f"Worldbuff-Loeschung aus Queue verarbeitet, {removed} Cache-Eintraege entfernt.")
 
-        if update_type == "raid_announcement":
-            print("Raid-Ankuendigung uebersprungen: Alle Raidanmelder werden vom PO-Bot verarbeitet.")
-            return
-        elif update_type == "raid_announcement_refresh":
-            print("Raid-Anmelder-Refresh uebersprungen: wird vom separaten PO-Bot verarbeitet.")
-            return
-        elif update_type == "raid_signup_notice":
+        if update_type == "raid_signup_notice":
             await send_raid_signup_notice(payload)
-        elif update_type == "raid_status_staff_notice":
-            await send_raid_status_staff_notice(payload)
-        elif update_type == "raid_announcement_role_notice":
-            await send_raid_announcement_role_notice(payload)
-        elif update_type == "po_post":
-            print("PO-Auftrag uebersprungen: wird vom separaten PO-Bot verarbeitet.")
-            return
-        elif update_type == "po_post_delete":
-            print("PO-Loeschauftrag uebersprungen: wird vom separaten PO-Bot verarbeitet.")
-            return
-        elif update_type == "p0_post_refresh":
-            print("P0+-Post-Refresh uebersprungen: wird vom separaten PO-Bot verarbeitet.")
-            return
         elif update_type == "log_analysis_post":
             await post_log_analysis_from_queue(payload)
         elif update_type in {"p0plus_transfer_export", "p0plus_backup_export"}:
@@ -7690,8 +7689,19 @@ async def lichtloot_queue_loop():
                     guild_slug = normalize_guild_slug(item.get("guild") or item.get("guildSlug") or LICHTLOOT_GUILD_SLUG)
                     token = CURRENT_GUILD_SLUG.set(guild_slug)
                     try:
-                        if str(item.get("type") or "").strip() in {"po_post", "po_post_delete", "p0_post_refresh"}:
-                            print("PO/P0-Auftrag in Railway-Queue uebersprungen: separater PO-Bot ist zustaendig.")
+                        railway_type = str(item.get("type") or "").strip()
+                        if railway_type in {
+                            "raid_announcement",
+                            "raid_announcement_refresh",
+                            "raid_announcement_role_notice",
+                            "raid_status_staff_notice",
+                            "po_post",
+                            "po_post_delete",
+                            "p0_post_refresh",
+                            "po_rejection_notice",
+                            "po_approval_notice",
+                        }:
+                            print(f"{railway_type} in Railway-Queue uebersprungen: separater PO-Bot ist zustaendig.")
                             continue
                         await handle_lichtloot_queue_item(item, resolve_old_queue=False)
                         row_number = item.get("rowNumber")
