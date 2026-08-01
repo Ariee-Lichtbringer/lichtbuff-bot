@@ -1227,7 +1227,26 @@ async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id
         return "missing_message"
     channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
     message = await channel.fetch_message(int(message_id))
-    await edit_raid_message_preserving_po(message, raid, helper)
+    # Discord erlaubt nur dem ursprünglichen Autor, eine Nachricht zu ändern.
+    # Alte Raidanmelder können noch auf eine Nachricht des früheren Hauptbots
+    # zeigen. Solche Queue-Aufträge dürfen nicht endlos erneut versucht werden,
+    # weil sie sonst Discords Rate-Limit auslösen und den ganzen Bot ausbremsen.
+    if not client.user or message.author.id != client.user.id:
+        print(
+            "Raidanmelder Refresh verworfen: Nachricht stammt von einem anderen Bot "
+            f"({message_id}, Autor {message.author.id})."
+        )
+        return "foreign_message"
+    try:
+        await edit_raid_message_preserving_po(message, raid, helper)
+    except discord.Forbidden as error:
+        if getattr(error, "code", None) == 50005:
+            print(
+                "Raidanmelder Refresh verworfen: Discord-Nachricht gehört einem anderen Bot "
+                f"({message_id})."
+            )
+            return "foreign_message"
+        raise
     print(f"Raidanmelder Refresh: {clean(raid.get('raidId') or raid_id)} mit {raid_signup_row_count(helper)} Anmeldung(en) gerendert.")
     return True
 
@@ -4344,7 +4363,14 @@ async def po_queue_loop():
                             )
                             if refreshed:
                                 await resolve_queue_item(item.get("rowNumber"))
-                                print(f"Raidanmelder vom PO-Bot aktualisiert: {current_guild_slug()}:{payload.get('raidId') or payload.get('id')}")
+                                if refreshed == "foreign_message":
+                                    print(
+                                        "Veralteter Raidanmelder-Refresh erledigt markiert; "
+                                        "die Nachricht gehört einem anderen Bot: "
+                                        f"{current_guild_slug()}:{payload.get('raidId') or payload.get('id')}"
+                                    )
+                                else:
+                                    print(f"Raidanmelder vom PO-Bot aktualisiert: {current_guild_slug()}:{payload.get('raidId') or payload.get('id')}")
                             continue
                         if item_type == "raid_announcement_role_notice":
                             await send_raid_announcement_notice_from_queue(payload)
