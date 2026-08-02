@@ -3352,8 +3352,6 @@ def build_hordenbuff_post_embed(rend, data):
         description=description,
         color=0xF97316,
     )
-    if HORDENBUFF_GUIDE_IMAGE_URL:
-        embed.set_image(url=HORDENBUFF_GUIDE_IMAGE_URL)
     embed.set_footer(text="Alle Aktionen funktionieren über das Auswahlmenü unter diesem Embed.")
     return embed
 
