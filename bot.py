@@ -1334,19 +1334,35 @@ async def hordenbuff_signup_core(ally_char="", horde_char="", author_name=""):
     return result_text
 
 
-class RendSignupModal(discord.ui.Modal, title="Rend anmelden"):
-    ally_char = discord.ui.TextInput(
-        label="Ally-Char",
-        placeholder="z. B. Ariee",
-        required=False,
-        max_length=50
-    )
-    horde_char = discord.ui.TextInput(
-        label="Horden-Char / Helfer",
-        placeholder="z. B. Miimi",
-        required=False,
-        max_length=50
-    )
+class RendActionModal(discord.ui.Modal):
+    def __init__(self, mode):
+        self.mode = mode
+        titles = {
+            "ally": "Rend benötigt",
+            "helper": "Als Helfer anmelden",
+            "takeover": "Direkte Übernahme",
+            "delete": "Rend-Eintrag entfernen",
+        }
+        super().__init__(title=titles.get(mode, "Rend-Anmeldung"), timeout=180)
+
+        self.ally_char = None
+        self.horde_char = None
+        if mode in {"ally", "takeover", "delete"}:
+            self.ally_char = discord.ui.TextInput(
+                label="Ally-Char" if mode != "delete" else "Charaktername entfernen",
+                placeholder="z. B. Ariee",
+                required=True,
+                max_length=50,
+            )
+            self.add_item(self.ally_char)
+        if mode in {"helper", "takeover"}:
+            self.horde_char = discord.ui.TextInput(
+                label="Horden-Char / Helfer",
+                placeholder="z. B. Miimi",
+                required=True,
+                max_length=50,
+            )
+            self.add_item(self.horde_char)
 
     async def on_submit(self, interaction):
         interaction_guild_slug = guild_slug_for_discord_server(
@@ -1356,23 +1372,64 @@ class RendSignupModal(discord.ui.Modal, title="Rend anmelden"):
         token = CURRENT_GUILD_SLUG.set(interaction_guild_slug)
         try:
             await interaction.response.defer(ephemeral=True)
-            result_text = await hordenbuff_signup_core(
-                ally_char=str(self.ally_char.value or ""),
-                horde_char=str(self.horde_char.value or ""),
-                author_name=interaction.user.display_name
-            )
+            ally_char = str(self.ally_char.value or "") if self.ally_char else ""
+            horde_char = str(self.horde_char.value or "") if self.horde_char else ""
+            if self.mode == "delete":
+                result_text = await hordenbuff_delete_core(ally_char)
+            else:
+                result_text = await hordenbuff_signup_core(
+                    ally_char=ally_char,
+                    horde_char=horde_char,
+                    author_name=interaction.user.display_name
+                )
             await interaction.followup.send(result_text, ephemeral=True)
         finally:
             CURRENT_GUILD_SLUG.reset(token)
 
 
+class RendActionSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="Rend-Aktion auswählen …",
+            min_values=1,
+            max_values=1,
+            custom_id="hordenbuff:rend_action",
+            options=[
+                discord.SelectOption(
+                    label="Ich benötige Rend",
+                    description="Ally-Char für den aktiven Termin eintragen",
+                    value="ally",
+                    emoji=get_buff_emoji("Rend"),
+                ),
+                discord.SelectOption(
+                    label="Ich helfe mit einem Horden-Char",
+                    description="Als freier Helfer eintragen oder automatisch zuteilen",
+                    value="helper",
+                    emoji="🛡️",
+                ),
+                discord.SelectOption(
+                    label="Bestimmten Spieler übernehmen",
+                    description="Ally-Char und Horden-Helfer direkt zuordnen",
+                    value="takeover",
+                    emoji="🤝",
+                ),
+                discord.SelectOption(
+                    label="Meinen Eintrag entfernen",
+                    description="Ally- oder Horden-Char aus dem aktiven Termin löschen",
+                    value="delete",
+                    emoji="🗑️",
+                ),
+            ],
+        )
+
+    async def callback(self, interaction):
+        await interaction.response.send_modal(RendActionModal(self.values[0]))
+
+
 class RendSignupView(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=180)
-
-    @discord.ui.button(label="Rend-Anmeldung öffnen", style=discord.ButtonStyle.success)
-    async def open_signup(self, interaction, button):
-        await interaction.response.send_modal(RendSignupModal())
+        super().__init__(timeout=None)
+        self.add_item(RendActionSelect())
 
 
 def get_discord_retry_after(error, fallback=DISCORD_RATE_LIMIT_FALLBACK_SECONDS):
@@ -2590,7 +2647,7 @@ def is_hordenbuff_overview_message(message):
         return True
 
     return any(
-        embed.title == "Hordenbuffs eintragen"
+        embed.title == "Hordenbuffs eintragen" or "Hordenbuff-Anmeldung" in str(embed.title or "")
         for embed in getattr(message, "embeds", []) or []
     )
 
@@ -3274,23 +3331,31 @@ def build_hordenbuff_text(rend, data):
         text += "-\n"
 
     text += "\n━━━━━━━━━━━━━━━\n"
-    text += "📋 **Befehle**\n\n"
-
-    text += "✅ **Einfach anmelden:**\n"
-    text += "`!rend`\n"
-    text += "Dann Button klicken und im Formular eintragen:\n"
-    text += "- Ally-Char = braucht Rend\n"
-    text += "- Horden-Char = kann helfen\n"
-    text += "- Beide Felder = Horden-Char übernimmt Ally-Char\n\n"
-
-    text += "🗑️ **Eintrag löschen:**\n"
-    text += "`!renddel Spielername`\n"
-    text += "Beispiel: `!renddel Ariee`\n\n"
-
-    text += "🔄 **Liste aktualisieren:**\n"
-    text += "`!hordenbuff`\n"
+    text += "📋 **Anmeldung ohne Befehle**\n"
+    text += "Wähle unten im Menü, ob du Rend benötigst, helfen möchtest, "
+    text += "jemanden direkt übernimmst oder deinen Eintrag entfernst.\n"
 
     return text
+
+
+def build_hordenbuff_post_embed(rend, data):
+    text = build_hordenbuff_text(rend, data)
+    lines = text.splitlines()
+    if lines and lines[0].startswith("🪓 **Horde-Rend"):
+        lines = lines[1:]
+    description = "\n".join(lines).strip()
+    if len(description) > 4096:
+        description = description[:4092].rstrip() + " …"
+
+    embed = discord.Embed(
+        title=f"{get_buff_emoji('Rend')} Hordenbuff-Anmeldung",
+        description=description,
+        color=0xF97316,
+    )
+    if HORDENBUFF_GUIDE_IMAGE_URL:
+        embed.set_image(url=HORDENBUFF_GUIDE_IMAGE_URL)
+    embed.set_footer(text="Alle Aktionen funktionieren über das Auswahlmenü unter diesem Embed.")
+    return embed
 
 
 async def update_hordenbuff_post(force=False):
@@ -3343,8 +3408,8 @@ async def update_hordenbuff_post(force=False):
                 continue
 
             data = await asyncio.to_thread(merge_hordenbuff_sheet_data, rend, load_hordenbuff_state(rend))
-            text = build_hordenbuff_text(rend, data)
-            guide_embed = build_hordenbuff_guide_embed()
+            guide_embed = build_hordenbuff_post_embed(rend, data)
+            signup_view = RendSignupView()
             message_id = get_hordenbuff_message_id(data, channel_id)
             found_messages = await find_recent_own_messages(channel, is_hordenbuff_overview_message, limit=100)
 
@@ -3362,9 +3427,9 @@ async def update_hordenbuff_post(force=False):
                     msg = found_messages[0] if found_messages else None
 
                 if not msg:
-                    msg = await send_silent(channel, text, embed=guide_embed)
+                    msg = await send_silent(channel, embed=guide_embed, view=signup_view)
                 else:
-                    await msg.edit(content=text, embed=guide_embed)
+                    await msg.edit(content="", embed=guide_embed, view=signup_view)
 
                 duplicates = [message for message in found_messages if message.id != msg.id]
                 await delete_extra_messages([msg] + duplicates)
@@ -3589,16 +3654,15 @@ async def set_hordenbuff_char(message, charakter):
     await delete_command_message(message)
 
 
-async def delete_rend_entry(message, charakter):
+async def hordenbuff_delete_core(charakter):
     rend = await asyncio.to_thread(get_next_horden_rend_safe)
 
     if not rend:
-        await send_temp(
-            message.channel,
-            "⚠️ Es wurde kein kommender Rend-Termin im Sheet gefunden."
-        )
-        await delete_command_message(message)
-        return
+        return "⚠️ Es wurde kein kommender Rend-Termin gefunden."
+
+    charakter = clean_hordenbuff_name(charakter)
+    if not charakter:
+        return "⚠️ Bitte gib den Charakter an, der entfernt werden soll."
 
     data = await asyncio.to_thread(merge_hordenbuff_sheet_data, rend, load_hordenbuff_state(rend))
     charakter_key = hordenbuff_name_key(charakter)
@@ -3627,6 +3691,12 @@ async def delete_rend_entry(message, charakter):
     await asyncio.to_thread(hordenbuff_sheet_delete, rend, charakter)
 
     await update_hordenbuff_post(force=True)
+    return f"✅ **{charakter}** wurde aus der Rend-Anmeldung entfernt."
+
+
+async def delete_rend_entry(message, charakter):
+    result_text = await hordenbuff_delete_core(charakter)
+    await send_temp(message.channel, result_text)
     await delete_command_message(message)
 
 
@@ -10617,6 +10687,10 @@ async def on_ready():
     if not hasattr(client, "worldbuff_picker_view_registered"):
         client.worldbuff_picker_view_registered = True
         client.add_view(WorldbuffBuffPickerView())
+
+    if not hasattr(client, "hordenbuff_action_view_registered"):
+        client.hordenbuff_action_view_registered = True
+        client.add_view(RendSignupView())
 
     if not hasattr(client, "raid_signup_view_restore_started"):
         client.raid_signup_view_restore_started = True
