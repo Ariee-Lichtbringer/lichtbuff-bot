@@ -2287,7 +2287,8 @@ def build_overview():
         return "📢 **Worldbuff Übersicht**\n\nKeine Worldbuffs gefunden."
 
     heute = datetime.now(BERLIN_TZ).date()
-    ende = heute + timedelta(days=7)
+    # Einschliesslich heute genau fuenf Kalendertage anzeigen.
+    ende = heute + timedelta(days=4)
 
     gefiltert = []
     heutige_buffs = 0
@@ -2347,7 +2348,7 @@ def build_overview():
 
     text = "📢 **Worldbuffs**"
     text += f" · Stand {now}\n"
-    text += "_Nächste 7 Tage · Eintragen per `!worldbuff`_\n"
+    text += "_Nächste 5 Tage · Eintragen über die Auswahl unten_\n"
 
     current_date = ""
 
@@ -2400,7 +2401,7 @@ def current_worldbuff_announcement_block(max_lines=8):
 
     werfer = import_werfer_aus_sheet()
     today = datetime.now(BERLIN_TZ).date()
-    max_date = today + timedelta(days=7)
+    max_date = today + timedelta(days=4)
     rows = []
     seen = set()
 
@@ -2498,6 +2499,25 @@ def build_worldbuff_guide_embed():
     return build_worldbuff_signup_embed()
 
 
+def build_worldbuff_post_embed(overview_text):
+    embed = build_worldbuff_signup_embed()
+    signup_text = str(embed.description or "").strip()
+    overview_lines = str(overview_text or "").strip().splitlines()
+
+    # Die Ueberschrift steht bereits im Embed-Titel und wird nicht doppelt
+    # ausgegeben. Alle weiteren Inhalte bleiben innerhalb desselben Embeds.
+    if overview_lines and overview_lines[0].startswith("📢 **Worldbuff"):
+        overview_lines = overview_lines[1:]
+    overview = "\n".join(overview_lines).strip()
+    description = f"{overview}\n\n**Termin eintragen**\n{signup_text}".strip()
+    if len(description) > 4096:
+        description = description[:4092].rstrip() + " …"
+
+    embed.title = "Worldbuffs & Anmeldung"
+    embed.description = description
+    return embed
+
+
 def build_hordenbuff_guide_embed():
     if not HORDENBUFF_GUIDE_IMAGE_URL:
         return None
@@ -2559,7 +2579,7 @@ def is_worldbuff_overview_message(message):
         return True
 
     return any(
-        embed.title == "Worldbuff eintragen"
+        embed.title in {"Worldbuff eintragen", "Worldbuffs & Anmeldung"}
         for embed in getattr(message, "embeds", []) or []
     )
 
@@ -2696,7 +2716,7 @@ async def update_worldbuff_post(sync_ticker=True, force_repost=False):
     if sync_ticker:
         await sync_recent_ticker_messages()
     text = await asyncio.to_thread(build_overview)
-    guide_embed = await asyncio.to_thread(build_worldbuff_guide_embed)
+    guide_embed = await asyncio.to_thread(build_worldbuff_post_embed, text)
     signup_view = WorldbuffBuffPickerView()
     existing_messages = await fetch_worldbuff_post_messages(channel)
     known_message_ids = {message.id for message in existing_messages}
@@ -2718,37 +2738,14 @@ async def update_worldbuff_post(sync_ticker=True, force_repost=False):
                 print(f"Worldbuff-Uebersicht konnte zum Neu-Posten nicht geloescht werden: {e}")
         existing_messages = []
 
-    if len(text) <= 1900:
-        if existing_messages:
-            msg = existing_messages[0]
-            await msg.edit(content=text, embed=guide_embed, view=signup_view)
-            await delete_extra_messages(existing_messages)
-        else:
-            msg = await send_silent(channel, text, embed=guide_embed, view=signup_view)
-        save_json(worldbuff_post_file(), {"message_id": msg.id, "message_ids": [msg.id]})
-        return 1
+    if existing_messages:
+        msg = existing_messages[0]
+        await msg.edit(content="", embed=guide_embed, view=signup_view)
+        await delete_extra_messages(existing_messages)
     else:
-        chunks = [text[i:i + 1900] for i in range(0, len(text), 1900)]
-        last_msg = None
-        message_ids = []
-
-        for index, chunk in enumerate(chunks):
-            if index < len(existing_messages):
-                last_msg = existing_messages[index]
-                await last_msg.edit(content=chunk, embed=guide_embed if index == 0 else None, view=signup_view if index == 0 else None)
-            else:
-                last_msg = await send_silent(channel, chunk, embed=guide_embed if index == 0 else None, view=signup_view if index == 0 else None)
-            message_ids.append(last_msg.id)
-
-        for old_msg in existing_messages[len(chunks):]:
-            try:
-                await old_msg.delete()
-            except:
-                pass
-
-        if last_msg:
-            save_json(worldbuff_post_file(), {"message_id": last_msg.id, "message_ids": message_ids})
-        return len(message_ids)
+        msg = await send_silent(channel, embed=guide_embed, view=signup_view)
+    save_json(worldbuff_post_file(), {"message_id": msg.id, "message_ids": [msg.id]})
+    return 1
 
 
 async def sync_recent_ticker_messages_for_all_guilds(limit=None):
