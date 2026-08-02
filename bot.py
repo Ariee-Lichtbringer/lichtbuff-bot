@@ -356,6 +356,7 @@ WORLDBUFF_PLAN_CSV_URL = "https://docs.google.com/spreadsheets/d/1o7fzOAn9wC0iWc
 WORLDBUFF_PLAN_CACHE_CONTENT = ""
 WORLDBUFF_PLAN_CACHE_TIME = None
 DATA_FILE = "worldbuffs.json"
+WB_POSTER_CACHE_FILE = "wb_poster_worldbuffs.json"
 DELETED_WORLDBUFF_FILE = "deleted_worldbuffs.json"
 POST_FILE = "last_post.json"
 HORDENBUFF_FILE = "hordenbuff.json"
@@ -400,6 +401,30 @@ BUFF_EMOJIS = {
     "Nefarian": "🔴",
     "Rend": "🟠"
 }
+
+# Eigene Discord-Emojis der jeweiligen Gilde. Discord liefert beim Start die
+# fuer den Bot sichtbaren Server-Emojis; falls eines fehlt, verwenden wir
+# weiterhin den bisherigen farbigen Punkt als sicheren Ersatz.
+BUFF_CUSTOM_EMOJI_NAMES = {
+    "Hakkar": "zgbuff",
+    "ZG": "zgbuff",
+    "Ony": "onybuff",
+    "Onyxia": "onybuff",
+    "Nef": "neffbuff",
+    "Nefarian": "neffbuff",
+    "Rend": "rendbuff",
+}
+
+
+def get_buff_emoji(buff):
+    normalized = normalize_buff(buff)
+    emoji_name = BUFF_CUSTOM_EMOJI_NAMES.get(normalized)
+    if emoji_name:
+        for discord_guild in getattr(client, "guilds", []):
+            emoji = discord.utils.get(getattr(discord_guild, "emojis", []), name=emoji_name)
+            if emoji is not None:
+                return emoji
+    return BUFF_EMOJIS.get(normalized, BUFF_EMOJIS.get(str(buff or ""), "⚪"))
 
 TAG_LANG = {
     "Mo": "Montag",
@@ -915,7 +940,10 @@ def get_gildenleitung_worldbuff_rows(days="all"):
 
 def get_open_worldbuff_signup_slots(limit=25):
     today = datetime.now(BERLIN_TZ).date()
-    max_date = today + timedelta(days=92)
+    # Nachtloot plant seine offenen WB-Slots mehrere Monate im Voraus.
+    # 180 Tage stellen sicher, dass zehn wöchentliche Slots je Buff im
+    # Discord-Dropdown auswählbar bleiben.
+    max_date = today + timedelta(days=180)
     slots = []
     seen = set()
     row_order = 0
@@ -1076,7 +1104,7 @@ class WorldbuffSignupSelect(discord.ui.Select):
                 label=label[:100],
                 description=description[:100],
                 value=str(index),
-                emoji=BUFF_EMOJIS.get(slot.get("buff"), "⚪")
+                emoji=get_buff_emoji(slot.get("buff"))
             ))
         buff_label = normalize_buff(buff_filter) if buff_filter else "Worldbuff"
         super().__init__(
@@ -1141,9 +1169,9 @@ class WorldbuffBuffButton(discord.ui.Button):
 class WorldbuffBuffPickerView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(WorldbuffBuffButton("Hakkar", "Hakkar", discord.ButtonStyle.success, "🟢"))
-        self.add_item(WorldbuffBuffButton("Ony", "Ony", discord.ButtonStyle.danger, "🔴"))
-        self.add_item(WorldbuffBuffButton("Nef", "Nef", discord.ButtonStyle.danger, "🔴"))
+        self.add_item(WorldbuffBuffButton("Hakkar", "Hakkar", discord.ButtonStyle.success, get_buff_emoji("Hakkar")))
+        self.add_item(WorldbuffBuffButton("Ony", "Ony", discord.ButtonStyle.danger, get_buff_emoji("Ony")))
+        self.add_item(WorldbuffBuffButton("Nef", "Nef", discord.ButtonStyle.danger, get_buff_emoji("Nef")))
 
 
 def clean_hordenbuff_name(value):
@@ -1443,8 +1471,42 @@ def filter_worldbuff_rows_for_current_guild(rows):
         return list(rows or [])
     return [
         row for row in rows or []
-        if is_own_worldbuff_guild((row or {}).get("gilde", ""))
+        if (
+            is_own_worldbuff_guild((row or {}).get("gilde", ""))
+            or (
+                current_guild_slug() == NACHTLOOT_GUILD_SLUG
+                and str((row or {}).get("source") or "").strip().casefold() == "wb_poster"
+            )
+        )
     ]
+
+
+def get_shared_wb_poster_rows():
+    """WB-Poster-Cache des Hauptservers fuer Nachtloot mitverwenden."""
+    rows = load_json(WB_POSTER_CACHE_FILE, [])
+    if not rows:
+        # Kompatibilitaet mit dem bisherigen Cache bis der naechste
+        # WB-Poster-Post eingelesen wurde.
+        rows = load_json(DATA_FILE, [])
+    return [
+        {**row, "source": "wb_poster"}
+        for row in rows or []
+        if isinstance(row, dict) and not is_deleted_worldbuff(row)
+    ]
+
+
+def merge_shared_wb_poster_rows(data):
+    poster_rows = get_shared_wb_poster_rows()
+    merge_ticker_buffs_preserving_railway(data, poster_rows)
+
+    # Wenn derselbe Termin bereits aus Railway vorhanden ist, fuegt der
+    # Deduplizierer keine zweite Zeile an. Wir kennzeichnen ihn trotzdem als
+    # WB-Poster-Termin, damit er im Nachtwächter-Post sichtbar bleibt.
+    poster_keys = {make_buff_key(row) for row in poster_rows}
+    poster_identity = {make_overview_dedupe_key(row) for row in poster_rows}
+    for row in data:
+        if make_buff_key(row) in poster_keys or make_overview_dedupe_key(row) in poster_identity:
+            row["source"] = "wb_poster"
 
 
 def is_lichtbringer_buff(buff_data):
@@ -1944,7 +2006,7 @@ def parse_ticker_message(text):
     date_words = r"(\d{1,2}\.\d{1,2}\.\d{4})"
     day_words = r"(?:Mo|Di|Mi|Do|Fr|Sa|So|Montag|Dienstag|Mittwoch|Donnerstag|Freitag|Samstag|Sonntag)"
     time_words = r"(\d{1,2}:\d{2})"
-    prefix = r"^(?:[🟢🔴🟠⚪🟡✅❌🔥🌿☠️💀•\-–—]\s*)?"
+    prefix = r"^(?:(?:<a?:[A-Za-z0-9_]+:\d+>|[🟢🔴🟠⚪🟡✅❌🔥🌿☠️💀•\-–—])\s*)?"
     suffix = r"\s+(.+)$"
 
     patterns = [
@@ -1994,7 +2056,8 @@ def parse_ticker_message(text):
                 "datum": datum,
                 "tag": make_tag_from_date(datum),
                 "uhrzeit": uhrzeit,
-                "gilde": re.sub(r"^(?:Mo|Di|Mi|Do|Fr|Sa|So|Montag|Dienstag|Mittwoch|Donnerstag|Freitag|Samstag|Sonntag)\s+", "", gilde.strip(), flags=re.IGNORECASE)
+                "gilde": re.sub(r"^(?:Mo|Di|Mi|Do|Fr|Sa|So|Montag|Dienstag|Mittwoch|Donnerstag|Freitag|Samstag|Sonntag)\s+", "", gilde.strip(), flags=re.IGNORECASE),
+                "source": "wb_poster",
             })
 
     return buffs
@@ -2214,6 +2277,8 @@ def build_overview():
     ]
     if local_ticker_buffs:
         merge_ticker_buffs_preserving_railway(data, local_ticker_buffs)
+    if current_guild_slug() == NACHTLOOT_GUILD_SLUG:
+        merge_shared_wb_poster_rows(data)
     data = filter_worldbuff_rows_for_current_guild(data)
 
     werfer = import_werfer_aus_sheet()
@@ -2294,7 +2359,7 @@ def build_overview():
         buff = normalize_buff(b["buff"])
         gilde = b["gilde"]
 
-        emoji = BUFF_EMOJIS.get(buff, "⚪")
+        emoji = get_buff_emoji(buff)
 
         if datum != current_date:
             text += f"\n**{tag_lang}, {datum}**\n"
@@ -2326,6 +2391,8 @@ def current_worldbuff_announcement_block(max_lines=8):
     ]
     if local_ticker_buffs:
         merge_ticker_buffs_preserving_railway(data, local_ticker_buffs)
+    if current_guild_slug() == NACHTLOOT_GUILD_SLUG:
+        merge_shared_wb_poster_rows(data)
     data = filter_worldbuff_rows_for_current_guild(data)
 
     if not data:
@@ -2379,7 +2446,7 @@ def current_worldbuff_announcement_block(max_lines=8):
         info = werfer.get(key)
         charakter = buff.get("charakter") or (info and info.get("charakter")) or ""
         werfer_text = f" - {'🔵' if is_lichtbringer(gilde) else '⚔️'} {charakter}" if charakter else ""
-        emoji = BUFF_EMOJIS.get(buff_name, "⚪")
+        emoji = get_buff_emoji(buff_name)
         lines.append(f"{emoji} **{buff_name}** {buff.get('uhrzeit', '')} - {gilde}{werfer_text}")
         added += 1
 
@@ -2418,7 +2485,7 @@ def build_worldbuff_signup_embed():
         if counts[buff] > len(preview):
             value += f"\n… und {counts[buff] - len(preview)} weitere"
         embed.add_field(
-            name=f"{BUFF_EMOJIS.get(buff, '⚪')} {buff}",
+            name=f"{get_buff_emoji(buff)} {buff}",
             value=value,
             inline=True
         )
@@ -2578,6 +2645,13 @@ async def sync_recent_ticker_messages(limit=None):
             continue
 
     found_buffs = [buff for buff in found_buffs if not is_deleted_worldbuff(buff)]
+
+    if found_buffs:
+        # Ungefilterter gemeinsamer Poster-Cache: enthaelt auch Lichtbringer
+        # und alle weiteren im WB-Poster genannten Gilden.
+        shared_poster_rows = await asyncio.to_thread(load_json, WB_POSTER_CACHE_FILE, [])
+        merge_buffs_into_data(shared_poster_rows, found_buffs)
+        await asyncio.to_thread(save_json, WB_POSTER_CACHE_FILE, shared_poster_rows)
 
     if not found_buffs and not cached_rows and not readable_ticker_channels:
         return 0
@@ -3167,7 +3241,7 @@ def build_hordenbuff_text(rend, data):
     if upcoming:
         for item in upcoming:
             item_tag = TAG_LANG.get(item.get("tag", ""), item.get("tag", ""))
-            text += f"🟠 {item_tag}, {item['datum']} um {item['uhrzeit']}\n"
+            text += f"{get_buff_emoji('Rend')} {item_tag}, {item['datum']} um {item['uhrzeit']}\n"
     else:
         text += "-\n"
 
@@ -10478,6 +10552,10 @@ async def handle_ticker_update(message):
 
     if not new_buffs:
         return
+
+    poster_rows = load_json(WB_POSTER_CACHE_FILE, [])
+    merge_buffs_into_data(poster_rows, new_buffs)
+    save_json(WB_POSTER_CACHE_FILE, poster_rows)
 
     cached_rows = load_json(worldbuff_file(), [])
     railway_rows = await asyncio.to_thread(import_buffs_aus_sheet)
