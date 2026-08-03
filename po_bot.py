@@ -166,6 +166,22 @@ NACHTLOOT_HELP_CHANNEL_ID = int(
     os.getenv("NACHTLOOT_HELP_CHANNEL_ID", "1533899479734947881") or "1533899479734947881"
 )
 NACHTLOOT_HELP_MARKER = "LichtLoot-Hilfe · Nachtloot"
+NACHTLOOT_HELP_ROLE_NAMES = {
+    normalize_role_name(value)
+    for value in (
+        "Gildenleitung",
+        "Gildenmeister",
+        "Offizier",
+        "Offiziere",
+        "Gildenoffiziere",
+        "Raidoffizier",
+        "Raidoffiziere",
+        "PO Freigabe",
+        "PO-Freigabe",
+        "P0 Freigabe",
+        "P0-Freigabe",
+    )
+}
 RAID_BANNER_DIR = Path(__file__).resolve().parent / "raid-banners"
 LICHTLOOT_PRIO_URL = os.getenv("LICHTLOOT_PRIO_URL", "")
 LICHTLOOT_URL = os.getenv("LICHTLOOT_URL", "https://lichtloot.de")
@@ -4425,6 +4441,112 @@ async def po_queue_loop():
         await asyncio.sleep(QUEUE_CHECK_SECONDS)
 
 
+NACHTLOOT_HELP_TOPICS = {
+    "login": (
+        "SpielerLogin & Freigabe",
+        "Erstelle deinen SpielerLogin auf LichtLoot. Neue Logins müssen zuerst von der "
+        "Gildenleitung freigegeben werden. Wenn die Freigabe fehlt, melde dich hier mit deinem Charakternamen."
+    ),
+    "prio": (
+        "P1, P2 und P3",
+        "Öffne Mein LichtLoot, wähle deinen Charakter und anschließend den Raid. Dort kannst du deine "
+        "P1, P2 und P3 eintragen oder ändern."
+    ),
+    "po": (
+        "PO-Anmeldung",
+        "Für MC, BWL, AQ40 und Naxx benötigst du die passende PO-Freigabe für Nachtloot. "
+        "Fehlt sie, wende dich bitte an einen PO-Freigeber oder die Gildenleitung."
+    ),
+    "raid": (
+        "Raid-Anmeldung",
+        "Wähle im Discord-Raidanmelder Klasse, Skillung und anschließend deinen LichtLoot-SpielerLogin. "
+        "Danach wählst du deinen Charakter aus."
+    ),
+    "fehler": (
+        "Fehler melden",
+        "Bitte nenne deinen Charakter, den Raid, den genauen Wortlaut der Fehlermeldung und sende möglichst "
+        "einen Screenshot. So kann die Gildenleitung schneller helfen."
+    ),
+}
+
+
+def nachtloot_help_answer(question):
+    text = clean(question).casefold()
+    topic_keys = []
+    if any(word in text for word in ("login", "pin", "freigabe", "account", "konto")):
+        topic_keys.append("login")
+    if any(word in text for word in ("prio", "p1", "p2", "p3")):
+        topic_keys.append("prio")
+    if any(word in text for word in (" po ", "po-", "po+", "item", "freigegeben")):
+        topic_keys.append("po")
+    if any(word in text for word in ("raid", "anmeld", "bank", "spät", "abwes")):
+        topic_keys.append("raid")
+    if not topic_keys:
+        topic_keys.append("fehler")
+    parts = [NACHTLOOT_HELP_TOPICS[key][1] for key in dict.fromkeys(topic_keys)]
+    return "\n\n".join(parts)
+
+
+class NachtlootHelpQuestionModal(discord.ui.Modal, title="KI-Frage an die Nachtloot-Hilfe"):
+    question = discord.ui.TextInput(
+        label="Wobei brauchst du Hilfe?",
+        placeholder="Beschreibe deine Frage möglichst genau …",
+        style=discord.TextStyle.paragraph,
+        max_length=1000,
+    )
+
+    async def on_submit(self, interaction):
+        embed = discord.Embed(
+            title="✨ Antwort der Nachtloot-Hilfe",
+            description=nachtloot_help_answer(self.question.value),
+            color=discord.Color.from_rgb(88, 101, 242),
+        )
+        embed.add_field(name="Deine Frage", value=clean(self.question.value)[:1024], inline=False)
+        embed.set_footer(text="Die Antwort ist nur für dich sichtbar. Bei ungelösten Problemen hilft die Gildenleitung.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class NachtlootHelpTopicSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="Wobei brauchst du Hilfe?",
+            min_values=1,
+            max_values=1,
+            custom_id="nachtloot_help_topic",
+            options=[
+                discord.SelectOption(label=label, value=key)
+                for key, (label, _answer) in NACHTLOOT_HELP_TOPICS.items()
+            ],
+        )
+
+    async def callback(self, interaction):
+        label, answer = NACHTLOOT_HELP_TOPICS.get(self.values[0], NACHTLOOT_HELP_TOPICS["fehler"])
+        embed = discord.Embed(title=f"💡 {label}", description=answer, color=discord.Color.from_rgb(250, 204, 21))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class NachtlootHelpView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(NachtlootHelpTopicSelect())
+        self.add_item(discord.ui.Button(
+            label="Nachtloot öffnen",
+            emoji="🔗",
+            style=discord.ButtonStyle.link,
+            url="https://lichtloot.de/start.html?guild=nachtloot",
+        ))
+
+    @discord.ui.button(
+        label="KI-Frage stellen",
+        emoji="✨",
+        style=discord.ButtonStyle.primary,
+        custom_id="nachtloot_help_ai_question",
+        row=1,
+    )
+    async def ask_ai(self, interaction, _button):
+        await interaction.response.send_modal(NachtlootHelpQuestionModal())
+
+
 class PoBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
@@ -4434,6 +4556,7 @@ class PoBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
+        self.add_view(NachtlootHelpView())
         self.bg_task = asyncio.create_task(po_queue_loop())
         self.raid_signup_restore_task = asyncio.create_task(restore_active_raid_signup_views())
         if TEST_GUILD_ID:
@@ -4754,9 +4877,17 @@ async def on_message(message):
             )
             return
         permissions = getattr(message.author, "guild_permissions", None)
-        if not permissions or not (permissions.administrator or permissions.manage_messages):
+        member_roles = {
+            normalize_role_name(getattr(role, "name", ""))
+            for role in getattr(message.author, "roles", []) or []
+        }
+        may_manage_help = bool(
+            permissions
+            and (permissions.administrator or permissions.manage_messages)
+        ) or bool(member_roles & NACHTLOOT_HELP_ROLE_NAMES)
+        if not may_manage_help:
             await message.channel.send(
-                "⚠️ Nur die Gildenleitung oder Offiziere mit Nachrichtenverwaltung dürfen die Hilfe aktivieren.",
+                "⚠️ Nur Gildenleitung, Offiziere, Raidoffiziere oder PO-Freigeber dürfen die Hilfe aktivieren.",
                 delete_after=20,
             )
             return
@@ -4772,28 +4903,43 @@ async def on_message(message):
                 removed += 1
         if lower != "!hilfe-stop":
             embed = discord.Embed(
-                title="🛟 Nachtloot-Hilfe",
+                title="💡 Nachtloot-Hilfe",
                 description=(
-                    "Hier bekommst du Hilfe zu **LichtLoot**, Raid-Anmeldungen, "
-                    "Prios und PO. Schreibe deine Frage einfach in diesen Kanal."
+                    "Hier bekommst du Hilfe zu **Nachtloot**, **PO-Items**, **Worldbuffs**, "
+                    "**Hordenbuffs** und **Raid-Anmeldungen**.\n\n"
+                    "Wähle unten ein Thema aus oder klicke auf **KI-Frage stellen**. "
+                    "Die Antwort ist nur für dich sichtbar.\n\n"
+                    "**So funktioniert es**\n"
+                    "1. Thema auswählen\n"
+                    "2. Antwort lesen\n"
+                    "3. Bei Bedarf eine eigene Frage stellen\n\n"
+                    "**Noch keine Lösung?**\n"
+                    "Halte die genaue Fehlermeldung und deinen Charakternamen bereit und "
+                    "wende dich an die Nachtloot-Gildenleitung."
                 ),
-                color=discord.Color.from_rgb(96, 165, 250),
-            )
-            embed.add_field(
-                name="Wichtige Seiten",
-                value=(
-                    "[LichtLoot öffnen](https://lichtloot.de/)\n"
-                    "[Mein LichtLoot](https://lichtloot.de/start.html?guild=nachtloot)"
-                ),
-                inline=False,
-            )
-            embed.add_field(
-                name="Bitte bei einer Frage angeben",
-                value="Charaktername · Raid · kurze Fehlerbeschreibung · wenn möglich ein Screenshot",
-                inline=False,
+                color=discord.Color.from_rgb(250, 204, 21),
             )
             embed.set_footer(text=NACHTLOOT_HELP_MARKER)
-            await message.channel.send(embed=embed, silent=True)
+            await message.channel.send(embed=embed, view=NachtlootHelpView(), silent=True)
+            # Falls versehentlich zwei PO-Bot-Instanzen laufen, empfangen beide
+            # denselben Befehl. Nach einer kurzen Wartezeit bleibt trotzdem nur
+            # genau ein Hilfepost im Kanal stehen.
+            await asyncio.sleep(2)
+            help_posts = []
+            async for old_message in message.channel.history(limit=30):
+                if old_message.author != client.user:
+                    continue
+                if any(
+                    clean(getattr(getattr(old_embed, "footer", None), "text", "")) == NACHTLOOT_HELP_MARKER
+                    for old_embed in old_message.embeds
+                ):
+                    help_posts.append(old_message)
+            help_posts.sort(key=lambda entry: entry.id)
+            for duplicate in help_posts[1:]:
+                try:
+                    await duplicate.delete()
+                except Exception:
+                    pass
         try:
             await message.delete()
         except Exception:
