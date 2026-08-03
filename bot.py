@@ -76,6 +76,9 @@ NACHTLOOT_HORDENBUFF_CHANNEL_ID = int(
 NACHTLOOT_WORLDBUFF_CHANNEL_ID = int(
     os.getenv("NACHTLOOT_WORLDBUFF_CHANNEL_ID", "1327704903975440477") or 1327704903975440477
 )
+NACHTLOOT_HELP_CHANNEL_ID = int(
+    os.getenv("NACHTLOOT_HELP_CHANNEL_ID", "1533899479734947881") or 1533899479734947881
+)
 LOG_ANALYSIS_CHANNEL_ID = 1279032487628242995
 PLAYER_LOGIN_APPROVAL_CHANNEL_ID = int(os.getenv("PLAYER_LOGIN_APPROVAL_CHANNEL_ID", "0") or 0)
 WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_ID = int(os.getenv("WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_ID", "1118795108968574987") or 1118795108968574987)
@@ -316,7 +319,9 @@ DISCORD_GUILD_SLUGS = {}
 CHANNEL_GUILD_SLUGS = {
     PANEM_TICKER_CHANNEL_ID: PANEM_GUILD_SLUG,
     PANEM_HORDENBUFF_CHANNEL_ID: PANEM_GUILD_SLUG,
-    NACHTLOOT_HORDENBUFF_CHANNEL_ID: NACHTLOOT_GUILD_SLUG
+    NACHTLOOT_HORDENBUFF_CHANNEL_ID: NACHTLOOT_GUILD_SLUG,
+    NACHTLOOT_WORLDBUFF_CHANNEL_ID: NACHTLOOT_GUILD_SLUG,
+    NACHTLOOT_HELP_CHANNEL_ID: NACHTLOOT_GUILD_SLUG
 }
 
 # Alter CSV-Export bleibt nur noch als expliziter Notfall-Fallback.
@@ -5319,26 +5324,44 @@ def raid_signup_summary_from_helper(helper):
     return result or "Noch keine Anmeldungen."
 
 
-async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None, origin_message_id=None):
+async def refresh_raid_signup_message(
+    interaction,
+    raid,
+    origin_channel_id=None,
+    origin_message_id=None,
+    optimistic_signup=None
+):
     try:
         raid_lookup_id = str(raid.get("raidId") or raid.get("id") or "").strip()
         raid_pin = str(raid.get("playerPin") or raid.get("prioPin") or "").strip()
+        guild_slug = guild_slug_for_discord_server(
+            getattr(interaction, "guild", None),
+            raid.get("guildSlug")
+            or raid.get("guild")
+            or guild_slug_for_channel(getattr(interaction, "channel_id", 0) or 0)
+        )
         helper_queries = []
         if raid_lookup_id:
             helper_queries.append({
                 "action": "getRaidHelper",
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
                 "raidId": raid_lookup_id,
                 "playerPin": raid_lookup_id,
                 "t": int(time.time())
             })
             helper_queries.append({
                 "action": "getRaidHelper",
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
                 "raidId": raid_lookup_id,
                 "t": int(time.time())
             })
         if raid_pin and raid_pin != raid_lookup_id:
             helper_queries.append({
                 "action": "getRaidHelper",
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
                 "playerPin": raid_pin,
                 "t": int(time.time())
             })
@@ -5348,14 +5371,28 @@ async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None,
         for query_params in helper_queries:
             try:
                 helper = await asyncio.to_thread(lichtloot_get, query_params)
-                break
+                if helper and helper.get("success"):
+                    break
             except Exception as e:
                 last_error = e
         if helper is None:
             raise last_error or RuntimeError("Raid-Anmelder konnte nicht geladen werden.")
+        if optimistic_signup:
+            current_rows = list(helper.get("signups") or []) + list(helper.get("externalSignups") or [])
+            optimistic_char = str(
+                optimistic_signup.get("char") or optimistic_signup.get("player") or ""
+            ).strip().lower()
+            if optimistic_char and not any(
+                str(row.get("char") or row.get("player") or "").strip().lower() == optimistic_char
+                for row in current_rows
+            ):
+                helper = dict(helper)
+                helper["externalSignups"] = list(helper.get("externalSignups") or []) + [optimistic_signup]
         fresh_raid = helper.get("raid") if isinstance(helper, dict) else None
         if not fresh_raid:
             fresh_raid = raid
+        fresh_raid = dict(fresh_raid)
+        fresh_raid["guildSlug"] = guild_slug
         embed = build_raid_announcement_embed(fresh_raid)
         add_raid_signup_roster_fields(embed, helper)
         target_message = getattr(interaction, "message", None)
@@ -5833,7 +5870,24 @@ class RaidSignupCharacterSelect(discord.ui.Select):
             return
 
         try:
-            await refresh_raid_signup_message(interaction, refresh_raid, self.origin_channel_id, self.origin_message_id)
+            await refresh_raid_signup_message(
+                interaction,
+                refresh_raid,
+                self.origin_channel_id,
+                self.origin_message_id,
+                {
+                    "char": char_name,
+                    "player": char_name,
+                    "className": char_class,
+                    "klasse": char_class,
+                    "role": infer_signup_role(spec),
+                    "status": "signed",
+                    "note": f"Skillung: {spec}",
+                    "discordUserId": str(interaction.user.id),
+                    "discordName": str(interaction.user.display_name),
+                    "source": raid_signup_source(interaction, self.origin_channel_id, self.origin_message_id)
+                }
+            )
         except Exception as e:
             print("Raid-Anmelder-Refresh nach Anmeldung fehlgeschlagen:", e)
 
