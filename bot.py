@@ -555,6 +555,18 @@ def guild_slug_for_channel(channel_id):
     return CHANNEL_GUILD_SLUGS.get(int(channel_id), LICHTLOOT_GUILD_SLUG)
 
 
+def guild_slug_for_message(message):
+    """Explizit konfigurierte Channel-Zuordnungen haben Vorrang vor der Server-Zuordnung."""
+    channel_id = int(getattr(getattr(message, "channel", None), "id", 0) or 0)
+    channel_slug = CHANNEL_GUILD_SLUGS.get(channel_id)
+    if channel_slug:
+        return normalize_guild_slug(channel_slug)
+    return guild_slug_for_discord_server(
+        getattr(message, "guild", None),
+        LICHTLOOT_GUILD_SLUG
+    )
+
+
 def guild_slug_for_discord_guild(discord_guild_id, fallback=""):
     return normalize_guild_slug(DISCORD_GUILD_SLUGS.get(str(discord_guild_id or "").strip()) or fallback)
 
@@ -6274,6 +6286,37 @@ def collect_message_text(message):
             if getattr(child, "label", None):
                 parts.append(str(child.label))
 
+    # Einige Discord-Bots liefern Link-Buttons nur in der Rohdarstellung.
+    # Alle darin enthaltenen URLs werden ebenfalls berücksichtigt.
+    try:
+        raw_message = message.to_dict()
+    except Exception:
+        raw_message = {}
+
+    def collect_raw_urls(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if str(key).lower() in {"url", "href"} and child:
+                    parts.append(str(child))
+                else:
+                    collect_raw_urls(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect_raw_urls(child)
+
+    collect_raw_urls(raw_message.get("components") or [])
+    collect_raw_urls(raw_message.get("embeds") or [])
+
+    for attachment in getattr(message, "attachments", []) or []:
+        for value in (
+            getattr(attachment, "url", None),
+            getattr(attachment, "proxy_url", None),
+            getattr(attachment, "description", None),
+            getattr(attachment, "filename", None),
+        ):
+            if value:
+                parts.append(str(value))
+
     return "\n".join(parts)
 
 
@@ -7433,7 +7476,7 @@ def railway_post(payload):
 def extract_warcraft_log_urls(text):
     urls = []
     seen = set()
-    pattern = re.compile(r"https?://(?:[a-z]+\.)?warcraftlogs\.com/reports/[A-Za-z0-9]+[^\s<>)\]]*", re.IGNORECASE)
+    pattern = re.compile(r"https?://(?:[a-z0-9-]+\.)*warcraftlogs\.com/reports/[A-Za-z0-9]+[^\s<>)\]]*", re.IGNORECASE)
 
     for match in pattern.finditer(str(text or "")):
         url = match.group(0).rstrip(".,;:!")
@@ -7543,7 +7586,13 @@ async def sync_recent_log_analyses_from_channel(channel_id, target_count=LOG_ANA
             for log in new_logs:
                 seen_codes.add(log["reportCode"].lower())
 
-            saved = await handle_log_analysis_message(msg, announce=False)
+            guild_token = CURRENT_GUILD_SLUG.set(
+                normalize_guild_slug(CHANNEL_GUILD_SLUGS.get(int(channel_id)) or guild_slug_for_message(msg))
+            )
+            try:
+                saved = await handle_log_analysis_message(msg, announce=False)
+            finally:
+                CURRENT_GUILD_SLUG.reset(guild_token)
             for code in saved:
                 key = code.lower()
                 if key not in saved_code_keys:
@@ -10828,9 +10877,7 @@ async def on_message_edit(before, after):
     if after.author == client.user:
         return
 
-    token = CURRENT_GUILD_SLUG.set(
-        guild_slug_for_discord_server(getattr(after, "guild", None), guild_slug_for_channel(after.channel.id))
-    )
+    token = CURRENT_GUILD_SLUG.set(guild_slug_for_message(after))
     try:
         #for raid in get_raid_names_for_channel(after.channel.id):
         #  schedule_prio_check_update(raid, f"Nachricht im {raid}-Channel bearbeitet")
@@ -10849,9 +10896,7 @@ async def on_message(message):
     if message.author == client.user:
         return
 
-    CURRENT_GUILD_SLUG.set(
-        guild_slug_for_discord_server(getattr(message, "guild", None), guild_slug_for_channel(message.channel.id))
-    )
+    CURRENT_GUILD_SLUG.set(guild_slug_for_message(message))
 
     await handle_log_analysis_message(message)
 
