@@ -2325,6 +2325,18 @@ def discord_message_search_text(message):
     return "\n".join(part for part in parts if part)
 
 
+def format_worldbuff_overview_row(emoji, buff, zeit, gilde, werfer_text=""):
+    """Formatiert Uhrzeit und Gilde im Discord-Embed als feste Spalten."""
+    buff_text = str(buff or "").strip()
+    zeit_text = str(zeit or "").strip()
+    gilde_text = str(gilde or "").strip()
+    # Der längste angezeigte Buffname (Hakkar) hat sechs Zeichen. In einem
+    # Inline-Codeblock verwendet Discord eine Festbreitenschrift, sodass die
+    # Uhrzeiten und Gildennamen auch bei Ony, Nef und Rend exakt fluchten.
+    row = f"{buff_text:<6}  {zeit_text:<5}  {gilde_text}{werfer_text}"
+    return f"{emoji} `{row.rstrip()}`"
+
+
 def build_overview():
     sheet_buffs = import_buffs_aus_sheet()
     data = list(sheet_buffs)
@@ -2435,7 +2447,9 @@ def build_overview():
             else:
                 werfer_text = f" - ⚔️ {charakter}"
 
-        text += f"{emoji} **{buff}** {zeit} - {gilde}{werfer_text}\n"
+        text += format_worldbuff_overview_row(
+            emoji, buff, zeit, gilde, werfer_text
+        ) + "\n"
 
     return text
 
@@ -2505,7 +2519,13 @@ def current_worldbuff_announcement_block(max_lines=8):
         charakter = buff.get("charakter") or (info and info.get("charakter")) or ""
         werfer_text = f" - {'🔵' if is_lichtbringer(gilde) else '⚔️'} {charakter}" if charakter else ""
         emoji = get_buff_emoji(buff_name)
-        lines.append(f"{emoji} **{buff_name}** {buff.get('uhrzeit', '')} - {gilde}{werfer_text}")
+        lines.append(format_worldbuff_overview_row(
+            emoji,
+            buff_name,
+            buff.get("uhrzeit", ""),
+            gilde,
+            werfer_text
+        ))
         added += 1
 
     return "\n".join(lines).strip()
