@@ -76,10 +76,13 @@ NACHTLOOT_HORDENBUFF_CHANNEL_ID = int(
 NACHTLOOT_WORLDBUFF_CHANNEL_ID = int(
     os.getenv("NACHTLOOT_WORLDBUFF_CHANNEL_ID", "1327704903975440477") or 1327704903975440477
 )
-NACHTLOOT_HELP_CHANNEL_ID = int(
-    os.getenv("NACHTLOOT_HELP_CHANNEL_ID", "1533899479734947881") or 1533899479734947881
-)
 LOG_ANALYSIS_CHANNEL_ID = 1279032487628242995
+NACHTLOOT_LOG_ANALYSIS_CHANNEL_ID = int(
+    os.getenv("NACHTLOOT_LOG_ANALYSIS_CHANNEL_ID", "1533914926190428393") or 1533914926190428393
+)
+NACHTLOOT_WARCRAFT_LOG_SOURCE_CHANNEL_ID = int(
+    os.getenv("NACHTLOOT_WARCRAFT_LOG_SOURCE_CHANNEL_ID", "1327712129444221040") or 1327712129444221040
+)
 PLAYER_LOGIN_APPROVAL_CHANNEL_ID = int(os.getenv("PLAYER_LOGIN_APPROVAL_CHANNEL_ID", "0") or 0)
 WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_ID = int(os.getenv("WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_ID", "1118795108968574987") or 1118795108968574987)
 WORLDBUFF_REPLACEMENT_WORLDBUFF_CHANNEL_ID = int(os.getenv("WORLDBUFF_REPLACEMENT_WORLDBUFF_CHANNEL_ID", str(POST_CHANNEL_ID)) or POST_CHANNEL_ID)
@@ -111,6 +114,8 @@ HORDENBUFF_CHANNEL_IDS = {
 
 LOG_ANALYSIS_CHANNEL_IDS = {
     LOG_ANALYSIS_CHANNEL_ID,
+    NACHTLOOT_LOG_ANALYSIS_CHANNEL_ID,
+    NACHTLOOT_WARCRAFT_LOG_SOURCE_CHANNEL_ID,
     1509236359141785600,  # BWL Log Channel
     1509236588410834965,  # MC Log Channel
     1509235847109804082,  # Naxx Log Channel
@@ -321,7 +326,8 @@ CHANNEL_GUILD_SLUGS = {
     PANEM_HORDENBUFF_CHANNEL_ID: PANEM_GUILD_SLUG,
     NACHTLOOT_HORDENBUFF_CHANNEL_ID: NACHTLOOT_GUILD_SLUG,
     NACHTLOOT_WORLDBUFF_CHANNEL_ID: NACHTLOOT_GUILD_SLUG,
-    NACHTLOOT_HELP_CHANNEL_ID: NACHTLOOT_GUILD_SLUG
+    NACHTLOOT_LOG_ANALYSIS_CHANNEL_ID: NACHTLOOT_GUILD_SLUG,
+    NACHTLOOT_WARCRAFT_LOG_SOURCE_CHANNEL_ID: NACHTLOOT_GUILD_SLUG
 }
 
 # Alter CSV-Export bleibt nur noch als expliziter Notfall-Fallback.
@@ -528,6 +534,16 @@ async def refresh_guild_registry():
     GUILD_REGISTRY = registry
     DISCORD_GUILD_SLUGS = discord_map
     WORLDBUFF_GUILD_SLUGS = configured_worldbuff_guild_slugs()
+    for slug_value, data in GUILD_REGISTRY.items():
+        layout = data.get("layout") if isinstance(data, dict) else {}
+        if not isinstance(layout, dict):
+            layout = {}
+        for configured_key in ("logSourceChannelId", "logAnalysisChannelId"):
+            log_channel_id = clean_channel_id_value(layout.get(configured_key))
+            if log_channel_id:
+                numeric_channel_id = int(log_channel_id)
+                LOG_ANALYSIS_CHANNEL_IDS.add(numeric_channel_id)
+                CHANNEL_GUILD_SLUGS[numeric_channel_id] = slug_value
     print(
         "Bot-Gilden geladen: "
         + (", ".join(f"{slug}#{data.get('discordGuildId') or '-'}" for slug, data in GUILD_REGISTRY.items()) or "keine")
