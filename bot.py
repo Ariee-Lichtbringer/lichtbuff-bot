@@ -356,6 +356,7 @@ WORLDBUFF_PLAN_CSV_URL = "https://docs.google.com/spreadsheets/d/1o7fzOAn9wC0iWc
 WORLDBUFF_PLAN_CACHE_CONTENT = ""
 WORLDBUFF_PLAN_CACHE_TIME = None
 DATA_FILE = "worldbuffs.json"
+WB_POSTER_CACHE_FILE = "wb_poster_worldbuffs.json"
 DELETED_WORLDBUFF_FILE = "deleted_worldbuffs.json"
 POST_FILE = "last_post.json"
 HORDENBUFF_FILE = "hordenbuff.json"
@@ -400,6 +401,30 @@ BUFF_EMOJIS = {
     "Nefarian": "🔴",
     "Rend": "🟠"
 }
+
+# Eigene Discord-Emojis der jeweiligen Gilde. Discord liefert beim Start die
+# fuer den Bot sichtbaren Server-Emojis; falls eines fehlt, verwenden wir
+# weiterhin den bisherigen farbigen Punkt als sicheren Ersatz.
+BUFF_CUSTOM_EMOJI_NAMES = {
+    "Hakkar": "zgbuff",
+    "ZG": "zgbuff",
+    "Ony": "onybuff",
+    "Onyxia": "onybuff",
+    "Nef": "neffbuff",
+    "Nefarian": "neffbuff",
+    "Rend": "rendbuff",
+}
+
+
+def get_buff_emoji(buff):
+    normalized = normalize_buff(buff)
+    emoji_name = BUFF_CUSTOM_EMOJI_NAMES.get(normalized)
+    if emoji_name:
+        for discord_guild in getattr(client, "guilds", []):
+            emoji = discord.utils.get(getattr(discord_guild, "emojis", []), name=emoji_name)
+            if emoji is not None:
+                return emoji
+    return BUFF_EMOJIS.get(normalized, BUFF_EMOJIS.get(str(buff or ""), "⚪"))
 
 TAG_LANG = {
     "Mo": "Montag",
@@ -915,7 +940,10 @@ def get_gildenleitung_worldbuff_rows(days="all"):
 
 def get_open_worldbuff_signup_slots(limit=25):
     today = datetime.now(BERLIN_TZ).date()
-    max_date = today + timedelta(days=92)
+    # Nachtloot plant seine offenen WB-Slots mehrere Monate im Voraus.
+    # 180 Tage stellen sicher, dass zehn wöchentliche Slots je Buff im
+    # Discord-Dropdown auswählbar bleiben.
+    max_date = today + timedelta(days=180)
     slots = []
     seen = set()
     row_order = 0
@@ -1076,7 +1104,7 @@ class WorldbuffSignupSelect(discord.ui.Select):
                 label=label[:100],
                 description=description[:100],
                 value=str(index),
-                emoji=BUFF_EMOJIS.get(slot.get("buff"), "⚪")
+                emoji=get_buff_emoji(slot.get("buff"))
             ))
         buff_label = normalize_buff(buff_filter) if buff_filter else "Worldbuff"
         super().__init__(
@@ -1141,9 +1169,9 @@ class WorldbuffBuffButton(discord.ui.Button):
 class WorldbuffBuffPickerView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(WorldbuffBuffButton("Hakkar", "Hakkar", discord.ButtonStyle.success, "🟢"))
-        self.add_item(WorldbuffBuffButton("Ony", "Ony", discord.ButtonStyle.danger, "🔴"))
-        self.add_item(WorldbuffBuffButton("Nef", "Nef", discord.ButtonStyle.danger, "🔴"))
+        self.add_item(WorldbuffBuffButton("Hakkar", "Hakkar", discord.ButtonStyle.success, get_buff_emoji("Hakkar")))
+        self.add_item(WorldbuffBuffButton("Ony", "Ony", discord.ButtonStyle.danger, get_buff_emoji("Ony")))
+        self.add_item(WorldbuffBuffButton("Nef", "Nef", discord.ButtonStyle.danger, get_buff_emoji("Nef")))
 
 
 def clean_hordenbuff_name(value):
@@ -1306,19 +1334,35 @@ async def hordenbuff_signup_core(ally_char="", horde_char="", author_name=""):
     return result_text
 
 
-class RendSignupModal(discord.ui.Modal, title="Rend anmelden"):
-    ally_char = discord.ui.TextInput(
-        label="Ally-Char",
-        placeholder="z. B. Ariee",
-        required=False,
-        max_length=50
-    )
-    horde_char = discord.ui.TextInput(
-        label="Horden-Char / Helfer",
-        placeholder="z. B. Miimi",
-        required=False,
-        max_length=50
-    )
+class RendActionModal(discord.ui.Modal):
+    def __init__(self, mode):
+        self.mode = mode
+        titles = {
+            "ally": "Rend benötigt",
+            "helper": "Als Helfer anmelden",
+            "takeover": "Direkte Übernahme",
+            "delete": "Rend-Eintrag entfernen",
+        }
+        super().__init__(title=titles.get(mode, "Rend-Anmeldung"), timeout=180)
+
+        self.ally_char = None
+        self.horde_char = None
+        if mode in {"ally", "takeover", "delete"}:
+            self.ally_char = discord.ui.TextInput(
+                label="Ally-Char" if mode != "delete" else "Charaktername entfernen",
+                placeholder="z. B. Ariee",
+                required=True,
+                max_length=50,
+            )
+            self.add_item(self.ally_char)
+        if mode in {"helper", "takeover"}:
+            self.horde_char = discord.ui.TextInput(
+                label="Horden-Char / Helfer",
+                placeholder="z. B. Miimi",
+                required=True,
+                max_length=50,
+            )
+            self.add_item(self.horde_char)
 
     async def on_submit(self, interaction):
         interaction_guild_slug = guild_slug_for_discord_server(
@@ -1328,23 +1372,64 @@ class RendSignupModal(discord.ui.Modal, title="Rend anmelden"):
         token = CURRENT_GUILD_SLUG.set(interaction_guild_slug)
         try:
             await interaction.response.defer(ephemeral=True)
-            result_text = await hordenbuff_signup_core(
-                ally_char=str(self.ally_char.value or ""),
-                horde_char=str(self.horde_char.value or ""),
-                author_name=interaction.user.display_name
-            )
+            ally_char = str(self.ally_char.value or "") if self.ally_char else ""
+            horde_char = str(self.horde_char.value or "") if self.horde_char else ""
+            if self.mode == "delete":
+                result_text = await hordenbuff_delete_core(ally_char)
+            else:
+                result_text = await hordenbuff_signup_core(
+                    ally_char=ally_char,
+                    horde_char=horde_char,
+                    author_name=interaction.user.display_name
+                )
             await interaction.followup.send(result_text, ephemeral=True)
         finally:
             CURRENT_GUILD_SLUG.reset(token)
 
 
+class RendActionSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="Rend-Aktion auswählen …",
+            min_values=1,
+            max_values=1,
+            custom_id="hordenbuff:rend_action",
+            options=[
+                discord.SelectOption(
+                    label="Ich benötige Rend",
+                    description="Ally-Char für den aktiven Termin eintragen",
+                    value="ally",
+                    emoji=get_buff_emoji("Rend"),
+                ),
+                discord.SelectOption(
+                    label="Ich helfe mit einem Horden-Char",
+                    description="Als freier Helfer eintragen oder automatisch zuteilen",
+                    value="helper",
+                    emoji="🛡️",
+                ),
+                discord.SelectOption(
+                    label="Bestimmten Spieler übernehmen",
+                    description="Ally-Char und Horden-Helfer direkt zuordnen",
+                    value="takeover",
+                    emoji="🤝",
+                ),
+                discord.SelectOption(
+                    label="Meinen Eintrag entfernen",
+                    description="Ally- oder Horden-Char aus dem aktiven Termin löschen",
+                    value="delete",
+                    emoji="🗑️",
+                ),
+            ],
+        )
+
+    async def callback(self, interaction):
+        await interaction.response.send_modal(RendActionModal(self.values[0]))
+
+
 class RendSignupView(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=180)
-
-    @discord.ui.button(label="Rend-Anmeldung öffnen", style=discord.ButtonStyle.success)
-    async def open_signup(self, interaction, button):
-        await interaction.response.send_modal(RendSignupModal())
+        super().__init__(timeout=None)
+        self.add_item(RendActionSelect())
 
 
 def get_discord_retry_after(error, fallback=DISCORD_RATE_LIMIT_FALLBACK_SECONDS):
@@ -1443,8 +1528,42 @@ def filter_worldbuff_rows_for_current_guild(rows):
         return list(rows or [])
     return [
         row for row in rows or []
-        if is_own_worldbuff_guild((row or {}).get("gilde", ""))
+        if (
+            is_own_worldbuff_guild((row or {}).get("gilde", ""))
+            or (
+                current_guild_slug() == NACHTLOOT_GUILD_SLUG
+                and str((row or {}).get("source") or "").strip().casefold() == "wb_poster"
+            )
+        )
     ]
+
+
+def get_shared_wb_poster_rows():
+    """WB-Poster-Cache des Hauptservers fuer Nachtloot mitverwenden."""
+    rows = load_json(WB_POSTER_CACHE_FILE, [])
+    if not rows:
+        # Kompatibilitaet mit dem bisherigen Cache bis der naechste
+        # WB-Poster-Post eingelesen wurde.
+        rows = load_json(DATA_FILE, [])
+    return [
+        {**row, "source": "wb_poster"}
+        for row in rows or []
+        if isinstance(row, dict) and not is_deleted_worldbuff(row)
+    ]
+
+
+def merge_shared_wb_poster_rows(data):
+    poster_rows = get_shared_wb_poster_rows()
+    merge_ticker_buffs_preserving_railway(data, poster_rows)
+
+    # Wenn derselbe Termin bereits aus Railway vorhanden ist, fuegt der
+    # Deduplizierer keine zweite Zeile an. Wir kennzeichnen ihn trotzdem als
+    # WB-Poster-Termin, damit er im Nachtwächter-Post sichtbar bleibt.
+    poster_keys = {make_buff_key(row) for row in poster_rows}
+    poster_identity = {make_overview_dedupe_key(row) for row in poster_rows}
+    for row in data:
+        if make_buff_key(row) in poster_keys or make_overview_dedupe_key(row) in poster_identity:
+            row["source"] = "wb_poster"
 
 
 def is_lichtbringer_buff(buff_data):
@@ -1944,11 +2063,7 @@ def parse_ticker_message(text):
     date_words = r"(\d{1,2}\.\d{1,2}\.\d{4})"
     day_words = r"(?:Mo|Di|Mi|Do|Fr|Sa|So|Montag|Dienstag|Mittwoch|Donnerstag|Freitag|Samstag|Sonntag)"
     time_words = r"(\d{1,2}:\d{2})"
-    # WBPoster verwendet je nach Version unterschiedliche Symbole vor dem
-    # Buffnamen (z. B. ❤️, 🐉 oder 🟦). Deshalb nicht nur eine
-    # feste Emoji-Liste erlauben, sondern allgemein alle vorangestellten
-    # Nicht-Wortzeichen. So bleiben auch kuenftige Emoji-Aenderungen lesbar.
-    prefix = r"^(?:[^\w\d*]+\s*)?"
+    prefix = r"^(?:(?:<a?:[A-Za-z0-9_]+:\d+>|[🟢🔴🟠⚪🟡✅❌🔥🌿☠️💀•\-–—])\s*)?"
     suffix = r"\s+(.+)$"
 
     patterns = [
@@ -1998,7 +2113,8 @@ def parse_ticker_message(text):
                 "datum": datum,
                 "tag": make_tag_from_date(datum),
                 "uhrzeit": uhrzeit,
-                "gilde": re.sub(r"^(?:Mo|Di|Mi|Do|Fr|Sa|So|Montag|Dienstag|Mittwoch|Donnerstag|Freitag|Samstag|Sonntag)\s+", "", gilde.strip(), flags=re.IGNORECASE)
+                "gilde": re.sub(r"^(?:Mo|Di|Mi|Do|Fr|Sa|So|Montag|Dienstag|Mittwoch|Donnerstag|Freitag|Samstag|Sonntag)\s+", "", gilde.strip(), flags=re.IGNORECASE),
+                "source": "wb_poster",
             })
 
     return buffs
@@ -2209,6 +2325,18 @@ def discord_message_search_text(message):
     return "\n".join(part for part in parts if part)
 
 
+def format_worldbuff_overview_row(emoji, buff, zeit, gilde, werfer_text=""):
+    """Formatiert Uhrzeit und Gilde im Discord-Embed als feste Spalten."""
+    buff_text = str(buff or "").strip()
+    zeit_text = str(zeit or "").strip()
+    gilde_text = str(gilde or "").strip()
+    # Der längste angezeigte Buffname (Hakkar) hat sechs Zeichen. In einem
+    # Inline-Codeblock verwendet Discord eine Festbreitenschrift, sodass die
+    # Uhrzeiten und Gildennamen auch bei Ony, Nef und Rend exakt fluchten.
+    row = f"{buff_text:<6}  {zeit_text:<5}  {gilde_text}{werfer_text}"
+    return f"{emoji} `{row.rstrip()}`"
+
+
 def build_overview():
     sheet_buffs = import_buffs_aus_sheet()
     data = list(sheet_buffs)
@@ -2218,6 +2346,8 @@ def build_overview():
     ]
     if local_ticker_buffs:
         merge_ticker_buffs_preserving_railway(data, local_ticker_buffs)
+    if current_guild_slug() == NACHTLOOT_GUILD_SLUG:
+        merge_shared_wb_poster_rows(data)
     data = filter_worldbuff_rows_for_current_guild(data)
 
     werfer = import_werfer_aus_sheet()
@@ -2226,7 +2356,8 @@ def build_overview():
         return "📢 **Worldbuff Übersicht**\n\nKeine Worldbuffs gefunden."
 
     heute = datetime.now(BERLIN_TZ).date()
-    ende = heute + timedelta(days=7)
+    # Einschliesslich heute genau fuenf Kalendertage anzeigen.
+    ende = heute + timedelta(days=4)
 
     gefiltert = []
     heutige_buffs = 0
@@ -2286,7 +2417,7 @@ def build_overview():
 
     text = "📢 **Worldbuffs**"
     text += f" · Stand {now}\n"
-    text += "_Nächste 7 Tage · Eintragen per `!worldbuff`_\n"
+    text += "_Nächste 5 Tage · Eintragen über die Auswahl unten_\n"
 
     current_date = ""
 
@@ -2298,7 +2429,7 @@ def build_overview():
         buff = normalize_buff(b["buff"])
         gilde = b["gilde"]
 
-        emoji = BUFF_EMOJIS.get(buff, "⚪")
+        emoji = get_buff_emoji(buff)
 
         if datum != current_date:
             text += f"\n**{tag_lang}, {datum}**\n"
@@ -2316,7 +2447,9 @@ def build_overview():
             else:
                 werfer_text = f" - ⚔️ {charakter}"
 
-        text += f"{emoji} **{buff}** {zeit} - {gilde}{werfer_text}\n"
+        text += format_worldbuff_overview_row(
+            emoji, buff, zeit, gilde, werfer_text
+        ) + "\n"
 
     return text
 
@@ -2330,6 +2463,8 @@ def current_worldbuff_announcement_block(max_lines=8):
     ]
     if local_ticker_buffs:
         merge_ticker_buffs_preserving_railway(data, local_ticker_buffs)
+    if current_guild_slug() == NACHTLOOT_GUILD_SLUG:
+        merge_shared_wb_poster_rows(data)
     data = filter_worldbuff_rows_for_current_guild(data)
 
     if not data:
@@ -2337,7 +2472,7 @@ def current_worldbuff_announcement_block(max_lines=8):
 
     werfer = import_werfer_aus_sheet()
     today = datetime.now(BERLIN_TZ).date()
-    max_date = today + timedelta(days=7)
+    max_date = today + timedelta(days=4)
     rows = []
     seen = set()
 
@@ -2383,8 +2518,14 @@ def current_worldbuff_announcement_block(max_lines=8):
         info = werfer.get(key)
         charakter = buff.get("charakter") or (info and info.get("charakter")) or ""
         werfer_text = f" - {'🔵' if is_lichtbringer(gilde) else '⚔️'} {charakter}" if charakter else ""
-        emoji = BUFF_EMOJIS.get(buff_name, "⚪")
-        lines.append(f"{emoji} **{buff_name}** {buff.get('uhrzeit', '')} - {gilde}{werfer_text}")
+        emoji = get_buff_emoji(buff_name)
+        lines.append(format_worldbuff_overview_row(
+            emoji,
+            buff_name,
+            buff.get("uhrzeit", ""),
+            gilde,
+            werfer_text
+        ))
         added += 1
 
     return "\n".join(lines).strip()
@@ -2422,7 +2563,7 @@ def build_worldbuff_signup_embed():
         if counts[buff] > len(preview):
             value += f"\n… und {counts[buff] - len(preview)} weitere"
         embed.add_field(
-            name=f"{BUFF_EMOJIS.get(buff, '⚪')} {buff}",
+            name=f"{get_buff_emoji(buff)} {buff}",
             value=value,
             inline=True
         )
@@ -2433,6 +2574,25 @@ def build_worldbuff_signup_embed():
 
 def build_worldbuff_guide_embed():
     return build_worldbuff_signup_embed()
+
+
+def build_worldbuff_post_embed(overview_text):
+    embed = build_worldbuff_signup_embed()
+    signup_text = str(embed.description or "").strip()
+    overview_lines = str(overview_text or "").strip().splitlines()
+
+    # Die Ueberschrift steht bereits im Embed-Titel und wird nicht doppelt
+    # ausgegeben. Alle weiteren Inhalte bleiben innerhalb desselben Embeds.
+    if overview_lines and overview_lines[0].startswith("📢 **Worldbuff"):
+        overview_lines = overview_lines[1:]
+    overview = "\n".join(overview_lines).strip()
+    description = f"{overview}\n\n**Termin eintragen**\n{signup_text}".strip()
+    if len(description) > 4096:
+        description = description[:4092].rstrip() + " …"
+
+    embed.title = "Worldbuffs & Anmeldung"
+    embed.description = description
+    return embed
 
 
 def build_hordenbuff_guide_embed():
@@ -2496,7 +2656,7 @@ def is_worldbuff_overview_message(message):
         return True
 
     return any(
-        embed.title == "Worldbuff eintragen"
+        embed.title in {"Worldbuff eintragen", "Worldbuffs & Anmeldung"}
         for embed in getattr(message, "embeds", []) or []
     )
 
@@ -2507,7 +2667,7 @@ def is_hordenbuff_overview_message(message):
         return True
 
     return any(
-        embed.title == "Hordenbuffs eintragen"
+        embed.title == "Hordenbuffs eintragen" or "Hordenbuff-Anmeldung" in str(embed.title or "")
         for embed in getattr(message, "embeds", []) or []
     )
 
@@ -2583,6 +2743,13 @@ async def sync_recent_ticker_messages(limit=None):
 
     found_buffs = [buff for buff in found_buffs if not is_deleted_worldbuff(buff)]
 
+    if found_buffs:
+        # Ungefilterter gemeinsamer Poster-Cache: enthaelt auch Lichtbringer
+        # und alle weiteren im WB-Poster genannten Gilden.
+        shared_poster_rows = await asyncio.to_thread(load_json, WB_POSTER_CACHE_FILE, [])
+        merge_buffs_into_data(shared_poster_rows, found_buffs)
+        await asyncio.to_thread(save_json, WB_POSTER_CACHE_FILE, shared_poster_rows)
+
     if not found_buffs and not cached_rows and not readable_ticker_channels:
         return 0
 
@@ -2626,7 +2793,7 @@ async def update_worldbuff_post(sync_ticker=True, force_repost=False):
     if sync_ticker:
         await sync_recent_ticker_messages()
     text = await asyncio.to_thread(build_overview)
-    guide_embed = await asyncio.to_thread(build_worldbuff_guide_embed)
+    guide_embed = await asyncio.to_thread(build_worldbuff_post_embed, text)
     signup_view = WorldbuffBuffPickerView()
     existing_messages = await fetch_worldbuff_post_messages(channel)
     known_message_ids = {message.id for message in existing_messages}
@@ -2648,37 +2815,14 @@ async def update_worldbuff_post(sync_ticker=True, force_repost=False):
                 print(f"Worldbuff-Uebersicht konnte zum Neu-Posten nicht geloescht werden: {e}")
         existing_messages = []
 
-    if len(text) <= 1900:
-        if existing_messages:
-            msg = existing_messages[0]
-            await msg.edit(content=text, embed=guide_embed, view=signup_view)
-            await delete_extra_messages(existing_messages)
-        else:
-            msg = await send_silent(channel, text, embed=guide_embed, view=signup_view)
-        save_json(worldbuff_post_file(), {"message_id": msg.id, "message_ids": [msg.id]})
-        return 1
+    if existing_messages:
+        msg = existing_messages[0]
+        await msg.edit(content="", embed=guide_embed, view=signup_view)
+        await delete_extra_messages(existing_messages)
     else:
-        chunks = [text[i:i + 1900] for i in range(0, len(text), 1900)]
-        last_msg = None
-        message_ids = []
-
-        for index, chunk in enumerate(chunks):
-            if index < len(existing_messages):
-                last_msg = existing_messages[index]
-                await last_msg.edit(content=chunk, embed=guide_embed if index == 0 else None, view=signup_view if index == 0 else None)
-            else:
-                last_msg = await send_silent(channel, chunk, embed=guide_embed if index == 0 else None, view=signup_view if index == 0 else None)
-            message_ids.append(last_msg.id)
-
-        for old_msg in existing_messages[len(chunks):]:
-            try:
-                await old_msg.delete()
-            except:
-                pass
-
-        if last_msg:
-            save_json(worldbuff_post_file(), {"message_id": last_msg.id, "message_ids": message_ids})
-        return len(message_ids)
+        msg = await send_silent(channel, embed=guide_embed, view=signup_view)
+    save_json(worldbuff_post_file(), {"message_id": msg.id, "message_ids": [msg.id]})
+    return 1
 
 
 async def sync_recent_ticker_messages_for_all_guilds(limit=None):
@@ -3171,7 +3315,7 @@ def build_hordenbuff_text(rend, data):
     if upcoming:
         for item in upcoming:
             item_tag = TAG_LANG.get(item.get("tag", ""), item.get("tag", ""))
-            text += f"🟠 {item_tag}, {item['datum']} um {item['uhrzeit']}\n"
+            text += f"{get_buff_emoji('Rend')} {item_tag}, {item['datum']} um {item['uhrzeit']}\n"
     else:
         text += "-\n"
 
@@ -3207,23 +3351,29 @@ def build_hordenbuff_text(rend, data):
         text += "-\n"
 
     text += "\n━━━━━━━━━━━━━━━\n"
-    text += "📋 **Befehle**\n\n"
-
-    text += "✅ **Einfach anmelden:**\n"
-    text += "`!rend`\n"
-    text += "Dann Button klicken und im Formular eintragen:\n"
-    text += "- Ally-Char = braucht Rend\n"
-    text += "- Horden-Char = kann helfen\n"
-    text += "- Beide Felder = Horden-Char übernimmt Ally-Char\n\n"
-
-    text += "🗑️ **Eintrag löschen:**\n"
-    text += "`!renddel Spielername`\n"
-    text += "Beispiel: `!renddel Ariee`\n\n"
-
-    text += "🔄 **Liste aktualisieren:**\n"
-    text += "`!hordenbuff`\n"
+    text += "📋 **Anmeldung ohne Befehle**\n"
+    text += "Wähle unten im Menü, ob du Rend benötigst, helfen möchtest, "
+    text += "jemanden direkt übernimmst oder deinen Eintrag entfernst.\n"
 
     return text
+
+
+def build_hordenbuff_post_embed(rend, data):
+    text = build_hordenbuff_text(rend, data)
+    lines = text.splitlines()
+    if lines and lines[0].startswith("🪓 **Horde-Rend"):
+        lines = lines[1:]
+    description = "\n".join(lines).strip()
+    if len(description) > 4096:
+        description = description[:4092].rstrip() + " …"
+
+    embed = discord.Embed(
+        title=f"{get_buff_emoji('Rend')} Hordenbuff-Anmeldung",
+        description=description,
+        color=0xF97316,
+    )
+    embed.set_footer(text="Alle Aktionen funktionieren über das Auswahlmenü unter diesem Embed.")
+    return embed
 
 
 async def update_hordenbuff_post(force=False):
@@ -3276,8 +3426,8 @@ async def update_hordenbuff_post(force=False):
                 continue
 
             data = await asyncio.to_thread(merge_hordenbuff_sheet_data, rend, load_hordenbuff_state(rend))
-            text = build_hordenbuff_text(rend, data)
-            guide_embed = build_hordenbuff_guide_embed()
+            guide_embed = build_hordenbuff_post_embed(rend, data)
+            signup_view = RendSignupView()
             message_id = get_hordenbuff_message_id(data, channel_id)
             found_messages = await find_recent_own_messages(channel, is_hordenbuff_overview_message, limit=100)
 
@@ -3295,9 +3445,9 @@ async def update_hordenbuff_post(force=False):
                     msg = found_messages[0] if found_messages else None
 
                 if not msg:
-                    msg = await send_silent(channel, text, embed=guide_embed)
+                    msg = await send_silent(channel, embed=guide_embed, view=signup_view)
                 else:
-                    await msg.edit(content=text, embed=guide_embed)
+                    await msg.edit(content="", embed=guide_embed, view=signup_view)
 
                 duplicates = [message for message in found_messages if message.id != msg.id]
                 await delete_extra_messages([msg] + duplicates)
@@ -3522,16 +3672,15 @@ async def set_hordenbuff_char(message, charakter):
     await delete_command_message(message)
 
 
-async def delete_rend_entry(message, charakter):
+async def hordenbuff_delete_core(charakter):
     rend = await asyncio.to_thread(get_next_horden_rend_safe)
 
     if not rend:
-        await send_temp(
-            message.channel,
-            "⚠️ Es wurde kein kommender Rend-Termin im Sheet gefunden."
-        )
-        await delete_command_message(message)
-        return
+        return "⚠️ Es wurde kein kommender Rend-Termin gefunden."
+
+    charakter = clean_hordenbuff_name(charakter)
+    if not charakter:
+        return "⚠️ Bitte gib den Charakter an, der entfernt werden soll."
 
     data = await asyncio.to_thread(merge_hordenbuff_sheet_data, rend, load_hordenbuff_state(rend))
     charakter_key = hordenbuff_name_key(charakter)
@@ -3560,6 +3709,12 @@ async def delete_rend_entry(message, charakter):
     await asyncio.to_thread(hordenbuff_sheet_delete, rend, charakter)
 
     await update_hordenbuff_post(force=True)
+    return f"✅ **{charakter}** wurde aus der Rend-Anmeldung entfernt."
+
+
+async def delete_rend_entry(message, charakter):
+    result_text = await hordenbuff_delete_core(charakter)
+    await send_temp(message.channel, result_text)
     await delete_command_message(message)
 
 
@@ -10483,6 +10638,10 @@ async def handle_ticker_update(message):
     if not new_buffs:
         return
 
+    poster_rows = load_json(WB_POSTER_CACHE_FILE, [])
+    merge_buffs_into_data(poster_rows, new_buffs)
+    save_json(WB_POSTER_CACHE_FILE, poster_rows)
+
     cached_rows = load_json(worldbuff_file(), [])
     railway_rows = await asyncio.to_thread(import_buffs_aus_sheet)
     combined_rows = list(railway_rows)
@@ -10546,6 +10705,10 @@ async def on_ready():
     if not hasattr(client, "worldbuff_picker_view_registered"):
         client.worldbuff_picker_view_registered = True
         client.add_view(WorldbuffBuffPickerView())
+
+    if not hasattr(client, "hordenbuff_action_view_registered"):
+        client.hordenbuff_action_view_registered = True
+        client.add_view(RendSignupView())
 
     if not hasattr(client, "raid_signup_view_restore_started"):
         client.raid_signup_view_restore_started = True
