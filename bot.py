@@ -392,12 +392,7 @@ LICHTLOOT_URL = "https://lichtloot.de"
 DEFAULT_RAID_HELPER_CHANNEL_ID = "1508478036398571601"
 PUBLIC_API_CACHE_SECONDS = int(os.getenv("PUBLIC_API_CACHE_SECONDS", "45"))
 PUBLIC_API_PORT = int(os.getenv("PORT") or os.getenv("PUBLIC_API_PORT", "8000"))
-DELETE_WORLDBUFF_POSTER_SOURCE_MESSAGES = os.getenv("DELETE_WORLDBUFF_POSTER_SOURCE_MESSAGES", "true").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "ja",
-}
+DELETE_WORLDBUFF_POSTER_SOURCE_MESSAGES = True
 
 BERLIN_TZ = pytz.timezone("Europe/Berlin")
 
@@ -704,9 +699,16 @@ def hordenbuff_channel_rank(channel):
 
 
 def ticker_channel_ids_for_current_guild():
-    if current_guild_slug() == PANEM_GUILD_SLUG:
-        return {PANEM_TICKER_CHANNEL_ID}
-    return {TICKER_CHANNEL_ID, POST_CHANNEL_ID}
+    guild_slug = current_guild_slug()
+    channel_ids = {PANEM_TICKER_CHANNEL_ID} if guild_slug == PANEM_GUILD_SLUG else {TICKER_CHANNEL_ID, POST_CHANNEL_ID}
+    for discord_guild in getattr(client, "guilds", []) or []:
+        if guild_slug_for_discord_server(discord_guild, "") != guild_slug:
+            continue
+        for channel in getattr(discord_guild, "text_channels", []) or []:
+            name = str(getattr(channel, "name", "") or "").strip().casefold().replace("-", "").replace("_", "")
+            if "worldbuff" in name or "wordbuff" in name or "wbticker" in name:
+                channel_ids.add(int(channel.id))
+    return channel_ids
 
 
 def clean_channel_id_value(value):
@@ -916,7 +918,7 @@ def is_wbposter_bot_message(message):
         str(getattr(author, "display_name", "") or ""),
         str(getattr(author, "global_name", "") or ""),
     ]).casefold()
-    return bool(getattr(author, "bot", False) and "wbposter" in author_name.replace(" ", ""))
+    return "wbposter" in author_name.replace(" ", "")
 
 
 def get_hordenbuff_message_id(data, channel_id):
@@ -2748,6 +2750,7 @@ async def sync_recent_ticker_messages(limit=None):
 
     cached_rows = await asyncio.to_thread(load_json, worldbuff_file(), [])
     found_buffs = []
+    wbposter_messages_to_delete = []
     readable_ticker_channels = 0
 
     for channel_id in ticker_channel_ids_for_current_guild():
@@ -2775,6 +2778,8 @@ async def sync_recent_ticker_messages(limit=None):
 
             if latest_ticker_message:
                 found_buffs.extend(latest_buffs)
+                if DELETE_WORLDBUFF_POSTER_SOURCE_MESSAGES and is_wbposter_bot_message(latest_ticker_message):
+                    wbposter_messages_to_delete.append(latest_ticker_message)
                 print(
                     f"Letzten Ticker-Post {latest_ticker_message.id} aus Channel "
                     f"{channel_id} gelesen: {len(latest_buffs)} Buff-Zeilen."
@@ -2821,6 +2826,17 @@ async def sync_recent_ticker_messages(limit=None):
         buff for buff in combined_rows
         if not is_own_worldbuff(buff)
     ])
+
+    for wbposter_message in wbposter_messages_to_delete:
+        try:
+            await wbposter_message.delete()
+            print(f"WBPoster-Nachricht {wbposter_message.id} nach erfolgreicher Übernahme gelöscht.")
+        except discord.Forbidden:
+            print(f"WBPoster-Nachricht {wbposter_message.id} konnte nicht gelöscht werden: Recht 'Nachrichten verwalten' fehlt.")
+        except discord.NotFound:
+            pass
+        except Exception as error:
+            print(f"WBPoster-Nachricht {wbposter_message.id} konnte nicht gelöscht werden: {error}")
 
     print(f"Letzte Ticker-Posts geprüft: {len(found_buffs)} Buff-Zeilen gefunden, {added} neu gespeichert.")
     return added
@@ -10763,7 +10779,7 @@ async def prio_sync_loop():
         await asyncio.sleep(PRIO_SYNC_INTERVAL_SECONDS)
 
 async def handle_ticker_update(message):
-    if not is_ticker_channel(message.channel.id):
+    if not is_ticker_channel(message.channel.id) and not is_wbposter_bot_message(message):
         return
 
     message_text = discord_message_search_text(message)
