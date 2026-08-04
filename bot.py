@@ -78,6 +78,12 @@ NACHTLOOT_WORLDBUFF_CHANNEL_ID = int(
     os.getenv("NACHTLOOT_WORLDBUFF_CHANNEL_ID", "1327704903975440477") or 1327704903975440477
 )
 LOG_ANALYSIS_CHANNEL_ID = 1279032487628242995
+NACHTLOOT_LOG_ANALYSIS_CHANNEL_ID = int(
+    os.getenv("NACHTLOOT_LOG_ANALYSIS_CHANNEL_ID", "1533914926190428393") or 1533914926190428393
+)
+NACHTLOOT_WARCRAFT_LOG_SOURCE_CHANNEL_ID = int(
+    os.getenv("NACHTLOOT_WARCRAFT_LOG_SOURCE_CHANNEL_ID", "1327712129444221040") or 1327712129444221040
+)
 PLAYER_LOGIN_APPROVAL_CHANNEL_ID = int(os.getenv("PLAYER_LOGIN_APPROVAL_CHANNEL_ID", "0") or 0)
 WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_ID = int(os.getenv("WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_ID", "1118795108968574987") or 1118795108968574987)
 WORLDBUFF_REPLACEMENT_WORLDBUFF_CHANNEL_ID = int(os.getenv("WORLDBUFF_REPLACEMENT_WORLDBUFF_CHANNEL_ID", str(POST_CHANNEL_ID)) or POST_CHANNEL_ID)
@@ -109,6 +115,8 @@ HORDENBUFF_CHANNEL_IDS = {
 
 LOG_ANALYSIS_CHANNEL_IDS = {
     LOG_ANALYSIS_CHANNEL_ID,
+    NACHTLOOT_LOG_ANALYSIS_CHANNEL_ID,
+    NACHTLOOT_WARCRAFT_LOG_SOURCE_CHANNEL_ID,
     1509236359141785600,  # BWL Log Channel
     1509236588410834965,  # MC Log Channel
     1509235847109804082,  # Naxx Log Channel
@@ -322,7 +330,10 @@ DISCORD_GUILD_SLUGS = {
 CHANNEL_GUILD_SLUGS = {
     PANEM_TICKER_CHANNEL_ID: PANEM_GUILD_SLUG,
     PANEM_HORDENBUFF_CHANNEL_ID: PANEM_GUILD_SLUG,
-    NACHTLOOT_HORDENBUFF_CHANNEL_ID: NACHTLOOT_GUILD_SLUG
+    NACHTLOOT_HORDENBUFF_CHANNEL_ID: NACHTLOOT_GUILD_SLUG,
+    NACHTLOOT_WORLDBUFF_CHANNEL_ID: NACHTLOOT_GUILD_SLUG,
+    NACHTLOOT_LOG_ANALYSIS_CHANNEL_ID: NACHTLOOT_GUILD_SLUG,
+    NACHTLOOT_WARCRAFT_LOG_SOURCE_CHANNEL_ID: NACHTLOOT_GUILD_SLUG
 }
 
 # Alter CSV-Export bleibt nur noch als expliziter Notfall-Fallback.
@@ -441,11 +452,9 @@ TAG_LANG = {
 
 intents = discord.Intents.default()
 intents.message_content = True
-# Der Hauptbot muss auch dann starten, wenn der privilegierte Members-Intent
-# in der Discord-Anwendung noch nicht freigeschaltet wurde. Rollenbasierte
-# Mitgliederlisten funktionieren erst wieder, wenn der Intent im Developer
-# Portal aktiviert und DISCORD_MEMBERS_INTENT=true gesetzt wurde.
-intents.members = os.getenv("DISCORD_MEMBERS_INTENT", "false").strip().lower() in {
+# Für die vertrauliche SpielerLogin-Freigabe muss der Bot Mitglieder der
+# Discord-Rolle "Offiziere" ermitteln und ihnen direkt schreiben können.
+intents.members = os.getenv("DISCORD_MEMBERS_INTENT", "true").strip().lower() in {
     "1", "true", "yes", "ja", "on"
 }
 
@@ -497,6 +506,8 @@ async def refresh_guild_registry():
         return GUILD_REGISTRY
 
     registry = {}
+    # Feste Notfall-Zuordnung, damit Nachtloot auch dann erreichbar bleibt,
+    # wenn in der zentralen Gildenliste noch keine Discord-ID gepflegt ist.
     discord_map = {
         NACHTLOOT_DISCORD_GUILD_ID: NACHTLOOT_GUILD_SLUG
     } if NACHTLOOT_DISCORD_GUILD_ID else {}
@@ -528,6 +539,16 @@ async def refresh_guild_registry():
     GUILD_REGISTRY = registry
     DISCORD_GUILD_SLUGS = discord_map
     WORLDBUFF_GUILD_SLUGS = configured_worldbuff_guild_slugs()
+    for slug_value, data in GUILD_REGISTRY.items():
+        layout = data.get("layout") if isinstance(data, dict) else {}
+        if not isinstance(layout, dict):
+            layout = {}
+        for configured_key in ("logSourceChannelId", "logAnalysisChannelId"):
+            log_channel_id = clean_channel_id_value(layout.get(configured_key))
+            if log_channel_id:
+                numeric_channel_id = int(log_channel_id)
+                LOG_ANALYSIS_CHANNEL_IDS.add(numeric_channel_id)
+                CHANNEL_GUILD_SLUGS[numeric_channel_id] = slug_value
     print(
         "Bot-Gilden geladen: "
         + (", ".join(f"{slug}#{data.get('discordGuildId') or '-'}" for slug, data in GUILD_REGISTRY.items()) or "keine")
@@ -537,6 +558,18 @@ async def refresh_guild_registry():
 
 def guild_slug_for_channel(channel_id):
     return CHANNEL_GUILD_SLUGS.get(int(channel_id), LICHTLOOT_GUILD_SLUG)
+
+
+def guild_slug_for_message(message):
+    """Explizit konfigurierte Channel-Zuordnungen haben Vorrang vor der Server-Zuordnung."""
+    channel_id = int(getattr(getattr(message, "channel", None), "id", 0) or 0)
+    channel_slug = CHANNEL_GUILD_SLUGS.get(channel_id)
+    if channel_slug:
+        return normalize_guild_slug(channel_slug)
+    return guild_slug_for_discord_server(
+        getattr(message, "guild", None),
+        LICHTLOOT_GUILD_SLUG
+    )
 
 
 def guild_slug_for_discord_guild(discord_guild_id, fallback=""):
@@ -2113,6 +2146,10 @@ def parse_ticker_message(text):
 
     for line in text.splitlines():
         line = line.strip()
+        # WBPoster trennt seine Tabellenspalten teilweise mit dem sichtbaren
+        # Unicode-Braille-Leerzeichen U+2800. Python behandelt dieses Zeichen
+        # nicht als normales Whitespace; ohne Ersetzung wird der aktuelle Post
+        # übersprungen und ein älterer, anders formatierter Ticker eingelesen.
         line = "".join(
             " " if char == "\u2800" or unicodedata.category(char) in {"Zs", "Zl", "Zp", "Cf"} else char
             for char in line
@@ -2140,6 +2177,9 @@ def parse_ticker_message(text):
                     matched_pattern_index = 0
                     break
 
+        # Robuster WBPoster-Fallback: Die App ändert gelegentlich Emojis,
+        # Spaltentrenner oder die Menge der Abstände. Relevant ist nur die
+        # Reihenfolge Buff -> Datum -> Uhrzeit -> Gilde.
         if not match:
             flexible_match = re.search(
                 r"(?P<buff>Hakkar|ZG|Ony|Onyxia|Nef|Nefarian|Rend)"
@@ -2790,6 +2830,9 @@ async def _sync_recent_ticker_messages_unlocked(limit=None):
                 parsed_buffs = parse_ticker_message(discord_message_search_text(msg))
                 if is_wbposter_bot_message(msg):
                     authoritative_poster_seen = True
+                    # Der neueste WBPoster ist der maßgebliche vollständige
+                    # Snapshot. Niemals auf einen älteren WBPoster zurückfallen,
+                    # falls sich das Format des aktuellen Posts geändert hat.
                     latest_ticker_message = msg
                     latest_buffs = parsed_buffs
                     if not parsed_buffs:
@@ -4433,48 +4476,19 @@ async def post_player_login_approval_notice(payload):
     if discord_guild is None:
         raise RuntimeError(f"Discord-Server fuer {current_guild_slug()} wurde nicht gefunden.")
 
-    wanted_roles = {
-        "raidoffiziere",
-        "pofreigeber",
-        "p0freigeber",
-        "gildenleitung",
-        "offizier",
-        "offiziere",
-        "gildenoffizier",
-        "gildenoffiziere",
-    }
+    wanted_roles = {"offiziere"}
     roles = [
         role for role in getattr(discord_guild, "roles", [])
         if normalized_discord_name(getattr(role, "name", "")) in wanted_roles
     ]
-    role_mentions = " ".join(role.mention for role in roles)
-
-    channel = None
-    if PLAYER_LOGIN_APPROVAL_CHANNEL_ID:
-        candidate = client.get_channel(PLAYER_LOGIN_APPROVAL_CHANNEL_ID)
-        if candidate and getattr(candidate, "guild", None) == discord_guild:
-            channel = candidate
-    if channel is None:
-        ranked_channels = sorted(
-            getattr(discord_guild, "text_channels", []),
-            key=lambda candidate: (
-                0 if any(term in normalized_discord_name(candidate.name) for term in ("raidoffizier", "pofreigabe", "offizier")) else 1,
-                int(getattr(candidate, "position", 999999) or 999999)
-            )
-        )
-        channel = next(
-            (candidate for candidate in ranked_channels if candidate.permissions_for(discord_guild.me).send_messages),
-            None
-        )
-    if channel is None:
-        raise RuntimeError(f"Kein beschreibbarer Discord-Channel fuer {current_guild_slug()} gefunden.")
+    if not roles:
+        raise RuntimeError(f'Discord-Rolle "Offiziere" wurde auf {discord_guild.name} nicht gefunden.')
 
     character = str(payload.get("character") or "Unbekannt").strip()
     server = str(payload.get("server") or "").strip()
     class_name = str(payload.get("className") or "").strip()
     character_label = f"{character}-{server}" if server else character
     lines = [
-        role_mentions,
         "🔐 **Neuer SpielerLogin wartet auf Freigabe**",
         "",
         f"**Charakter:** {character_label}",
@@ -4485,13 +4499,36 @@ async def post_player_login_approval_notice(payload):
         "",
         "Bitte den neuen SpielerLogin in der Gildenleitung prüfen und freigeben."
     ])
-    await channel.send(
-        "\n".join(line for line in lines if line is not None),
-        allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
-        silent=False
-    )
-    found_roles = ", ".join(role.name for role in roles) or "keine passende Rolle gefunden"
-    print(f"SpielerLogin-Freigabehinweis in #{channel.name} gepostet; Rollen: {found_roles}.")
+    message = "\n".join(line for line in lines if line is not None)
+    role_ids = {int(role.id) for role in roles}
+    recipients = [
+        member for member in getattr(discord_guild, "members", [])
+        if not getattr(member, "bot", False)
+        and any(int(getattr(role, "id", 0) or 0) in role_ids for role in getattr(member, "roles", []))
+    ]
+    if not recipients:
+        try:
+            fetched_members = [member async for member in discord_guild.fetch_members(limit=None)]
+            recipients = [
+                member for member in fetched_members
+                if not getattr(member, "bot", False)
+                and any(int(getattr(role, "id", 0) or 0) in role_ids for role in getattr(member, "roles", []))
+            ]
+        except Exception as error:
+            raise RuntimeError(f'Discord-Mitglieder für die Rolle "Offiziere" konnten nicht geladen werden: {error}') from error
+    if not recipients:
+        raise RuntimeError(f'Keine Discord-Mitglieder mit der Rolle "Offiziere" auf {discord_guild.name} gefunden.')
+    delivered = 0
+    failed = []
+    for member in recipients:
+        try:
+            await member.send(message, silent=True)
+            delivered += 1
+        except Exception as error:
+            failed.append(f"{member} ({error})")
+    if delivered == 0:
+        raise RuntimeError('Direktnachricht an die Rolle "Offiziere" konnte niemandem zugestellt werden.')
+    print(f"SpielerLogin-Freigabehinweis per DM an {delivered} Offiziere gesendet; Fehler: {len(failed)}.")
 
 
 def format_raid_announcement_date(value):
@@ -5446,26 +5483,44 @@ def raid_signup_summary_from_helper(helper):
     return result or "Noch keine Anmeldungen."
 
 
-async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None, origin_message_id=None):
+async def refresh_raid_signup_message(
+    interaction,
+    raid,
+    origin_channel_id=None,
+    origin_message_id=None,
+    optimistic_signup=None
+):
     try:
         raid_lookup_id = str(raid.get("raidId") or raid.get("id") or "").strip()
         raid_pin = str(raid.get("playerPin") or raid.get("prioPin") or "").strip()
+        guild_slug = guild_slug_for_discord_server(
+            getattr(interaction, "guild", None),
+            raid.get("guildSlug")
+            or raid.get("guild")
+            or guild_slug_for_channel(getattr(interaction, "channel_id", 0) or 0)
+        )
         helper_queries = []
         if raid_lookup_id:
             helper_queries.append({
                 "action": "getRaidHelper",
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
                 "raidId": raid_lookup_id,
                 "playerPin": raid_lookup_id,
                 "t": int(time.time())
             })
             helper_queries.append({
                 "action": "getRaidHelper",
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
                 "raidId": raid_lookup_id,
                 "t": int(time.time())
             })
         if raid_pin and raid_pin != raid_lookup_id:
             helper_queries.append({
                 "action": "getRaidHelper",
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
                 "playerPin": raid_pin,
                 "t": int(time.time())
             })
@@ -5475,14 +5530,28 @@ async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None,
         for query_params in helper_queries:
             try:
                 helper = await asyncio.to_thread(lichtloot_get, query_params)
-                break
+                if helper and helper.get("success"):
+                    break
             except Exception as e:
                 last_error = e
         if helper is None:
             raise last_error or RuntimeError("Raid-Anmelder konnte nicht geladen werden.")
+        if optimistic_signup:
+            current_rows = list(helper.get("signups") or []) + list(helper.get("externalSignups") or [])
+            optimistic_char = str(
+                optimistic_signup.get("char") or optimistic_signup.get("player") or ""
+            ).strip().lower()
+            if optimistic_char and not any(
+                str(row.get("char") or row.get("player") or "").strip().lower() == optimistic_char
+                for row in current_rows
+            ):
+                helper = dict(helper)
+                helper["externalSignups"] = list(helper.get("externalSignups") or []) + [optimistic_signup]
         fresh_raid = helper.get("raid") if isinstance(helper, dict) else None
         if not fresh_raid:
             fresh_raid = raid
+        fresh_raid = dict(fresh_raid)
+        fresh_raid["guildSlug"] = guild_slug
         embed = build_raid_announcement_embed(fresh_raid)
         add_raid_signup_roster_fields(embed, helper)
         target_message = getattr(interaction, "message", None)
@@ -5960,7 +6029,24 @@ class RaidSignupCharacterSelect(discord.ui.Select):
             return
 
         try:
-            await refresh_raid_signup_message(interaction, refresh_raid, self.origin_channel_id, self.origin_message_id)
+            await refresh_raid_signup_message(
+                interaction,
+                refresh_raid,
+                self.origin_channel_id,
+                self.origin_message_id,
+                {
+                    "char": char_name,
+                    "player": char_name,
+                    "className": char_class,
+                    "klasse": char_class,
+                    "role": infer_signup_role(spec),
+                    "status": "signed",
+                    "note": f"Skillung: {spec}",
+                    "discordUserId": str(interaction.user.id),
+                    "discordName": str(interaction.user.display_name),
+                    "source": raid_signup_source(interaction, self.origin_channel_id, self.origin_message_id)
+                }
+            )
         except Exception as e:
             print("Raid-Anmelder-Refresh nach Anmeldung fehlgeschlagen:", e)
 
@@ -6330,6 +6416,37 @@ def collect_message_text(message):
                 parts.append(str(child.url))
             if getattr(child, "label", None):
                 parts.append(str(child.label))
+
+    # Einige Discord-Bots liefern Link-Buttons nur in der Rohdarstellung.
+    # Alle darin enthaltenen URLs werden ebenfalls berücksichtigt.
+    try:
+        raw_message = message.to_dict()
+    except Exception:
+        raw_message = {}
+
+    def collect_raw_urls(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if str(key).lower() in {"url", "href"} and child:
+                    parts.append(str(child))
+                else:
+                    collect_raw_urls(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect_raw_urls(child)
+
+    collect_raw_urls(raw_message.get("components") or [])
+    collect_raw_urls(raw_message.get("embeds") or [])
+
+    for attachment in getattr(message, "attachments", []) or []:
+        for value in (
+            getattr(attachment, "url", None),
+            getattr(attachment, "proxy_url", None),
+            getattr(attachment, "description", None),
+            getattr(attachment, "filename", None),
+        ):
+            if value:
+                parts.append(str(value))
 
     return "\n".join(parts)
 
@@ -7490,7 +7607,7 @@ def railway_post(payload):
 def extract_warcraft_log_urls(text):
     urls = []
     seen = set()
-    pattern = re.compile(r"https?://(?:[a-z]+\.)?warcraftlogs\.com/reports/[A-Za-z0-9]+[^\s<>)\]]*", re.IGNORECASE)
+    pattern = re.compile(r"https?://(?:[a-z0-9-]+\.)*warcraftlogs\.com/reports/[A-Za-z0-9]+[^\s<>)\]]*", re.IGNORECASE)
 
     for match in pattern.finditer(str(text or "")):
         url = match.group(0).rstrip(".,;:!")
@@ -7600,7 +7717,13 @@ async def sync_recent_log_analyses_from_channel(channel_id, target_count=LOG_ANA
             for log in new_logs:
                 seen_codes.add(log["reportCode"].lower())
 
-            saved = await handle_log_analysis_message(msg, announce=False)
+            guild_token = CURRENT_GUILD_SLUG.set(
+                normalize_guild_slug(CHANNEL_GUILD_SLUGS.get(int(channel_id)) or guild_slug_for_message(msg))
+            )
+            try:
+                saved = await handle_log_analysis_message(msg, announce=False)
+            finally:
+                CURRENT_GUILD_SLUG.reset(guild_token)
             for code in saved:
                 key = code.lower()
                 if key not in saved_code_keys:
@@ -10892,9 +11015,7 @@ async def on_message_edit(before, after):
     if after.author == client.user:
         return
 
-    token = CURRENT_GUILD_SLUG.set(
-        guild_slug_for_discord_server(getattr(after, "guild", None), guild_slug_for_channel(after.channel.id))
-    )
+    token = CURRENT_GUILD_SLUG.set(guild_slug_for_message(after))
     try:
         #for raid in get_raid_names_for_channel(after.channel.id):
         #  schedule_prio_check_update(raid, f"Nachricht im {raid}-Channel bearbeitet")
@@ -10913,9 +11034,7 @@ async def on_message(message):
     if message.author == client.user:
         return
 
-    CURRENT_GUILD_SLUG.set(
-        guild_slug_for_discord_server(getattr(message, "guild", None), guild_slug_for_channel(message.channel.id))
-    )
+    CURRENT_GUILD_SLUG.set(guild_slug_for_message(message))
 
     await handle_log_analysis_message(message)
 
