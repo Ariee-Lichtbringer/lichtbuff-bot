@@ -4476,13 +4476,22 @@ async def post_player_login_approval_notice(payload):
     if discord_guild is None:
         raise RuntimeError(f"Discord-Server fuer {current_guild_slug()} wurde nicht gefunden.")
 
+    configured_role_ids = {
+        int(str(role_id)) for role_id in (payload.get("notificationRoleIds") or [])
+        if str(role_id).isdigit()
+    }
+    configured_names = {
+        normalized_discord_name(name) for name in (payload.get("notificationNames") or [])
+        if str(name or "").strip()
+    }
     wanted_roles = {"offiziere"}
     roles = [
         role for role in getattr(discord_guild, "roles", [])
-        if normalized_discord_name(getattr(role, "name", "")) in wanted_roles
+        if (configured_role_ids and int(getattr(role, "id", 0) or 0) in configured_role_ids)
+        or (not configured_role_ids and normalized_discord_name(getattr(role, "name", "")) in wanted_roles)
     ]
-    if not roles:
-        raise RuntimeError(f'Discord-Rolle "Offiziere" wurde auf {discord_guild.name} nicht gefunden.')
+    if not roles and not configured_names:
+        raise RuntimeError(f'Die konfigurierte Benachrichtigungsrolle wurde auf {discord_guild.name} nicht gefunden.')
 
     character = str(payload.get("character") or "Unbekannt").strip()
     server = str(payload.get("server") or "").strip()
@@ -4504,7 +4513,9 @@ async def post_player_login_approval_notice(payload):
     recipients = [
         member for member in getattr(discord_guild, "members", [])
         if not getattr(member, "bot", False)
-        and any(int(getattr(role, "id", 0) or 0) in role_ids for role in getattr(member, "roles", []))
+        and (any(int(getattr(role, "id", 0) or 0) in role_ids for role in getattr(member, "roles", []))
+             or normalized_discord_name(getattr(member, "display_name", "")) in configured_names
+             or normalized_discord_name(getattr(member, "name", "")) in configured_names)
     ]
     if not recipients:
         try:
@@ -4512,7 +4523,9 @@ async def post_player_login_approval_notice(payload):
             recipients = [
                 member for member in fetched_members
                 if not getattr(member, "bot", False)
-                and any(int(getattr(role, "id", 0) or 0) in role_ids for role in getattr(member, "roles", []))
+                and (any(int(getattr(role, "id", 0) or 0) in role_ids for role in getattr(member, "roles", []))
+                     or normalized_discord_name(getattr(member, "display_name", "")) in configured_names
+                     or normalized_discord_name(getattr(member, "name", "")) in configured_names)
             ]
         except Exception as error:
             raise RuntimeError(f'Discord-Mitglieder für die Rolle "Offiziere" konnten nicht geladen werden: {error}') from error
