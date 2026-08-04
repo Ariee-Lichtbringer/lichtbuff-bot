@@ -47,7 +47,7 @@ async def send_silent(channel, *args, **kwargs):
             return await channel.send(*args, **kwargs)
         raise
 
-TOKEN = os.getenv("DISCORD_TOKEN", "MTUxMDY3NzM0Njc4NzY1OTc3Nw.G_-vuz._ocUI4y-Nv7o9Kn0erGGra7cQfrHvFjKfBaeRc")
+TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
 LICHTBOT_QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
 def normalize_role_name(value):
     text = re.sub(r"[^a-z0-9]+", "", str(value or "").strip().casefold())
@@ -700,7 +700,14 @@ def hordenbuff_channel_rank(channel):
 
 def ticker_channel_ids_for_current_guild():
     guild_slug = current_guild_slug()
-    channel_ids = {PANEM_TICKER_CHANNEL_ID} if guild_slug == PANEM_GUILD_SLUG else {TICKER_CHANNEL_ID, POST_CHANNEL_ID}
+    if guild_slug == PANEM_GUILD_SLUG:
+        channel_ids = {PANEM_TICKER_CHANNEL_ID}
+    elif guild_slug == NACHTLOOT_GUILD_SLUG:
+        channel_ids = set()
+    elif guild_slug == LICHTLOOT_GUILD_SLUG:
+        channel_ids = {TICKER_CHANNEL_ID, POST_CHANNEL_ID}
+    else:
+        return set()
     for discord_guild in getattr(client, "guilds", []) or []:
         if guild_slug_for_discord_server(discord_guild, "") != guild_slug:
             continue
@@ -2259,7 +2266,9 @@ def sync_worldbuff_ticker_cache_to_sheet(data=None):
     }
 
     try:
-        result = railway_post(payload)
+        result = lichtloot_post(payload)
+        if isinstance(result, dict) and result.get("success"):
+            clear_worldbuff_csv_cache()
         print(f"Worldbuffticker-Railway-Sync: {result}")
         return result
     except Exception as e:
