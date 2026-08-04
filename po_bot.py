@@ -4257,6 +4257,7 @@ async def po_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": QUEUE_TOKEN,
                 "limit": "50",
+                "types": "po_post,p0_post_refresh,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,po_rejection_notice,po_approval_notice,po_post_delete",
                 "t": int(time.time()),
             })
             if result.get("success"):
