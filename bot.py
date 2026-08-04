@@ -392,7 +392,7 @@ LICHTLOOT_URL = "https://lichtloot.de"
 DEFAULT_RAID_HELPER_CHANNEL_ID = "1508478036398571601"
 PUBLIC_API_CACHE_SECONDS = int(os.getenv("PUBLIC_API_CACHE_SECONDS", "45"))
 PUBLIC_API_PORT = int(os.getenv("PORT") or os.getenv("PUBLIC_API_PORT", "8000"))
-DELETE_WORLDBUFF_POSTER_SOURCE_MESSAGES = os.getenv("DELETE_WORLDBUFF_POSTER_SOURCE_MESSAGES", "").strip().lower() in {
+DELETE_WORLDBUFF_POSTER_SOURCE_MESSAGES = os.getenv("DELETE_WORLDBUFF_POSTER_SOURCE_MESSAGES", "true").strip().lower() in {
     "1",
     "true",
     "yes",
@@ -904,6 +904,19 @@ def is_ticker_channel(channel_id):
 
 def is_worldbuff_poster_source_message(message):
     return str(getattr(message, "id", "") or "") in WORLDBUFF_POSTER_MESSAGE_IDS
+
+
+def is_wbposter_bot_message(message):
+    """Nur echte WBPoster-App-Nachrichten zum automatischen Löschen zulassen."""
+    if is_worldbuff_poster_source_message(message):
+        return True
+    author = getattr(message, "author", None)
+    author_name = " ".join([
+        str(getattr(author, "name", "") or ""),
+        str(getattr(author, "display_name", "") or ""),
+        str(getattr(author, "global_name", "") or ""),
+    ]).casefold()
+    return bool(getattr(author, "bot", False) and "wbposter" in author_name.replace(" ", ""))
 
 
 def get_hordenbuff_message_id(data, channel_id):
@@ -2096,7 +2109,9 @@ def parse_ticker_message(text):
     date_words = r"(\d{1,2}\.\d{1,2}\.\d{4})"
     day_words = r"(?:Mo|Di|Mi|Do|Fr|Sa|So|Montag|Dienstag|Mittwoch|Donnerstag|Freitag|Samstag|Sonntag)"
     time_words = r"(\d{1,2}:\d{2})"
-    prefix = r"^(?:(?:<a?:[A-Za-z0-9_]+:\d+>|[🟢🔴🟠⚪🟡✅❌🔥🌿☠️💀•\-–—])\s*)?"
+    # WBPoster nutzt je nach Buff unterschiedliche Symbolpräfixe. Neben den
+    # bisherigen Statuspunkten werden auch Herz, Drache und Farbfelder erkannt.
+    prefix = r"^(?:(?:<a?:[A-Za-z0-9_]+:\d+>|[🟢🔴🟠⚪🟡✅❌🔥🌿☠️💀❤️❤🐉🟦🟥•\-–—])\ufe0f?\s*)?"
     suffix = r"\s+(.+)$"
 
     patterns = [
@@ -10788,7 +10803,7 @@ async def handle_ticker_update(message):
     if (
         DELETE_WORLDBUFF_POSTER_SOURCE_MESSAGES
         and not is_own_discord_message(message)
-        and not is_worldbuff_poster_source_message(message)
+        and is_wbposter_bot_message(message)
     ):
         try:
             await message.delete()
