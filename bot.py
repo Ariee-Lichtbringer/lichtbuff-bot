@@ -2240,7 +2240,7 @@ def sende_wurf_ans_sheet(buff, charakter, discord_name):
         "status": "bestätigt"
     }
 
-    result = lichtloot_apps_script_post(payload)
+    result = lichtloot_post(payload)
     clear_worldbuff_csv_cache()
     return result
 
@@ -2259,8 +2259,8 @@ def sync_worldbuff_ticker_cache_to_sheet(data=None):
     }
 
     try:
-        result = lichtloot_apps_script_post(payload)
-        print(f"Worldbuffticker-Sync: {result}")
+        result = railway_post(payload)
+        print(f"Worldbuffticker-Railway-Sync: {result}")
         return result
     except Exception as e:
         print(f"Worldbuffticker-Sync Fehler: {e}")
