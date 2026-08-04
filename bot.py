@@ -2822,12 +2822,13 @@ async def sync_recent_ticker_messages(limit=None):
         if not is_own_worldbuff(buff)
     ])
 
-    await asyncio.to_thread(sync_worldbuff_ticker_cache_to_sheet, [
+    database_sync_result = await asyncio.to_thread(sync_worldbuff_ticker_cache_to_sheet, [
         buff for buff in combined_rows
         if not is_own_worldbuff(buff)
     ])
 
-    for wbposter_message in wbposter_messages_to_delete:
+    database_sync_ok = bool(isinstance(database_sync_result, dict) and database_sync_result.get("success"))
+    for wbposter_message in wbposter_messages_to_delete if database_sync_ok else []:
         try:
             await wbposter_message.delete()
             print(f"WBPoster-Nachricht {wbposter_message.id} nach erfolgreicher Übernahme gelöscht.")
@@ -2923,6 +2924,19 @@ async def update_worldbuff_overview_from_all_guilds(force_repost=False):
         finally:
             CURRENT_GUILD_SLUG.reset(token)
     return updated_count
+
+
+async def wbposter_database_sync_loop():
+    """Polling-Fallback: Discord-Ereignisse können ausbleiben, Railway bleibt die Quelle."""
+    await client.wait_until_ready()
+    while not client.is_closed():
+        try:
+            await sync_recent_ticker_messages_for_all_guilds(limit=max(50, WORLDBUFF_TICKER_LAST_POST_SCAN_LIMIT))
+            clear_worldbuff_csv_cache()
+            await update_worldbuff_overview_from_all_guilds(force_repost=False)
+        except Exception as error:
+            print(f"Regelmäßiger WBPoster-Railway-Abgleich fehlgeschlagen: {error}")
+        await asyncio.sleep(120)
 
 
 def get_hordenbuff_schedule_rows():
@@ -10804,7 +10818,8 @@ async def handle_ticker_update(message):
     ]
 
     save_json(worldbuff_file(), ticker_rows)
-    await asyncio.to_thread(sync_worldbuff_ticker_cache_to_sheet, ticker_rows)
+    database_sync_result = await asyncio.to_thread(sync_worldbuff_ticker_cache_to_sheet, ticker_rows)
+    database_sync_ok = bool(isinstance(database_sync_result, dict) and database_sync_result.get("success"))
 
     print(
         f"{len(new_buffs)} Worldbuffs aus Ticker übernommen oder geprüft, "
@@ -10818,6 +10833,7 @@ async def handle_ticker_update(message):
 
     if (
         DELETE_WORLDBUFF_POSTER_SOURCE_MESSAGES
+        and database_sync_ok
         and not is_own_discord_message(message)
         and is_wbposter_bot_message(message)
     ):
@@ -10879,6 +10895,10 @@ async def on_ready():
     if not hasattr(client, "worldbuff_startup_task_started"):
         client.worldbuff_startup_task_started = True
         client.loop.create_task(update_worldbuff_overview_from_all_guilds())
+
+    if not hasattr(client, "wbposter_database_sync_started"):
+        client.wbposter_database_sync_started = True
+        client.loop.create_task(wbposter_database_sync_loop())
 
     if not hasattr(client, "hordenbuff_startup_task_started"):
         client.hordenbuff_startup_task_started = True
