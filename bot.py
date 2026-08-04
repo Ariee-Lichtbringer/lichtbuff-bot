@@ -13,6 +13,7 @@ import threading
 import contextvars
 import sys
 import zipfile
+import unicodedata
 from io import StringIO, BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -2112,7 +2113,10 @@ def parse_ticker_message(text):
 
     for line in text.splitlines():
         line = line.strip()
-        line = line.replace("\u2800", " ").replace("\u2007", " ").replace("\u202f", " ")
+        line = "".join(
+            " " if char == "\u2800" or unicodedata.category(char) in {"Zs", "Zl", "Zp", "Cf"} else char
+            for char in line
+        )
         line = line.replace("**", "").replace("`", "")
         line = line.strip("| ")
         line = re.sub(r"\s*\|\s*", " ", line)
@@ -2135,6 +2139,31 @@ def parse_ticker_message(text):
                 if match:
                     matched_pattern_index = 0
                     break
+
+        if not match:
+            flexible_match = re.search(
+                r"(?P<buff>Hakkar|ZG|Ony|Onyxia|Nef|Nefarian|Rend)"
+                r".*?(?P<datum>\d{1,2}\.\d{1,2}\.\d{4})"
+                r".*?(?P<uhrzeit>\d{1,2}:\d{2})"
+                r"\s*(?P<gilde>.+?)\s*$",
+                line,
+                re.IGNORECASE,
+            )
+            if flexible_match:
+                buffs.append({
+                    "buff": normalize_buff(flexible_match.group("buff")),
+                    "datum": flexible_match.group("datum"),
+                    "tag": make_tag_from_date(flexible_match.group("datum")),
+                    "uhrzeit": flexible_match.group("uhrzeit"),
+                    "gilde": re.sub(
+                        r"^(?:Mo|Di|Mi|Do|Fr|Sa|So|Montag|Dienstag|Mittwoch|Donnerstag|Freitag|Samstag|Sonntag)\s+",
+                        "",
+                        flexible_match.group("gilde").strip(),
+                        flags=re.IGNORECASE,
+                    ),
+                    "source": "wb_poster",
+                })
+                continue
 
         if match:
             groups = match.groups()
@@ -2758,18 +2787,32 @@ async def _sync_recent_ticker_messages_unlocked(limit=None):
             # ohne die gesamte Channel-Historie einzulesen.
             async for msg in channel.history(limit=limit, oldest_first=False):
                 parsed_buffs = parse_ticker_message(discord_message_search_text(msg))
+                if is_wbposter_bot_message(msg):
+                    latest_ticker_message = msg
+                    latest_buffs = parsed_buffs
+                    if not parsed_buffs:
+                        print(
+                            f"Neuesten WBPoster {msg.id} in Channel {channel_id} gefunden, "
+                            "aber keine Terminzeilen erkannt. Alter WBPoster wird nicht verwendet."
+                        )
+                    break
                 if parsed_buffs:
                     latest_ticker_message = msg
                     latest_buffs = parsed_buffs
                     break
 
-            if latest_ticker_message:
+            if latest_ticker_message and latest_buffs:
                 found_buffs.extend(latest_buffs)
                 if DELETE_WORLDBUFF_POSTER_SOURCE_MESSAGES and is_wbposter_bot_message(latest_ticker_message):
                     wbposter_messages_to_delete.append(latest_ticker_message)
                 print(
                     f"Letzten Ticker-Post {latest_ticker_message.id} aus Channel "
                     f"{channel_id} gelesen: {len(latest_buffs)} Buff-Zeilen."
+                )
+            elif latest_ticker_message:
+                print(
+                    f"Aktueller WBPoster {latest_ticker_message.id} in Channel "
+                    f"{channel_id} enthielt keine lesbaren Termine."
                 )
             else:
                 print(
