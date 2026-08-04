@@ -2768,6 +2768,7 @@ async def _sync_recent_ticker_messages_unlocked(limit=None):
     found_buffs = []
     wbposter_messages_to_delete = []
     readable_ticker_channels = 0
+    authoritative_poster_seen = False
 
     for channel_id in ticker_channel_ids_for_current_guild():
         try:
@@ -2788,6 +2789,7 @@ async def _sync_recent_ticker_messages_unlocked(limit=None):
             async for msg in channel.history(limit=limit, oldest_first=False):
                 parsed_buffs = parse_ticker_message(discord_message_search_text(msg))
                 if is_wbposter_bot_message(msg):
+                    authoritative_poster_seen = True
                     latest_ticker_message = msg
                     latest_buffs = parsed_buffs
                     if not parsed_buffs:
@@ -2856,11 +2858,13 @@ async def _sync_recent_ticker_messages_unlocked(limit=None):
     # gespeichert. Die gefilterte combined_rows-Liste ist nur der lokale
     # Anzeigecache und darf keine Termine anderer oder der eigenen Gilde
     # aus dem Datenbankimport entfernen.
-    database_rows = found_buffs if found_buffs else cached_rows
-    database_sync_result = await asyncio.to_thread(
-        sync_worldbuff_ticker_cache_to_sheet,
-        database_rows,
-    )
+    database_rows = found_buffs if found_buffs else ([] if authoritative_poster_seen else cached_rows)
+    database_sync_result = None
+    if database_rows:
+        database_sync_result = await asyncio.to_thread(
+            sync_worldbuff_ticker_cache_to_sheet,
+            database_rows,
+        )
 
     database_sync_ok = bool(isinstance(database_sync_result, dict) and database_sync_result.get("success"))
     for wbposter_message in wbposter_messages_to_delete if database_sync_ok else []:
