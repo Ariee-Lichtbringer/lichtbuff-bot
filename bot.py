@@ -2831,10 +2831,15 @@ async def sync_recent_ticker_messages(limit=None):
         if not is_own_worldbuff(buff)
     ])
 
-    database_sync_result = await asyncio.to_thread(sync_worldbuff_ticker_cache_to_sheet, [
-        buff for buff in combined_rows
-        if not is_own_worldbuff(buff)
-    ])
+    # In Railway wird der originale, vollständige WBPoster-Datensatz
+    # gespeichert. Die gefilterte combined_rows-Liste ist nur der lokale
+    # Anzeigecache und darf keine Termine anderer oder der eigenen Gilde
+    # aus dem Datenbankimport entfernen.
+    database_rows = found_buffs if found_buffs else cached_rows
+    database_sync_result = await asyncio.to_thread(
+        sync_worldbuff_ticker_cache_to_sheet,
+        database_rows,
+    )
 
     database_sync_ok = bool(isinstance(database_sync_result, dict) and database_sync_result.get("success"))
     for wbposter_message in wbposter_messages_to_delete if database_sync_ok else []:
@@ -10827,7 +10832,8 @@ async def handle_ticker_update(message):
     ]
 
     save_json(worldbuff_file(), ticker_rows)
-    database_sync_result = await asyncio.to_thread(sync_worldbuff_ticker_cache_to_sheet, ticker_rows)
+    # Den WBPoster-Post unverändert und vollständig an Railway übergeben.
+    database_sync_result = await asyncio.to_thread(sync_worldbuff_ticker_cache_to_sheet, new_buffs)
     database_sync_ok = bool(isinstance(database_sync_result, dict) and database_sync_result.get("success"))
 
     print(
