@@ -393,6 +393,8 @@ DEFAULT_RAID_HELPER_CHANNEL_ID = "1508478036398571601"
 PUBLIC_API_CACHE_SECONDS = int(os.getenv("PUBLIC_API_CACHE_SECONDS", "45"))
 PUBLIC_API_PORT = int(os.getenv("PORT") or os.getenv("PUBLIC_API_PORT", "8000"))
 DELETE_WORLDBUFF_POSTER_SOURCE_MESSAGES = False
+WORLDBUFF_TICKER_SYNC_LOCK = asyncio.Lock()
+WORLDBUFF_DATABASE_SYNC_LOCK = threading.Lock()
 
 BERLIN_TZ = pytz.timezone("Europe/Berlin")
 
@@ -2266,7 +2268,8 @@ def sync_worldbuff_ticker_cache_to_sheet(data=None):
     }
 
     try:
-        result = lichtloot_post(payload)
+        with WORLDBUFF_DATABASE_SYNC_LOCK:
+            result = lichtloot_post(payload)
         if isinstance(result, dict) and result.get("success"):
             clear_worldbuff_csv_cache()
         print(f"Worldbuffticker-Railway-Sync: {result}")
@@ -2753,7 +2756,7 @@ async def delete_extra_messages(messages):
             pass
 
 
-async def sync_recent_ticker_messages(limit=None):
+async def _sync_recent_ticker_messages_unlocked(limit=None):
     if limit is None:
         limit = WORLDBUFF_TICKER_LAST_POST_SCAN_LIMIT
 
@@ -2855,6 +2858,13 @@ async def sync_recent_ticker_messages(limit=None):
 
     print(f"Letzte Ticker-Posts geprüft: {len(found_buffs)} Buff-Zeilen gefunden, {added} neu gespeichert.")
     return added
+
+
+async def sync_recent_ticker_messages(limit=None):
+    # Ticker-Scans werden von mehreren Start-, Intervall- und Befehlswegen
+    # ausgelöst. Sie dürfen nicht gleichzeitig Cache und Railway beschreiben.
+    async with WORLDBUFF_TICKER_SYNC_LOCK:
+        return await _sync_recent_ticker_messages_unlocked(limit=limit)
 
 
 async def update_worldbuff_post(sync_ticker=True, force_repost=False):
