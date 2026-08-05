@@ -3210,9 +3210,10 @@ async def send_loot_master_leadpin_notice_from_queue(payload):
     loot_master_pin = clean(payload.get("lootMasterPin") or payload.get("lootMasterPassword"))
     if not lead_pin:
         return 0
+    custom_description = clean(payload.get("messageTemplate")).replace("{raid}", raid_name)
     embed = discord.Embed(
         title="LeadPIN für deinen Raid",
-        description=f"Du bist für **{raid_name}** als Plündermeister eingetragen.",
+        description=custom_description or f"Du bist für **{raid_name}** als Plündermeister eingetragen.",
         color=0xFACC15,
     )
     embed.add_field(name="LeadPIN", value=f"`{lead_pin}`", inline=False)

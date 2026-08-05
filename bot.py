@@ -4461,20 +4461,29 @@ def normalized_discord_name(value):
     return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().casefold())
 
 
+def render_notification_template(template, values):
+    text = str(template or "")
+    for key, value in values.items():
+        text = text.replace("{" + str(key) + "}", str(value or ""))
+    return text.strip()
+
+
 async def post_player_login_approval_notice(payload):
-    registry_entry = GUILD_REGISTRY.get(current_guild_slug()) or {}
+    guild_slug = normalize_guild_slug(payload.get("guildSlug") or payload.get("guild") or current_guild_slug())
+    guild_name = str(payload.get("guildName") or (GUILD_REGISTRY.get(guild_slug) or {}).get("name") or guild_slug).strip()
+    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
     discord_guild_id = str(
         registry_entry.get("discordGuildId")
-        or (NACHTLOOT_DISCORD_GUILD_ID if current_guild_slug() == NACHTLOOT_GUILD_SLUG else "")
+        or (NACHTLOOT_DISCORD_GUILD_ID if guild_slug == NACHTLOOT_GUILD_SLUG else "")
     ).strip()
     discord_guild = client.get_guild(int(discord_guild_id)) if discord_guild_id.isdigit() else None
-    if discord_guild is None and current_guild_slug() == LICHTLOOT_GUILD_SLUG:
+    if discord_guild is None and guild_slug == LICHTLOOT_GUILD_SLUG:
         discord_guild = next(
             (guild for guild in client.guilds if "lichtbringer" in str(getattr(guild, "name", "")).casefold()),
             None
         )
     if discord_guild is None:
-        raise RuntimeError(f"Discord-Server fuer {current_guild_slug()} wurde nicht gefunden.")
+        raise RuntimeError(f"Discord-Server fuer {guild_slug} wurde nicht gefunden.")
 
     configured_role_ids = {
         int(str(role_id)) for role_id in (payload.get("notificationRoleIds") or [])
@@ -4500,15 +4509,26 @@ async def post_player_login_approval_notice(payload):
     lines = [
         "🔐 **Neuer SpielerLogin wartet auf Freigabe**",
         "",
+        f"**Gilde:** {guild_name}",
         f"**Charakter:** {character_label}",
     ]
     if class_name:
         lines.append(f"**Klasse:** {class_name}")
+    approval_url = f"{LICHTLOOT_URL.rstrip('/')}/gildenleitung.html?" + urllib.parse.urlencode({
+        "guild": guild_slug,
+        "panel": "spielerlogins",
+        "player": character,
+    })
     lines.extend([
         "",
-        "Bitte den neuen SpielerLogin in der Gildenleitung prüfen und freigeben."
+        "Bitte den neuen SpielerLogin in der Gildenleitung prüfen und freigeben.",
+        f"🔗 **[Direkt zur Spielerfreigabe]({approval_url})**"
     ])
-    message = "\n".join(line for line in lines if line is not None)
+    default_message = "\n".join(line for line in lines if line is not None)
+    message = render_notification_template(payload.get("messageTemplate"), {
+        "gilde": guild_name, "charakter": character, "server": server,
+        "klasse": class_name, "link": approval_url
+    }) or default_message
     role_ids = {int(role.id) for role in roles}
     recipients = [
         member for member in getattr(discord_guild, "members", [])
@@ -4541,7 +4561,7 @@ async def post_player_login_approval_notice(payload):
             failed.append(f"{member} ({error})")
     if delivered == 0:
         raise RuntimeError('Direktnachricht an die Rolle "Offiziere" konnte niemandem zugestellt werden.')
-    print(f"SpielerLogin-Freigabehinweis per DM an {delivered} Offiziere gesendet; Fehler: {len(failed)}.")
+    print(f"SpielerLogin-Freigabehinweis fuer {guild_slug} per DM an {delivered} Empfaenger gesendet; Fehler: {len(failed)}.")
 
 
 def format_raid_announcement_date(value):
@@ -7982,6 +8002,7 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
     try:
         raw_payload = item.get("payload") or {}
         payload = raw_payload if isinstance(raw_payload, dict) else json.loads(raw_payload or "{}")
+        payload.setdefault("guildSlug", queue_guild_slug)
     except Exception:
         payload = {}
 
@@ -8044,7 +8065,11 @@ async def send_worldbuff_player_change_notice(payload):
     if new_slot:
         lines.append(f"**Neuer Termin:** {new_slot}")
     lines.append(f"**Grund:** {reason}")
-    message = "\n".join(lines)
+    default_message = "\n".join(lines)
+    message = render_notification_template(payload.get("messageTemplate"), {
+        "charakter": character, "aktion": action_label, "termin": old_slot,
+        "neuer_termin": new_slot, "grund": reason
+    }) or default_message
 
     wanted_names = {
         normalized_discord_name(target.get("value") or target.get("name"))
@@ -8055,7 +8080,12 @@ async def send_worldbuff_player_change_notice(payload):
         for target in targets if str(target.get("type") or "").lower() == "role"
     }
     sent = set()
-    for guild in client.guilds:
+    guild_slug = normalize_guild_slug(payload.get("guildSlug") or payload.get("guild") or current_guild_slug())
+    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
+    discord_guild_id = str(registry_entry.get("discordGuildId") or (NACHTLOOT_DISCORD_GUILD_ID if guild_slug == NACHTLOOT_GUILD_SLUG else "")).strip()
+    selected_guild = client.get_guild(int(discord_guild_id)) if discord_guild_id.isdigit() else None
+    guilds = [selected_guild] if selected_guild else []
+    for guild in guilds:
         for member in guild.members:
             member_names = {
                 normalized_discord_name(getattr(member, "name", "")),
