@@ -3675,7 +3675,7 @@ class PoKnownCharacterSelect(discord.ui.Select):
         self.payload = payload
         self.item_name = item_name
         self.class_name = class_name
-        self.characters = list(characters or [])[:3]
+        self.characters = list(characters or [])[:25]
         options = []
         for index, char in enumerate(self.characters):
             label = clean(char.get("name"))[:100]
@@ -3820,11 +3820,34 @@ class PoOtherCharacterButton(discord.ui.Button):
         )
 
 
+class PoUseOtherLoginButton(discord.ui.Button):
+    def __init__(self, payload, item_name, class_name=""):
+        super().__init__(
+            custom_id=f"po-other-login:{payload['postKey'][:55]}",
+            label="Anderen SpielerLogin verwenden",
+            style=discord.ButtonStyle.secondary,
+        )
+        self.payload = payload
+        self.item_name = item_name
+        self.class_name = class_name
+
+    async def callback(self, interaction):
+        await interaction.response.send_modal(
+            PoPlayerLoginModal(self.payload, self.item_name, self.class_name)
+        )
+
+
 class PoKnownCharacterView(discord.ui.View):
     def __init__(self, payload, item_name, class_name, characters, default_char=""):
         super().__init__(timeout=180)
         self.add_item(PoKnownCharacterSelect(payload, item_name, class_name, characters))
-        self.add_item(PoOtherCharacterButton(payload, item_name, class_name, default_char))
+        self.add_item(PoUseOtherLoginButton(payload, item_name, class_name))
+
+
+class PoFirstLoginView(discord.ui.View):
+    def __init__(self, payload, item_name, class_name=""):
+        super().__init__(timeout=180)
+        self.add_item(PoUseOtherLoginButton(payload, item_name, class_name))
 
 
 class PoOtherCharacterView(discord.ui.View):
@@ -3835,7 +3858,21 @@ class PoOtherCharacterView(discord.ui.View):
 
 async def open_po_entry_flow(interaction, payload, item_name, class_name, default_char=""):
     payload = payload_for_interaction(payload, interaction)
-    await interaction.response.send_modal(PoPlayerLoginModal(payload, item_name, class_name))
+    await interaction.response.defer(ephemeral=True)
+    characters = await load_po_linked_characters(interaction.user.id, payload)
+    item_display = po_item_display_text(item_name)
+    if characters:
+        await interaction.followup.send(
+            f"Item gewählt: **{item_display}**.\nWähle deinen Charakter – die Klasse wird automatisch übernommen.",
+            view=PoKnownCharacterView(payload, item_name, "", characters),
+            ephemeral=True,
+        )
+        return
+    await interaction.followup.send(
+        f"Item gewählt: **{item_display}**.\nVerbinde einmalig deinen SpielerLogin; danach kennt der Bot deine Charaktere.",
+        view=PoFirstLoginView(payload, item_name),
+        ephemeral=True,
+    )
 
 
 class PoClassSelect(discord.ui.Select):
@@ -3921,8 +3958,6 @@ class PoItemSearchResultSelect(discord.ui.Select):
 class PoItemSearchResultView(discord.ui.View):
     def __init__(self, payload, items, class_name, default_char=""):
         super().__init__(timeout=180)
-        if not class_name:
-            self.add_item(PoClassSelect(payload))
         self.add_item(PoItemSearchResultSelect(payload, items, class_name, default_char))
 
 
@@ -3947,9 +3982,8 @@ class PoItemSearchModal(discord.ui.Modal):
         if not matches:
             await interaction.followup.send(f"Keine Items für **{query}** gefunden.", ephemeral=True)
             return
-        hint = "\nBitte in dieser Trefferliste noch die Klasse wählen, falls sie noch nicht gesetzt ist." if not self.class_name else ""
         await interaction.followup.send(
-            f"Gefundene Items für **{query}**:{hint}",
+            f"Gefundene Items für **{query}**. Wähle dein Item:",
             view=PoItemSearchResultView(self.payload, matches, self.class_name, self.default_char),
             ephemeral=True,
         )
@@ -3959,7 +3993,7 @@ class PoSearchButton(discord.ui.Button):
     def __init__(self, payload):
         super().__init__(
             custom_id=f"po-search:{payload['postKey'][:70]}",
-            label="2. Item suchen und PO eintragen",
+            label="PO eintragen",
             style=discord.ButtonStyle.success,
             row=1,
         )
@@ -4223,7 +4257,6 @@ class PoLuckSelect(discord.ui.Select):
 class PoView(discord.ui.View):
     def __init__(self, payload, items, entries=None):
         super().__init__(timeout=None)
-        self.add_item(PoClassSelect(payload))
         self.add_item(PoSearchButton(payload))
         self.add_item(PoDeleteButton(payload))
         self.add_item(PoRejectButton(payload))
@@ -4237,9 +4270,6 @@ class CombinedRaidPoView(discord.ui.View):
         raid_select.row = 0
         self.add_item(raid_select)
 
-        po_class = PoClassSelect(payload)
-        po_class.row = 2
-        self.add_item(po_class)
         for component in [
             PoSearchButton(payload),
             PoDeleteButton(payload),
