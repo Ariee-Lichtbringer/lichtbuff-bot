@@ -2132,7 +2132,7 @@ def build_fixed_po_header(payload):
         f"👤 Erstellt von: {created_by}",
         "",
         f"🔑 Prio-PIN: {lichtloot_id or '-'}",
-        f"[{guild_prio_link_icon(payload)}]({lichtloot_prio_url(payload)}) Hier geht es zur Prioseite dieses Raids.",
+        f"➡️ [{guild_prio_link_icon(payload)}]({lichtloot_prio_url(payload)}) Hier geht’s zur Prioseite dieses Raids.",
         "",
         "Bitte tragt eure Prios rechtzeitig ein.",
         "",
