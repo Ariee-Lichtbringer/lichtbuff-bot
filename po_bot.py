@@ -3154,8 +3154,38 @@ async def send_queue_targeted_embed(payload, embed):
         if clean(target.get("type")).lower() == "role"
     }
     wanted_roles.discard("")
+    guild_slug = payload_guild_slug(payload)
+    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
+    discord_guild_id = clean(
+        registry_entry.get("discordGuildId")
+        or ({
+            "lichtloot": LICHTLOOT_DISCORD_GUILD_ID,
+            "nachtloot": NACHTLOOT_DISCORD_GUILD_ID,
+        }.get(guild_slug) or "")
+    )
+    target_guild = client.get_guild(int(discord_guild_id)) if discord_guild_id.isdigit() else None
+    if target_guild is None:
+        guild_name = clean(payload.get("guildName") or registry_entry.get("name") or guild_slug)
+        guild_name_aliases = {
+            "lichtloot": {"lichtloot", "lichtbringer"},
+            "nachtloot": {"nachtloot", "nachtwachter", "nachtwaechter", "nachtwächter"},
+        }
+        expected_names = {
+            normalized_prio_player_name(value)
+            for value in ({guild_slug, guild_name} | guild_name_aliases.get(guild_slug, set()))
+            if clean(value)
+        }
+        target_guild = next(
+            (
+                guild for guild in client.guilds
+                if any(name and name in normalized_prio_player_name(guild.name) for name in expected_names)
+            ),
+            None,
+        )
+    if target_guild is None:
+        raise RuntimeError(f"Discord-Server fuer {guild_slug} wurde nicht gefunden.")
     sent = set()
-    for guild in client.guilds:
+    for guild in [target_guild]:
         guild_role_ids = {str(role.id) for role in guild.roles}
         if wanted_roles and not wanted_roles.intersection(guild_role_ids) and not wanted_names:
             continue
@@ -3168,7 +3198,7 @@ async def send_queue_targeted_embed(payload, embed):
                 normalized_prio_player_name(getattr(member, "global_name", "")),
             }
             member_roles = {str(role.id) for role in getattr(member, "roles", [])}
-            if not (wanted_names.intersection(member_names) or wanted_roles.intersection(member_roles)):
+            if not (configured_discord_name_matches(wanted_names, member_names) or wanted_roles.intersection(member_roles)):
                 continue
             try:
                 await member.send(embed=embed)
@@ -3328,7 +3358,7 @@ async def send_po_release_request_notice_from_queue(payload):
     class_name = clean(payload.get("className"))
     raid = clean(payload.get("raid")).upper() or "-"
     request_type = clean(payload.get("requestType"))
-    request_label = {"recruit":"Rekrutenstatus aufheben","p1p3":"P1–P3 Freigabe","p0":"P0 Freigabe"}.get(request_type,request_type or "PO-Freigabe")
+    request_label = {"recruit":"Rekrutenstatus aufheben","p1p3":"P1–P3 Freigabe","p0":"P0 Freigabe","po":"PO-Freigabe"}.get(request_type,request_type or "PO-Freigabe")
     link = f"{LICHTLOOT_URL.rstrip('/')}/gildenleitung.html?" + urllib.parse.urlencode({"guild":guild_slug,"panel":"po-freigaben"})
     text = clean(payload.get("messageTemplate"))
     replacements = {"{gilde}":guild_slug,"{charakter}":character,"{server}":server,"{klasse}":class_name,"{raid}":raid,"{antrag}":request_label,"{link}":link}
