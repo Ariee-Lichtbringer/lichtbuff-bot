@@ -93,9 +93,19 @@ def current_guild_slug():
 
 
 def payload_guild_slug(payload):
+    payload = payload or {}
+    visible_guild = " ".join(
+        clean(payload.get(key)).lower()
+        for key in ("guildName", "displayGuild", "gilde")
+        if clean(payload.get(key))
+    )
+    if "nachtloot" in visible_guild or "nachtw" in visible_guild:
+        return "nachtloot"
+    if "lichtbringer" in visible_guild:
+        return "lichtloot"
     return normalize_guild_slug(
-        (payload or {}).get("guildSlug")
-        or (payload or {}).get("guild")
+        payload.get("guildSlug")
+        or payload.get("guild")
         or current_guild_slug()
     )
 
@@ -109,6 +119,10 @@ def guild_slug_for_discord_server(guild, fallback=""):
     if mapped:
         return normalize_guild_slug(mapped)
     guild_name = str(getattr(guild, "name", "") or "").strip().lower()
+    if "nachtloot" in guild_name or "nachtw" in guild_name:
+        return "nachtloot"
+    if "lichtloot" in guild_name or "lichtbringer" in guild_name:
+        return "lichtloot"
     if guild_name and GUILD_REGISTRY:
         for slug_value, data in GUILD_REGISTRY.items():
             candidates = [
@@ -2066,11 +2080,38 @@ def normalize_post_time(value):
     return re.sub(r"\s*Uhr\s*$", "", text, flags=re.I)
 
 
-def lichtloot_prio_url():
-    configured = clean(LICHTLOOT_PRIO_URL)
-    if configured and "guild=" in configured:
-        return configured
-    return configured or f"https://lichtloot.de/index.html?guild={current_guild_slug()}"
+def lichtloot_prio_url(payload=None):
+    payload = payload or {}
+    guild_slug = payload_guild_slug(payload)
+    raid_key = normalize_raid(payload.get("raid") or payload.get("raidName")).lower()
+    raid_key = {
+        "zg-mittwoch": "zg",
+        "zg-prime": "zg",
+        "zg-late": "zg",
+    }.get(raid_key, raid_key)
+    loot_pages = {
+        "mc": "mc-loot.html",
+        "bwl": "bwl-loot.html",
+        "aq40": "aq40-loot.html",
+        "naxx": "naxx-loot.html",
+        "zg": "zg-loot.html",
+        "aq20": "aq20-loot.html",
+        "ony": "ony-loot.html",
+    }
+    raid_pin = payload_lichtloot_raid_pin(payload)
+    page = loot_pages.get(raid_key)
+    if page and raid_pin:
+        query = urllib.parse.urlencode({"guild": guild_slug, "pin": raid_pin})
+        return f"{LICHTLOOT_URL.rstrip('/')}/loot/{page}?{query}"
+    query = urllib.parse.urlencode({"guild": guild_slug})
+    return f"{LICHTLOOT_URL.rstrip('/')}/index.html?{query}"
+
+
+def guild_prio_link_icon(payload):
+    guild_slug = payload_guild_slug(payload)
+    if guild_slug == "nachtloot":
+        return custom_emoji("nachtloot", "🌙")
+    return custom_emoji("lichtloot", "⚜️")
 
 
 def build_fixed_po_header(payload):
@@ -2088,7 +2129,7 @@ def build_fixed_po_header(payload):
         f"👤 Erstellt von: {created_by}",
         "",
         f"🔑 Prio-PIN: {lichtloot_id or '-'}",
-        f"➡️ Prios eintragen: {lichtloot_prio_url()}",
+        f"[{guild_prio_link_icon(payload)}]({lichtloot_prio_url(payload)}) Hier geht es zur Prioseite dieses Raids.",
         "",
         "Bitte tragt eure Prios rechtzeitig ein.",
         "",
