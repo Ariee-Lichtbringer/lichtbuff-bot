@@ -26,6 +26,10 @@ except Exception:
 
 TOKEN = os.getenv("PO_BOT_TOKEN", "") or os.getenv("DISCORD_TOKEN", "")
 TEST_GUILD_ID = str(os.getenv("PO_BOT_GUILD_ID", "") or "").strip()
+LICHTLOOT_DISCORD_GUILD_ID = str(
+    os.getenv("LICHTLOOT_DISCORD_GUILD_ID", "") or TEST_GUILD_ID
+).strip()
+NACHTLOOT_DISCORD_GUILD_ID = str(os.getenv("NACHTLOOT_DISCORD_GUILD_ID", "") or "").strip()
 GUILD_SLUG = os.getenv("LICHTLOOT_GUILD", "") or os.getenv("LICHTLOOT_GUILD_SLUG", "") or "lichtloot"
 if GUILD_SLUG.strip().lower() == "lichtbringer":
     GUILD_SLUG = "lichtloot"
@@ -3164,12 +3168,29 @@ async def send_player_login_approval_notice_from_queue(payload):
     guild_slug = payload_guild_slug(payload)
     registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
     guild_name = clean(payload.get("guildName") or registry_entry.get("name") or guild_slug)
-    discord_guild_id = clean(registry_entry.get("discordGuildId"))
+    discord_guild_id = clean(
+        registry_entry.get("discordGuildId")
+        or ({
+            "lichtloot": LICHTLOOT_DISCORD_GUILD_ID,
+            "nachtloot": NACHTLOOT_DISCORD_GUILD_ID,
+        }.get(guild_slug) or "")
+    )
     discord_guild = client.get_guild(int(discord_guild_id)) if discord_guild_id.isdigit() else None
     if discord_guild is None:
-        expected_names = {guild_slug.casefold(), guild_name.casefold()}
+        guild_name_aliases = {
+            "lichtloot": {"lichtloot", "lichtbringer"},
+            "nachtloot": {"nachtloot", "nachtwachter", "nachtwaechter", "nachtwächter"},
+        }
+        expected_names = {
+            normalized_prio_player_name(value)
+            for value in ({guild_slug, guild_name} | guild_name_aliases.get(guild_slug, set()))
+            if clean(value)
+        }
         discord_guild = next(
-            (guild for guild in client.guilds if any(name and name in clean(guild.name).casefold() for name in expected_names)),
+            (
+                guild for guild in client.guilds
+                if any(name and name in normalized_prio_player_name(guild.name) for name in expected_names)
+            ),
             None,
         )
     if discord_guild is None:
