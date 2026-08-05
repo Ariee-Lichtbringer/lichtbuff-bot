@@ -2953,10 +2953,48 @@ def po_entry_options(entries, *, only_unlucked=False):
 
 
 async def reviewer_allowed(user):
-    for role in getattr(user, "roles", []) or []:
-        if normalize_role_name(getattr(role, "name", "")) in PO_REVIEW_ROLE_NAMES:
+    roles = list(getattr(user, "roles", []) or [])
+    role_ids = {str(getattr(role, "id", "")) for role in roles}
+    role_names = {normalize_role_name(getattr(role, "name", "")) for role in roles}
+    member_names = {
+        normalized_prio_player_name(getattr(user, "name", "")),
+        normalized_prio_player_name(getattr(user, "display_name", "")),
+        normalized_prio_player_name(getattr(user, "global_name", "")),
+    }
+    guild_slug = guild_slug_for_discord_server(getattr(user, "guild", None), current_guild_slug())
+    try:
+        result = await asyncio.to_thread(api_get, {
+            "action": "guildGetNotificationSettings",
+            "queueToken": QUEUE_TOKEN,
+            "guild": guild_slug,
+            "guildSlug": guild_slug,
+            "t": int(time.time()),
+        })
+        targets = ((result or {}).get("settings") or {}).get("po_reviewers") or []
+        configured_role_ids = {
+            clean(target.get("value") or target.get("id"))
+            for target in targets
+            if clean(target.get("type")).lower() == "role"
+        }
+        configured_names = {
+            normalized_prio_player_name(target.get("value") or target.get("name"))
+            for target in targets
+            if clean(target.get("type") or "name").lower() == "name"
+        }
+        if configured_role_ids.intersection(role_ids):
             return True
-    return False
+        if configured_discord_name_matches(configured_names, member_names):
+            return True
+        # Once this guild has an explicit selection it is authoritative. This
+        # keeps Lichtbringer and Nachtloot permissions strictly separated.
+        if targets:
+            return False
+    except Exception as error:
+        print(f"PO-Freigeber-Konfiguration fuer {guild_slug} konnte nicht geladen werden: {error}")
+
+    # Backward-compatible fallback for guilds that have not configured the new
+    # setting yet.
+    return bool(role_names.intersection(PO_REVIEW_ROLE_NAMES))
 
 
 def has_expression_admin_permission(user):
