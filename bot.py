@@ -8027,7 +8027,10 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
 
 
 async def send_worldbuff_player_change_notice(payload):
-    recipient_name = str(payload.get("recipient") or "Ariee").strip().lower()
+    recipient_name = str(payload.get("recipient") or "").strip().lower()
+    targets = list(payload.get("targets") or [])
+    if recipient_name:
+        targets.append({"type": "name", "value": recipient_name})
     character = str(payload.get("character") or "Unbekannter Charakter").strip()
     action_label = str(payload.get("actionLabel") or "geändert").strip()
     reason = str(payload.get("reason") or "-").strip()
@@ -8036,28 +8039,43 @@ async def send_worldbuff_player_change_notice(payload):
     lines = [
         f"🌍 **Worldbuff-Termin {action_label}**",
         f"**Charakter:** {character}",
-        f"**Bisheriger Termin:** {old_slot}",
+        f"**{'Termin' if str(payload.get('action') or '') == 'registered' else 'Bisheriger Termin'}:** {old_slot}",
     ]
     if new_slot:
         lines.append(f"**Neuer Termin:** {new_slot}")
     lines.append(f"**Grund:** {reason}")
     message = "\n".join(lines)
 
+    wanted_names = {
+        normalized_discord_name(target.get("value") or target.get("name"))
+        for target in targets if str(target.get("type") or "name").lower() == "name"
+    }
+    wanted_role_ids = {
+        str(target.get("value") or target.get("id") or "").strip()
+        for target in targets if str(target.get("type") or "").lower() == "role"
+    }
+    sent = set()
     for guild in client.guilds:
         for member in guild.members:
-            candidates = {
-                str(member.name or "").strip().lower(),
-                str(member.display_name or "").strip().lower(),
-                str(getattr(member, "global_name", "") or "").strip().lower(),
+            member_names = {
+                normalized_discord_name(getattr(member, "name", "")),
+                normalized_discord_name(getattr(member, "display_name", "")),
+                normalized_discord_name(getattr(member, "global_name", "")),
             }
-            if recipient_name in candidates or any(recipient_name in candidate for candidate in candidates if candidate):
-                try:
-                    await member.send(message)
-                    print(f"Worldbuff-Aenderung per DM an {member} gesendet.")
-                    return
-                except Exception as error:
-                    print(f"Worldbuff-DM an {member} fehlgeschlagen: {error}")
-    print(f"Discord-Empfaenger fuer Worldbuff-Aenderung nicht gefunden: {recipient_name}")
+            member_roles = {str(role.id) for role in getattr(member, "roles", [])}
+            if not (wanted_names.intersection(member_names) or wanted_role_ids.intersection(member_roles)):
+                continue
+            if member.id in sent or member.bot:
+                continue
+            try:
+                await member.send(message)
+                sent.add(member.id)
+                print(f"Worldbuff-Aenderung per DM an {member} gesendet.")
+            except Exception as error:
+                print(f"Worldbuff-DM an {member} fehlgeschlagen: {error}")
+    if not sent:
+        print("Kein Discord-Empfaenger fuer die Worldbuff-Aenderung gefunden.")
+    return len(sent)
 
 
 async def lichtloot_queue_loop():
