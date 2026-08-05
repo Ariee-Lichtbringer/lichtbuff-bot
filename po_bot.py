@@ -3186,9 +3186,12 @@ async def send_raid_announcement_notice_from_queue(payload):
 async def send_raid_status_notice_from_queue(payload):
     raid_name = clean(payload.get("raidName")) or "Raid"
     action = clean(payload.get("action"))
+    custom_description = clean(payload.get("messageTemplate"))
+    replacements = {"{spieler}": clean(payload.get("player")) or "Ein Spieler", "{raid}": raid_name, "{status}": raid_signup_action_label(action), "{datum}": format_raid_announcement_date(payload.get("raidDate") or ""), "{uhrzeit}": format_raid_announcement_time(payload.get("raidTime") or ""), "{hinweis}": clean(payload.get("message"))}
+    for token,value in replacements.items(): custom_description = custom_description.replace(token,value)
     embed = discord.Embed(
         title="Änderung im Raidanmelder",
-        description=f"**{clean(payload.get('player')) or 'Ein Spieler'}** wurde für **{raid_name}** **{raid_signup_action_label(action)}**.",
+        description=custom_description or f"**{clean(payload.get('player')) or 'Ein Spieler'}** wurde für **{raid_name}** **{raid_signup_action_label(action)}**.",
         color=0x7C3AED,
     )
     embed.add_field(name="Raid", value=raid_name, inline=True)
@@ -3200,6 +3203,25 @@ async def send_raid_status_notice_from_queue(payload):
         embed.add_field(name="Hinweis", value=clean(payload.get("message"))[:1024], inline=False)
     count = await send_queue_targeted_embed(payload, embed)
     print(f"Raidstatus-Queue-DM an {count} Empfänger gesendet: {raid_name}")
+    return count
+
+
+async def send_po_release_request_notice_from_queue(payload):
+    guild_slug = payload_guild_slug(payload)
+    character = clean(payload.get("character")) or "Unbekannt"
+    server = clean(payload.get("server"))
+    class_name = clean(payload.get("className"))
+    raid = clean(payload.get("raid")).upper() or "-"
+    request_type = clean(payload.get("requestType"))
+    request_label = {"recruit":"Rekrutenstatus aufheben","p1p3":"P1–P3 Freigabe","p0":"P0 Freigabe"}.get(request_type,request_type or "PO-Freigabe")
+    link = f"{LICHTLOOT_URL.rstrip('/')}/gildenleitung.html?" + urllib.parse.urlencode({"guild":guild_slug,"panel":"po-freigaben"})
+    text = clean(payload.get("messageTemplate"))
+    replacements = {"{gilde}":guild_slug,"{charakter}":character,"{server}":server,"{klasse}":class_name,"{raid}":raid,"{antrag}":request_label,"{link}":link}
+    for token,value in replacements.items(): text = text.replace(token,value)
+    embed = discord.Embed(title="Neue PO-Freigabe wartet",description=text or f"**{character}** hat eine **{request_label}** für **{raid}** eingereicht.",color=0xFACC15)
+    if not text: embed.add_field(name="Direkt zur PO-Freigabe",value=f"[Antrag prüfen]({link})",inline=False)
+    count = await send_queue_targeted_embed(payload,embed)
+    print(f"PO-Freigabehinweis an {count} Empfänger gesendet: {character}")
     return count
 
 
@@ -4304,7 +4326,7 @@ async def po_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": QUEUE_TOKEN,
                 "limit": "50",
-                "types": "po_post,p0_post_refresh,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,loot_master_leadpin_notice,po_rejection_notice,po_approval_notice,po_post_delete",
+                "types": "po_post,p0_post_refresh,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,loot_master_leadpin_notice,po_release_request_notice,po_rejection_notice,po_approval_notice,po_post_delete",
                 "t": int(time.time()),
             })
             if result.get("success"):
@@ -4318,6 +4340,7 @@ async def po_queue_loop():
                         "raid_announcement_role_notice",
                         "raid_status_staff_notice",
                         "loot_master_leadpin_notice",
+                        "po_release_request_notice",
                         "po_rejection_notice",
                         "po_approval_notice",
                     }
@@ -4468,6 +4491,10 @@ async def po_queue_loop():
                             continue
                         if item_type == "loot_master_leadpin_notice":
                             await send_loot_master_leadpin_notice_from_queue(payload)
+                            await resolve_queue_item(item.get("rowNumber"))
+                            continue
+                        if item_type == "po_release_request_notice":
+                            await send_po_release_request_notice_from_queue(payload)
                             await resolve_queue_item(item.get("rowNumber"))
                             continue
                         if item_type == "raid_signup_notice":
