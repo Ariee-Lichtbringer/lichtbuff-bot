@@ -2912,6 +2912,7 @@ async def review_entry(payload, entry, user):
     result = await asyncio.to_thread(api_post, {
         "action": "reviewPoPostEntry",
         "queueToken": QUEUE_TOKEN,
+        "entryId": entry.get("id") or entry.get("entryId") or "",
         "postKey": payload["postKey"],
         "sourceChannelId": payload_source_channel_id(payload),
         "targetChannelId": payload_target_channel_id(payload),
@@ -2939,6 +2940,7 @@ async def reject_entry(payload, entry, user, reason=""):
     result = await asyncio.to_thread(api_post, {
         "action": "reviewPoPostEntry",
         "queueToken": QUEUE_TOKEN,
+        "entryId": entry.get("id") or entry.get("entryId") or "",
         "postKey": payload["postKey"],
         "sourceChannelId": payload_source_channel_id(payload),
         "targetChannelId": payload_target_channel_id(payload),
