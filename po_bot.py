@@ -3205,7 +3205,9 @@ async def send_raid_status_notice_from_queue(payload):
 
 async def send_loot_master_leadpin_notice_from_queue(payload):
     raid_name = clean(payload.get("raidName")) or "Raid"
+    raid_id = clean(payload.get("raidId") or payload.get("id"))
     lead_pin = clean(payload.get("leadPin"))
+    loot_master_pin = clean(payload.get("lootMasterPin") or payload.get("lootMasterPassword"))
     if not lead_pin:
         return 0
     embed = discord.Embed(
@@ -3214,9 +3216,34 @@ async def send_loot_master_leadpin_notice_from_queue(payload):
         color=0xFACC15,
     )
     embed.add_field(name="LeadPIN", value=f"`{lead_pin}`", inline=False)
+    if loot_master_pin:
+        embed.add_field(name="Plündermeister-PIN", value=f"`{loot_master_pin}`", inline=False)
+    embed.add_field(
+        name="Zugang",
+        value="Alternativ wird auch der **Mastercode der Gildenleitung** als Plündermeister-Passwort akzeptiert.",
+        inline=False,
+    )
     embed.add_field(name="Datum", value=format_raid_announcement_date(payload.get("raidDate") or ""), inline=True)
     embed.add_field(name="Uhrzeit", value=format_raid_announcement_time(payload.get("raidTime") or ""), inline=True)
-    embed.set_footer(text="Das Plündermeister-Passwort erlaubt nur PO+ übertragen und Item erhalten/Punkte entfernen.")
+    raidlead_url = (
+        f"{LICHTLOOT_URL.rstrip('/')}/raidlead-panel.html?"
+        + urllib.parse.urlencode({
+            "guild": payload_guild_slug(payload),
+            "raidId": raid_id,
+            "leadPin": lead_pin,
+        })
+    )
+    embed.add_field(
+        name="Direkt zum Plündermeisterpanel",
+        value=f"[Plündermeisterseite für {raid_name} öffnen]({raidlead_url})",
+        inline=False,
+    )
+    embed.add_field(
+        name="Erinnerung für nach dem Raid",
+        value="• **PO+ Punkte übertragen**\n• **Erhaltene Items markieren** und die zugehörigen Punkte entfernen",
+        inline=False,
+    )
+    embed.set_footer(text="PM-PIN: nur PO+ übertragen und Item erhalten/Punkte entfernen. Der Mastercode bleibt voll gültig.")
     count = await send_queue_targeted_embed(payload, embed)
     print(f"LeadPIN-DM an {count} Plündermeister gesendet: {raid_name}")
     return count
