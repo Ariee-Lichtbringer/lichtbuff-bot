@@ -1080,6 +1080,21 @@ def normalized_prio_player_name(value):
     return re.sub(r"[^a-z0-9]+", "", text)
 
 
+def configured_discord_name_matches(configured_names, member_names):
+    """Match exact Discord names and harmless display-name suffixes."""
+    for configured in configured_names or set():
+        if not configured:
+            continue
+        for member_name in member_names or set():
+            if not member_name:
+                continue
+            if configured == member_name:
+                return True
+            if len(configured) >= 4 and member_name.startswith(configured):
+                return True
+    return False
+
+
 def hydrate_helper_prio_flags(helper, guild_slug):
     if not helper or not helper.get("success"):
         return helper
@@ -3243,14 +3258,14 @@ async def send_player_login_approval_notice_from_queue(payload):
             normalized_prio_player_name(getattr(member, "global_name", "")),
         }
         member_roles = {str(role.id) for role in getattr(member, "roles", [])}
-        if wanted_names.intersection(member_names) or wanted_role_ids.intersection(member_roles):
+        if configured_discord_name_matches(wanted_names, member_names) or wanted_role_ids.intersection(member_roles):
             recipients[member.id] = member
     if not recipients:
         raise RuntimeError(f"Keine konfigurierten Discord-Empfaenger auf {discord_guild.name} gefunden.")
     delivered = 0
     for member in recipients.values():
         try:
-            await member.send(message, silent=True)
+            await member.send(message)
             delivered += 1
         except Exception as error:
             print(f"SpielerLogin-DM an {member} fehlgeschlagen: {error}")
