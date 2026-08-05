@@ -7994,6 +7994,7 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
     # Hauptbot und PO-Bot sie parallel abholen, könnten beide dieselbe DM oder
     # denselben Raidpost senden, bevor der Queue-Eintrag auf erledigt steht.
     po_bot_owned_types = {
+        "player_login_approval_notice",
         "raid_announcement",
         "raid_announcement_refresh",
         "raid_announcement_role_notice",
@@ -8135,6 +8136,7 @@ async def lichtloot_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
                 "limit": 500,
+                "types": "worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,worldbuff_replacement,boss_token_notice,worldbuff_backup_export",
                 "t": int(time.time())
             })
 
@@ -8167,6 +8169,7 @@ async def lichtloot_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
                 "limit": 500,
+                "types": "worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,worldbuff_replacement,boss_token_notice,worldbuff_backup_export",
                 "t": int(time.time())
             })
 

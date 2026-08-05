@@ -3160,6 +3160,86 @@ async def send_queue_targeted_embed(payload, embed):
     return len(sent)
 
 
+async def send_player_login_approval_notice_from_queue(payload):
+    guild_slug = payload_guild_slug(payload)
+    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
+    guild_name = clean(payload.get("guildName") or registry_entry.get("name") or guild_slug)
+    discord_guild_id = clean(registry_entry.get("discordGuildId"))
+    discord_guild = client.get_guild(int(discord_guild_id)) if discord_guild_id.isdigit() else None
+    if discord_guild is None:
+        expected_names = {guild_slug.casefold(), guild_name.casefold()}
+        discord_guild = next(
+            (guild for guild in client.guilds if any(name and name in clean(guild.name).casefold() for name in expected_names)),
+            None,
+        )
+    if discord_guild is None:
+        raise RuntimeError(f"Discord-Server fuer {guild_slug} wurde nicht gefunden.")
+
+    wanted_role_ids = {str(value) for value in (payload.get("notificationRoleIds") or []) if str(value).isdigit()}
+    wanted_names = {
+        normalized_prio_player_name(value)
+        for value in (payload.get("notificationNames") or [])
+        if clean(value)
+    }
+    character = clean(payload.get("character")) or "Unbekannt"
+    server = clean(payload.get("server"))
+    class_name = clean(payload.get("className"))
+    approval_url = f"{LICHTLOOT_URL.rstrip('/')}/gildenleitung.html?" + urllib.parse.urlencode({
+        "guild": guild_slug,
+        "panel": "spielerlogins",
+        "player": character,
+    })
+    character_label = f"{character}-{server}" if server else character
+    default_message = "\n".join(filter(None, [
+        "🔐 **Neuer SpielerLogin wartet auf Freigabe**",
+        f"**Gilde:** {guild_name}",
+        f"**Charakter:** {character_label}",
+        f"**Klasse:** {class_name}" if class_name else "",
+        "",
+        "Bitte den neuen SpielerLogin in der Gildenleitung prüfen und freigeben.",
+        f"🔗 **[Direkt zur Spielerfreigabe]({approval_url})**",
+    ]))
+    message = clean(payload.get("messageTemplate"))
+    for token, value in {
+        "{gilde}": guild_name,
+        "{charakter}": character,
+        "{server}": server,
+        "{klasse}": class_name,
+        "{link}": approval_url,
+    }.items():
+        message = message.replace(token, value)
+    message = message or default_message
+
+    members = list(getattr(discord_guild, "members", []))
+    if not members:
+        members = [member async for member in discord_guild.fetch_members(limit=None)]
+    recipients = {}
+    for member in members:
+        if member.bot:
+            continue
+        member_names = {
+            normalized_prio_player_name(getattr(member, "name", "")),
+            normalized_prio_player_name(getattr(member, "display_name", "")),
+            normalized_prio_player_name(getattr(member, "global_name", "")),
+        }
+        member_roles = {str(role.id) for role in getattr(member, "roles", [])}
+        if wanted_names.intersection(member_names) or wanted_role_ids.intersection(member_roles):
+            recipients[member.id] = member
+    if not recipients:
+        raise RuntimeError(f"Keine konfigurierten Discord-Empfaenger auf {discord_guild.name} gefunden.")
+    delivered = 0
+    for member in recipients.values():
+        try:
+            await member.send(message, silent=True)
+            delivered += 1
+        except Exception as error:
+            print(f"SpielerLogin-DM an {member} fehlgeschlagen: {error}")
+    if not delivered:
+        raise RuntimeError("Die SpielerLogin-DM konnte keinem Empfaenger zugestellt werden.")
+    print(f"SpielerLogin-Freigabehinweis fuer {guild_slug} per PO-Bot an {delivered} Empfaenger gesendet.")
+    return delivered
+
+
 async def send_raid_announcement_notice_from_queue(payload):
     raid_name = clean(payload.get("raidName")) or "Raid"
     raid_date = format_raid_announcement_date(payload.get("raidDate") or "")
@@ -4326,14 +4406,14 @@ async def po_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": QUEUE_TOKEN,
                 "limit": "50",
-                "types": "po_post,p0_post_refresh,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,loot_master_leadpin_notice,po_release_request_notice,po_rejection_notice,po_approval_notice,po_post_delete",
+                "types": "player_login_approval_notice,po_post,p0_post_refresh,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,loot_master_leadpin_notice,po_release_request_notice,po_rejection_notice,po_approval_notice,po_post_delete",
                 "t": int(time.time()),
             })
             if result.get("success"):
                 items = result.get("items") or []
                 po_items = [
                     item for item in items
-                    if clean(item.get("type")) in {"po_post", "p0_post_refresh"}
+                    if clean(item.get("type")) in {"player_login_approval_notice", "po_post", "p0_post_refresh"}
                     or clean(item.get("type")) in {
                         "raid_announcement",
                         "raid_announcement_refresh",
@@ -4374,6 +4454,10 @@ async def po_queue_loop():
                                 "Queue-Auftrag bereits von einer anderen Bot-Instanz übernommen: "
                                 f"{queue_guild_slug}:{item_type}:{item.get('rowNumber')}"
                             )
+                            continue
+                        if item_type == "player_login_approval_notice":
+                            await send_player_login_approval_notice_from_queue(payload)
+                            await resolve_queue_item(item.get("rowNumber"))
                             continue
                         if (
                             item_type == "raid_announcement_role_notice"
