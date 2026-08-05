@@ -666,8 +666,10 @@ def raid_announcement_image_url(raid):
     layout = registry_entry.get("layout") or {}
     images = layout.get("raidImages") if isinstance(layout, dict) else {}
     guild_image = clean((images or {}).get(raid_key) or (images or {}).get(image_raid_key))
-    if guild_slug != "lichtloot" and guild_image:
-        return urllib.parse.urljoin(LICHTLOOT_URL.rstrip("/") + "/", guild_image)
+    if guild_slug != "lichtloot":
+        if guild_image:
+            return urllib.parse.urljoin(LICHTLOOT_URL.rstrip("/") + "/", guild_image)
+        return ""
     explicit = clean((raid or {}).get("raidImageUrl") or (raid or {}).get("imageUrl"))
     if explicit.startswith(("http://", "https://")):
         return explicit
