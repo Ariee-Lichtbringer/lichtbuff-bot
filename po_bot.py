@@ -2753,9 +2753,12 @@ def merge_po_entries(saved_entries, fresh_entries):
 
 async def load_entries(payload):
     is_repost = clean(payload.get("restoreArchived") or payload.get("repost")).lower() in {"1", "true", "yes", "ja"}
+    guild_slug = payload_guild_slug(payload)
     result = await asyncio.to_thread(api_get, {
         "action": "lichtbotGetPoPostEntries",
         "queueToken": QUEUE_TOKEN,
+        "guild": guild_slug,
+        "guildSlug": guild_slug,
         "postKey": payload["postKey"],
         "sourceChannelId": "" if is_repost else payload_source_channel_id(payload),
         "targetChannelId": "" if is_repost else payload_target_channel_id(payload),
@@ -3075,10 +3078,21 @@ async def fresh_entries_for_payload(payload):
 
 async def review_entry(payload, entry, user):
     payload = payload_with_saved_lichtloot_id(payload)
+    guild_slug = payload_guild_slug(payload)
     raid_pin = payload_lichtloot_raid_pin(payload)
+    print(
+        "PO-Freigabe suche:",
+        f"guild={guild_slug}",
+        f"postKey={clean(payload.get('postKey'))}",
+        f"raidPin={raid_pin}",
+        f"player={clean(entry.get('player'))}",
+        f"item={clean(entry.get('item') or entry.get('itemName'))}",
+    )
     result = await asyncio.to_thread(api_post, {
         "action": "reviewPoPostEntry",
         "queueToken": QUEUE_TOKEN,
+        "guild": guild_slug,
+        "guildSlug": guild_slug,
         "entryId": entry.get("id") or entry.get("entryId") or "",
         "postKey": payload["postKey"],
         "sourceChannelId": payload_source_channel_id(payload),
@@ -3103,10 +3117,13 @@ async def review_entry(payload, entry, user):
 
 async def reject_entry(payload, entry, user, reason=""):
     payload = payload_with_saved_lichtloot_id(payload)
+    guild_slug = payload_guild_slug(payload)
     raid_pin = payload_lichtloot_raid_pin(payload)
     result = await asyncio.to_thread(api_post, {
         "action": "reviewPoPostEntry",
         "queueToken": QUEUE_TOKEN,
+        "guild": guild_slug,
+        "guildSlug": guild_slug,
         "entryId": entry.get("id") or entry.get("entryId") or "",
         "postKey": payload["postKey"],
         "sourceChannelId": payload_source_channel_id(payload),
