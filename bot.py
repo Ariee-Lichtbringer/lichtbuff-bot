@@ -4461,6 +4461,16 @@ def normalized_discord_name(value):
     return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().casefold())
 
 
+def member_matches_configured_names(member, configured_names):
+    candidates = {
+        normalized_discord_name(getattr(member, "name", "")),
+        normalized_discord_name(getattr(member, "display_name", "")),
+        normalized_discord_name(getattr(member, "global_name", "")),
+    }
+    candidates.discard("")
+    return any(wanted == candidate or wanted in candidate for wanted in configured_names for candidate in candidates)
+
+
 def render_notification_template(template, values):
     text = str(template or "")
     for key, value in values.items():
@@ -4534,9 +4544,9 @@ async def post_player_login_approval_notice(payload):
         member for member in getattr(discord_guild, "members", [])
         if not getattr(member, "bot", False)
         and (any(int(getattr(role, "id", 0) or 0) in role_ids for role in getattr(member, "roles", []))
-             or normalized_discord_name(getattr(member, "display_name", "")) in configured_names
-             or normalized_discord_name(getattr(member, "name", "")) in configured_names)
+             or member_matches_configured_names(member, configured_names))
     ]
+    recipients = list({int(member.id): member for member in recipients}.values())
     if not recipients:
         try:
             fetched_members = [member async for member in discord_guild.fetch_members(limit=None)]
@@ -4544,9 +4554,9 @@ async def post_player_login_approval_notice(payload):
                 member for member in fetched_members
                 if not getattr(member, "bot", False)
                 and (any(int(getattr(role, "id", 0) or 0) in role_ids for role in getattr(member, "roles", []))
-                     or normalized_discord_name(getattr(member, "display_name", "")) in configured_names
-                     or normalized_discord_name(getattr(member, "name", "")) in configured_names)
+                     or member_matches_configured_names(member, configured_names))
             ]
+            recipients = list({int(member.id): member for member in recipients}.values())
         except Exception as error:
             raise RuntimeError(f'Discord-Mitglieder für die Rolle "Offiziere" konnten nicht geladen werden: {error}') from error
     if not recipients:
@@ -8140,6 +8150,13 @@ async def lichtloot_queue_loop():
                         await handle_lichtloot_queue_item(item)
                     except Exception as item_error:
                         print(f"Fehler beim Verarbeiten eines LichtLoot-Queue-Eintrags fuer {guild_slug}:", item_error)
+                        if str(item.get("type") or "").strip() == "player_login_approval_notice" and item.get("rowNumber"):
+                            await asyncio.to_thread(lichtloot_post, {
+                                "action": "lichtbotResolveQueue",
+                                "queueToken": LICHTBOT_QUEUE_TOKEN,
+                                "rowNumber": item.get("rowNumber")
+                            })
+                            print(f"Nicht zustellbaren alten SpielerLogin-Hinweis fuer {guild_slug} aus der Queue entfernt.")
                     finally:
                         CURRENT_GUILD_SLUG.reset(token)
             else:
@@ -8185,6 +8202,13 @@ async def lichtloot_queue_loop():
                             })
                     except Exception as item_error:
                         print(f"Fehler beim Verarbeiten eines Railway-Queue-Eintrags fuer {guild_slug}:", item_error)
+                        if str(item.get("type") or "").strip() == "player_login_approval_notice" and item.get("rowNumber"):
+                            await asyncio.to_thread(railway_post, {
+                                "action": "lichtbotResolveQueue",
+                                "queueToken": LICHTBOT_QUEUE_TOKEN,
+                                "rowNumber": item.get("rowNumber")
+                            })
+                            print(f"Nicht zustellbaren alten Railway-SpielerLogin-Hinweis fuer {guild_slug} aus der Queue entfernt.")
                     finally:
                         CURRENT_GUILD_SLUG.reset(token)
             else:
