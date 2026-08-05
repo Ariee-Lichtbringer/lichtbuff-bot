@@ -157,7 +157,7 @@ PO_REVIEW_ROLE_NAMES = {
     normalize_role_name(value)
     for value in os.getenv(
         "PO_REVIEW_ROLE_NAMES",
-        "PO-Freigabe,P0 Freigabe,P0-Freigabe,PO Freigabe,Gildenleitung,Gildenoffiziere,Raidoffiziere"
+        "PO Freigabe"
     ).split(",")
     if value.strip()
 }
@@ -2634,7 +2634,10 @@ async def load_entries(payload):
         if not entry.get("configOnly")
         and (clean(entry.get("player")) or clean(entry.get("item") or entry.get("itemName")))
     ]
-    return apply_po_item_variants(payload, merge_po_entries(entries + payload_po_post_entries(payload), []))
+    # Im Discord-Post eingebettete Einträge dienen nur als Rückfall für alte
+    # Posts. Der aktuelle Datenbankstatus muss immer Vorrang haben, damit eine
+    # Freigabe beim anschließenden Refresh nicht wieder orange erscheint.
+    return apply_po_item_variants(payload, merge_po_entries(entries, payload_po_post_entries(payload)))
 
 
 def payload_po_post_entries(payload):
@@ -2862,12 +2865,6 @@ def po_entry_options(entries, *, only_unlucked=False):
 
 
 async def reviewer_allowed(user):
-    permissions = getattr(user, "guild_permissions", None)
-    if permissions and (
-        getattr(permissions, "administrator", False)
-        or getattr(permissions, "manage_guild", False)
-    ):
-        return True
     for role in getattr(user, "roles", []) or []:
         if normalize_role_name(getattr(role, "name", "")) in PO_REVIEW_ROLE_NAMES:
             return True
@@ -4546,7 +4543,7 @@ async def po_queue_loop():
                                 "targetChannelId": channel_id,
                                 "channelId": channel_id,
                                 "restoreArchived": "true",
-                                "forceNewMessage": "true",
+                                "forceNewMessage": "false",
                                 "lichtlootRaidId": clean(
                                     followup.get("lichtlootRaidId")
                                     or raid.get("raidId")
