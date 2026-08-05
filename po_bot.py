@@ -63,6 +63,31 @@ def normalize_guild_slug(value):
     return slug_value or GUILD_SLUG
 
 
+def guild_display_name(value="", payload=None):
+    payload = payload or {}
+    raw_name = clean(
+        value
+        or payload.get("guildName")
+        or payload.get("gilde")
+        or payload.get("guild")
+        or payload.get("guildSlug")
+    )
+    guild_slug = normalize_guild_slug(
+        payload.get("guildSlug") or payload.get("guild") or raw_name
+    )
+    if guild_slug == "lichtloot":
+        return "Lichtbringer"
+    if guild_slug == "nachtloot":
+        return "Die Nachtwächter"
+    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
+    return clean(
+        registry_entry.get("name")
+        or registry_entry.get("guildName")
+        or raw_name
+        or guild_slug
+    )
+
+
 def current_guild_slug():
     return normalize_guild_slug(CURRENT_GUILD_SLUG.get())
 
@@ -2004,7 +2029,7 @@ def build_fixed_po_header(payload):
     raid_name = display_raid(payload.get("raid") or "")
     date = normalize_post_date(payload.get("date") or payload.get("raidDate") or payload.get("datum"))
     time_value = normalize_post_time(payload.get("time") or payload.get("raidTime") or payload.get("uhrzeit"))
-    guild_name = clean(payload.get("guildName") or payload.get("guild") or payload.get("gilde")) or "Lichtbringer"
+    guild_name = guild_display_name(payload=payload)
     created_by = clean(payload.get("createdBy") or payload.get("created_by") or payload.get("erstelltVon")) or "Gildenleitung"
     lichtloot_id = payload_lichtloot_raid_pin(payload)
     lines = [
@@ -3211,7 +3236,10 @@ async def send_queue_targeted_embed(payload, embed):
 async def send_player_login_approval_notice_from_queue(payload):
     guild_slug = payload_guild_slug(payload)
     registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
-    guild_name = clean(payload.get("guildName") or registry_entry.get("name") or guild_slug)
+    guild_name = guild_display_name(
+        payload.get("guildName") or registry_entry.get("name") or guild_slug,
+        payload,
+    )
     discord_guild_id = clean(
         registry_entry.get("discordGuildId")
         or ({
@@ -3353,6 +3381,7 @@ async def send_raid_status_notice_from_queue(payload):
 
 async def send_po_release_request_notice_from_queue(payload):
     guild_slug = payload_guild_slug(payload)
+    guild_name = guild_display_name(payload=payload)
     character = clean(payload.get("character")) or "Unbekannt"
     server = clean(payload.get("server"))
     class_name = clean(payload.get("className"))
@@ -3361,7 +3390,7 @@ async def send_po_release_request_notice_from_queue(payload):
     request_label = {"recruit":"Rekrutenstatus aufheben","p1p3":"P1–P3 Freigabe","p0":"P0 Freigabe","po":"PO-Freigabe"}.get(request_type,request_type or "PO-Freigabe")
     link = f"{LICHTLOOT_URL.rstrip('/')}/gildenleitung.html?" + urllib.parse.urlencode({"guild":guild_slug,"panel":"po-freigaben"})
     text = clean(payload.get("messageTemplate"))
-    replacements = {"{gilde}":guild_slug,"{charakter}":character,"{server}":server,"{klasse}":class_name,"{raid}":raid,"{antrag}":request_label,"{link}":link}
+    replacements = {"{gilde}":guild_name,"{charakter}":character,"{server}":server,"{klasse}":class_name,"{raid}":raid,"{antrag}":request_label,"{link}":link}
     for token,value in replacements.items(): text = text.replace(token,value)
     embed = discord.Embed(title="Neue PO-Freigabe wartet",description=text or f"**{character}** hat eine **{request_label}** für **{raid}** eingereicht.",color=0xFACC15)
     if not text: embed.add_field(name="Direkt zur PO-Freigabe",value=f"[Antrag prüfen]({link})",inline=False)
