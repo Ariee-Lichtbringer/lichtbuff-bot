@@ -2110,8 +2110,8 @@ def lichtloot_prio_url(payload=None):
 def guild_prio_link_icon(payload):
     guild_slug = payload_guild_slug(payload)
     if guild_slug == "nachtloot":
-        return custom_emoji("nachtloot", "🌙")
-    return custom_emoji("lichtloot", "⚜️")
+        return custom_emoji("GildeniconNW", "🌙")
+    return custom_emoji("GildeniconLB", "⚜️")
 
 
 def build_fixed_po_header(payload):
