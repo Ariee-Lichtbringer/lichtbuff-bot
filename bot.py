@@ -8134,6 +8134,7 @@ async def lichtloot_queue_loop():
             result = await asyncio.to_thread(lichtloot_get, {
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
+                "limit": 500,
                 "t": int(time.time())
             })
 
@@ -8165,6 +8166,7 @@ async def lichtloot_queue_loop():
             railway_result = await asyncio.to_thread(railway_get, {
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
+                "limit": 500,
                 "t": int(time.time())
             })
 
