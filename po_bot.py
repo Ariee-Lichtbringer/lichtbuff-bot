@@ -3203,6 +3203,25 @@ async def send_raid_status_notice_from_queue(payload):
     return count
 
 
+async def send_loot_master_leadpin_notice_from_queue(payload):
+    raid_name = clean(payload.get("raidName")) or "Raid"
+    lead_pin = clean(payload.get("leadPin"))
+    if not lead_pin:
+        return 0
+    embed = discord.Embed(
+        title="LeadPIN für deinen Raid",
+        description=f"Du bist für **{raid_name}** als Plündermeister eingetragen.",
+        color=0xFACC15,
+    )
+    embed.add_field(name="LeadPIN", value=f"`{lead_pin}`", inline=False)
+    embed.add_field(name="Datum", value=format_raid_announcement_date(payload.get("raidDate") or ""), inline=True)
+    embed.add_field(name="Uhrzeit", value=format_raid_announcement_time(payload.get("raidTime") or ""), inline=True)
+    embed.set_footer(text="Das Plündermeister-Passwort erlaubt nur PO+ übertragen und Item erhalten/Punkte entfernen.")
+    count = await send_queue_targeted_embed(payload, embed)
+    print(f"LeadPIN-DM an {count} Plündermeister gesendet: {raid_name}")
+    return count
+
+
 async def delete_entry(payload, entry, user):
     raid_pin = payload_lichtloot_raid_pin(payload)
     result = await asyncio.to_thread(api_post, {
@@ -4257,7 +4276,7 @@ async def po_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": QUEUE_TOKEN,
                 "limit": "50",
-                "types": "po_post,p0_post_refresh,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,po_rejection_notice,po_approval_notice,po_post_delete",
+                "types": "po_post,p0_post_refresh,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,loot_master_leadpin_notice,po_rejection_notice,po_approval_notice,po_post_delete",
                 "t": int(time.time()),
             })
             if result.get("success"):
@@ -4270,6 +4289,7 @@ async def po_queue_loop():
                         "raid_announcement_refresh",
                         "raid_announcement_role_notice",
                         "raid_status_staff_notice",
+                        "loot_master_leadpin_notice",
                         "po_rejection_notice",
                         "po_approval_notice",
                     }
@@ -4416,6 +4436,10 @@ async def po_queue_loop():
                             continue
                         if item_type == "raid_status_staff_notice":
                             await send_raid_status_notice_from_queue(payload)
+                            await resolve_queue_item(item.get("rowNumber"))
+                            continue
+                        if item_type == "loot_master_leadpin_notice":
+                            await send_loot_master_leadpin_notice_from_queue(payload)
                             await resolve_queue_item(item.get("rowNumber"))
                             continue
                         if item_type == "raid_signup_notice":

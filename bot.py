@@ -7968,6 +7968,7 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
         "raid_announcement_refresh",
         "raid_announcement_role_notice",
         "raid_status_staff_notice",
+        "loot_master_leadpin_notice",
         "po_post",
         "po_post_delete",
         "p0_post_refresh",
