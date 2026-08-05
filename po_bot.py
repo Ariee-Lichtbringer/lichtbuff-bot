@@ -1259,7 +1259,7 @@ async def edit_raid_message_preserving_po(message, raid, helper):
         if banner:
             await message.edit(embed=embed, attachments=[banner], view=RaidSignupView(raid))
         else:
-            await message.edit(embed=embed, view=RaidSignupView(raid))
+            await message.edit(embed=embed, attachments=[], view=RaidSignupView(raid))
         return
 
     po_payload["combinedRaidSnapshot"] = raid
@@ -1275,7 +1275,7 @@ async def edit_raid_message_preserving_po(message, raid, helper):
     if banner:
         await message.edit(embeds=embeds, attachments=[banner], view=view)
     else:
-        await message.edit(embeds=embeds, view=view)
+        await message.edit(embeds=embeds, attachments=[], view=view)
     register_po_view(client, po_payload, items, entries)
 
 
@@ -4380,7 +4380,7 @@ async def refresh_po_message(client, payload):
     if banner:
         await message.edit(embeds=embeds, attachments=[banner], view=view)
     else:
-        await message.edit(embeds=embeds, view=view)
+        await message.edit(embeds=embeds, attachments=[], view=view)
     register_po_view(client, payload, items, entries)
 
 
@@ -4459,7 +4459,7 @@ async def post_or_update_from_queue(client, payload):
             if banner:
                 await message.edit(embeds=embeds, attachments=[banner], view=view)
             else:
-                await message.edit(embeds=embeds, view=view)
+                await message.edit(embeds=embeds, attachments=[], view=view)
         except Exception as error:
             print(f"PO-Anmelder wird neu gepostet, alte Nachricht nicht nutzbar ({post_key}): {error}")
             message = None
