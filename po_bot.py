@@ -684,6 +684,40 @@ def custom_emoji(name, fallback):
     return str(emoji) if emoji else fallback
 
 
+WORLDBUFF_EMOJIS = {
+    "Hakkar": ("zgbuff", "🟢"),
+    "Ony": ("onybuff", "🔴"),
+    "Nef": ("neffbuff", "🔴"),
+    "Rend": ("rendbuff", "🟠"),
+}
+
+
+def normalize_worldbuff_name(value):
+    name = clean(value)
+    lowered = name.lower()
+    if lowered in {"hakkar", "zg"}:
+        return "Hakkar"
+    if lowered in {"ony", "onyxia"}:
+        return "Ony"
+    if lowered in {"nef", "nefarian"}:
+        return "Nef"
+    if lowered == "rend":
+        return "Rend"
+    return name or "Buff"
+
+
+def worldbuff_emoji(buff):
+    emoji_name, fallback = WORLDBUFF_EMOJIS.get(buff, ("", "⚪"))
+    return custom_emoji(emoji_name, fallback) if emoji_name else fallback
+
+
+def format_worldbuff_announcement_row(buff, row_time, guild, caster=""):
+    """Use the same compact fixed-width columns as the Worldbuff channel."""
+    caster_suffix = f" - ⚔️ {caster}" if caster else ""
+    row = f"{buff:<6}  {row_time:<5}  {guild}{caster_suffix}"
+    return f"{worldbuff_emoji(buff)} `{row.rstrip()}`"
+
+
 def build_raid_announcement_embed(raid):
     raid = raid or {}
     raid_name = clean(raid.get("raidName") or display_raid(raid.get("raid")) or "Raid")
@@ -809,14 +843,10 @@ def current_worldbuff_announcement_block(guild_slug=None, max_lines=8):
             weekday = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"][row_date.weekday()]
             lines.append(f"**{weekday}, {row_date.strftime('%d.%m.%Y')}**")
             current_date = row_date
-        buff = clean(row.get("buff") or row.get("type")) or "Buff"
-        emoji = "🟢" if buff.lower() == "hakkar" else "🔴"
+        buff = normalize_worldbuff_name(row.get("buff") or row.get("type"))
         guild = clean(row.get("gilde") or row.get("guild"))
         caster = clean(row.get("charakter") or row.get("character"))
-        suffix = f" - {guild}" if guild else ""
-        if caster:
-            suffix += f" - ⚔️ {caster}"
-        lines.append(f"{emoji} **{buff}** {row_time}{suffix}")
+        lines.append(format_worldbuff_announcement_row(buff, row_time, guild, caster))
     remaining = max(0, len(upcoming) - max_lines)
     if remaining:
         lines.append(f"… und {remaining} weitere Worldbuff-Termine im Worldbuff-Post.")
@@ -1251,6 +1281,15 @@ def combined_po_payload_for_message(message_id):
 
 
 async def edit_raid_message_preserving_po(message, raid, helper):
+    # The Discord server is the final authority for the guild when an existing
+    # signup post is refreshed. This prevents incomplete queue snapshots from
+    # ever applying another guild's banner or signup data to the message.
+    raid = dict(raid or {})
+    message_guild_slug = guild_slug_for_discord_server(
+        getattr(message, "guild", None),
+        payload_guild_slug(raid),
+    )
+    raid["guildSlug"] = message_guild_slug
     state, state_key, po_payload = combined_po_payload_for_message(getattr(message, "id", ""))
     if not po_payload:
         embed = build_raid_announcement_embed(raid)
@@ -1392,7 +1431,7 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None):
     raid = dict(raid)
     payload_raid = payload.get("raidSnapshot") if isinstance(payload.get("raidSnapshot"), dict) else {}
     for key in (
-        "raid", "raidName", "raidDate", "raidTime", "createdBy", "guild", "guildName",
+        "raid", "raidName", "raidDate", "raidTime", "createdBy", "guild", "guildSlug", "guildName",
         "maxPlayers", "tankSlots", "healSlots", "ddSlots", "description", "raidImageUrl",
         "lootMaster", "pluendermeister", "statusNotifyTargets"
     ):
@@ -1418,6 +1457,8 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None):
             await asyncio.to_thread(api_post, {
                 "action": "lichtbotSetRaidDiscordMessage",
                 "queueToken": QUEUE_TOKEN,
+                "guild": payload_guild_slug(raid),
+                "guildSlug": payload_guild_slug(raid),
                 "raidId": clean(raid.get("raidId") or raid.get("id") or raid_id),
                 "discordChannelId": channel_id,
                 "discordMessageId": existing_message_id
@@ -1440,6 +1481,8 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None):
         await asyncio.to_thread(api_post, {
             "action": "lichtbotSetRaidDiscordMessage",
             "queueToken": QUEUE_TOKEN,
+            "guild": payload_guild_slug(raid),
+            "guildSlug": payload_guild_slug(raid),
             "raidId": clean(raid.get("raidId") or raid.get("id") or raid_id),
             "discordChannelId": channel_id,
             "discordMessageId": str(message.id)
@@ -1609,9 +1652,12 @@ class RaidSignupCharacterSelect(discord.ui.Select):
             except Exception as fallback_error:
                 print(f"Raid-Anmelder Snapshot-Fallback fehlgeschlagen: {fallback_error}")
         try:
+            refresh_guild_slug = payload_guild_slug(refresh_raid)
             await asyncio.to_thread(api_post, {
                 "action": "guildQueueRaidAnnouncementRefresh",
                 "queueToken": QUEUE_TOKEN,
+                "guild": refresh_guild_slug,
+                "guildSlug": refresh_guild_slug,
                 "raidId": clean(refresh_raid.get("raidId") or refresh_raid.get("id")),
                 "playerPin": clean(refresh_raid.get("playerPin") or refresh_raid.get("prioPin") or ""),
                 "prioPin": clean(refresh_raid.get("playerPin") or refresh_raid.get("prioPin") or ""),
