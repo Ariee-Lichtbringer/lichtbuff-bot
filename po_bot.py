@@ -111,7 +111,10 @@ def payload_guild_slug(payload):
 
 
 def guild_slug_for_discord_guild(discord_guild_id, fallback=""):
-    return normalize_guild_slug(DISCORD_GUILD_SLUGS.get(str(discord_guild_id or "").strip()) or fallback)
+    mapped = DISCORD_GUILD_SLUGS.get(str(discord_guild_id or "").strip())
+    if mapped:
+        return normalize_guild_slug(mapped)
+    return normalize_guild_slug(fallback) if clean(fallback) else ""
 
 
 def guild_slug_for_discord_server(guild, fallback=""):
@@ -135,7 +138,7 @@ def guild_slug_for_discord_server(guild, fallback=""):
             ]
             if any(candidate and str(candidate).strip().lower() in guild_name for candidate in candidates):
                 return normalize_guild_slug(slug_value)
-    return normalize_guild_slug(fallback)
+    return normalize_guild_slug(fallback) if clean(fallback) else ""
 
 
 def payload_for_interaction(payload, interaction):
@@ -4195,9 +4198,10 @@ class PoReviewSelect(discord.ui.Select):
                 )
                 return
             entry = self.entries[int(self.values[0])]
-            result = await review_entry(self.payload, entry, interaction.user)
+            action_payload = payload_for_interaction(self.payload, interaction)
+            result = await review_entry(action_payload, entry, interaction.user)
             saved = result.get("entry") or entry
-            await refresh_po_message(interaction.client, self.payload)
+            await refresh_po_message(interaction.client, action_payload)
             dm_sent = await send_po_approval_message(interaction.client, saved)
             await interaction.followup.send(
                 f"✅ Freigegeben: **{saved.get('player') or entry.get('player')}** → **{saved.get('item') or entry.get('item')}**."
@@ -4267,7 +4271,8 @@ class PoRejectSelect(discord.ui.Select):
                     ephemeral=True,
                 )
                 return
-            await interaction.response.send_modal(PoRejectModal(self.payload, self.entries[int(self.values[0])]))
+            action_payload = payload_for_interaction(self.payload, interaction)
+            await interaction.response.send_modal(PoRejectModal(action_payload, self.entries[int(self.values[0])]))
         except Exception as error:
             if interaction.response.is_done():
                 await interaction.followup.send(f"⚠️ Ablehnen konnte nicht geöffnet werden: `{error}`", ephemeral=True)
@@ -4296,13 +4301,14 @@ class PoRejectButton(discord.ui.Button):
         if not await reviewer_allowed(interaction.user):
             await interaction.followup.send("⚠️ Nur PO-Freigeber können PO-Einträge ablehnen.", ephemeral=True)
             return
-        entries = await fresh_entries_for_payload(self.payload)
+        action_payload = payload_for_interaction(self.payload, interaction)
+        entries = await fresh_entries_for_payload(action_payload)
         if not po_reject_entry_options(entries):
             await interaction.followup.send("Es gibt gerade keinen offenen PO-Eintrag zum Ablehnen.", ephemeral=True)
             return
         await interaction.followup.send(
             "Wähle den PO-Eintrag aus, den du ablehnen möchtest.",
-            view=PoRejectEntryView(self.payload, entries),
+            view=PoRejectEntryView(action_payload, entries),
             ephemeral=True,
         )
 
@@ -4332,8 +4338,9 @@ class PoDeleteEntrySelect(discord.ui.Select):
             if not can_delete_all and not is_own_entry:
                 await interaction.followup.send("⚠️ Du kannst nur deinen eigenen PO-Eintrag löschen.", ephemeral=True)
                 return
-            await delete_entry(self.payload, entry, interaction.user)
-            await refresh_po_message(interaction.client, self.payload)
+            action_payload = payload_for_interaction(self.payload, interaction)
+            await delete_entry(action_payload, entry, interaction.user)
+            await refresh_po_message(interaction.client, action_payload)
             await interaction.followup.send(
                 f"🗑️ Gelöscht: **{entry.get('player')}** → **{entry.get('item') or entry.get('itemName')}**.",
                 ephemeral=True,
