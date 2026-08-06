@@ -636,6 +636,8 @@ def format_raid_announcement_date(value):
     raw = clean(value)
     if not raw:
         return "noch offen"
+    if re.match(r"^\d{4}-\d{2}-\d{2}T", raw):
+        raw = raw[:10]
     for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
         try:
             return datetime.strptime(raw, fmt).strftime("%d.%m.%Y")
@@ -3555,6 +3557,7 @@ async def send_po_release_request_notice_from_queue(payload):
 
 async def send_loot_master_leadpin_notice_from_queue(payload):
     raid_name = clean(payload.get("raidName")) or "Raid"
+    guild_name = clean(payload.get("guildName") or payload.get("guild") or payload.get("guildSlug")) or "Unbekannte Gilde"
     raid_id = clean(payload.get("raidId") or payload.get("id"))
     lead_pin = clean(payload.get("leadPin"))
     loot_master_pin = clean(payload.get("lootMasterPin") or payload.get("lootMasterPassword"))
@@ -3566,16 +3569,18 @@ async def send_loot_master_leadpin_notice_from_queue(payload):
         description=custom_description or f"Du bist für **{raid_name}** als Plündermeister eingetragen.",
         color=0xFACC15,
     )
-    embed.add_field(name="LeadPIN", value=f"`{lead_pin}`", inline=False)
+    embed.add_field(name="🏰 Gilde", value=f"**{guild_name}**", inline=True)
+    embed.add_field(name="⚔️ Raid", value=f"**{raid_name}**", inline=True)
+    embed.add_field(name="🔑 LeadPIN", value=f"`{lead_pin}`", inline=False)
     if loot_master_pin:
-        embed.add_field(name="Plündermeister-PIN", value=f"`{loot_master_pin}`", inline=False)
+        embed.add_field(name="🪙 Plündermeister-PIN", value=f"`{loot_master_pin}`", inline=False)
     embed.add_field(
-        name="Zugang",
-        value="Alternativ wird auch der **Mastercode der Gildenleitung** als Plündermeister-Passwort akzeptiert.",
+        name="🔐 Zugang",
+        value="Alternativ kannst du den **Mastercode der Gildenleitung** als Plündermeister-Passwort verwenden.",
         inline=False,
     )
-    embed.add_field(name="Datum", value=format_raid_announcement_date(payload.get("raidDate") or ""), inline=True)
-    embed.add_field(name="Uhrzeit", value=format_raid_announcement_time(payload.get("raidTime") or ""), inline=True)
+    embed.add_field(name="📅 Datum", value=format_raid_announcement_date(payload.get("raidDate") or ""), inline=True)
+    embed.add_field(name="🕒 Uhrzeit", value=format_raid_announcement_time(payload.get("raidTime") or ""), inline=True)
     raidlead_url = (
         f"{LICHTLOOT_URL.rstrip('/')}/raidlead-panel.html?"
         + urllib.parse.urlencode({
@@ -3585,12 +3590,12 @@ async def send_loot_master_leadpin_notice_from_queue(payload):
         })
     )
     embed.add_field(
-        name="Direkt zum Plündermeisterpanel",
-        value=f"[Plündermeisterseite für {raid_name} öffnen]({raidlead_url})",
+        name="➡️ Direkt zum Plündermeisterpanel",
+        value=f"**[Plündermeisterseite für {raid_name} öffnen]({raidlead_url})**",
         inline=False,
     )
     embed.add_field(
-        name="Erinnerung für nach dem Raid",
+        name="✅ Erinnerung für nach dem Raid",
         value="• **PO+ Punkte übertragen**\n• **Erhaltene Items markieren** und die zugehörigen Punkte entfernen",
         inline=False,
     )
