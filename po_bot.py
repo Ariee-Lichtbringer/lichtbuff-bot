@@ -3123,7 +3123,7 @@ async def send_raid_staff_action_notice(interaction, raid, char_name, action, no
     return len(sent)
 
 
-async def send_queue_targeted_embed(payload, embed):
+async def send_queue_targeted_embed(payload, embed, excluded_user_ids=None):
     targets = list(payload.get("targets") or payload.get("roleTargets") or [])
     wanted_names = {
         normalized_prio_player_name(target.get("value") or target.get("name"))
@@ -3136,8 +3136,15 @@ async def send_queue_targeted_embed(payload, embed):
         if clean(target.get("type")).lower() == "role"
     }
     wanted_roles.discard("")
-    sent = set()
-    for guild in client.guilds:
+    sent = {int(value) for value in (excluded_user_ids or set()) if str(value).isdigit()}
+    target_slug = payload_guild_slug(payload)
+    registry_entry = GUILD_REGISTRY.get(target_slug) or {}
+    target_guild_id = clean(registry_entry.get("discordGuildId"))
+    guilds = [guild for guild in client.guilds if (
+        (target_guild_id and str(guild.id) == target_guild_id)
+        or (not target_guild_id and guild_slug_for_discord_server(guild) == target_slug)
+    )]
+    for guild in guilds:
         guild_role_ids = {str(role.id) for role in guild.roles}
         if wanted_roles and not wanted_roles.intersection(guild_role_ids) and not wanted_names:
             continue
@@ -3227,9 +3234,14 @@ async def send_po_release_granted_notice_from_queue(payload):
         description=render_po_release_granted_template(payload),
         color=0x22C55E,
     )
-    count = await send_queue_targeted_embed(payload, embed)
-    print(f"PO-Freigabe-DM an {count} Empfänger gesendet: {current_guild_slug()}:{payload.get('character') or '?'}:{payload.get('raid') or '?'}")
-    return count
+    primary_user_id = clean(payload.get("discordUserId") or payload.get("discord_user_id"))
+    if not primary_user_id.isdigit():
+        raise RuntimeError("Der Discord-Account des freigegebenen Charakters fehlt.")
+    primary_user = client.get_user(int(primary_user_id)) or await client.fetch_user(int(primary_user_id))
+    await primary_user.send(embed=embed)
+    extra_count = await send_queue_targeted_embed(payload, embed, {primary_user_id})
+    print(f"PO-Freigabe-DM an Charakter und {extra_count} zusaetzliche Empfänger gesendet: {current_guild_slug()}:{payload.get('character') or '?'}:{payload.get('raid') or '?'}")
+    return 1 + extra_count
 
 
 async def delete_entry(payload, entry, user):
