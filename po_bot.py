@@ -5624,19 +5624,38 @@ async def sync_latest_raid_signup_from_po_channel(payload):
     channel = await fetch_accessible_channel(client, channel_id)
     if channel is None or not hasattr(channel, "history"):
         return False
+    expected_guild_slug = payload_guild_slug(payload)
+    discord_guild = getattr(channel, "guild", None)
+    actual_guild_slug = guild_slug_for_discord_server(discord_guild, "")
+    if actual_guild_slug and actual_guild_slug != expected_guild_slug:
+        print(
+            "PO-Channel Raidanmelder-Sync übersprungen: "
+            f"Channel {channel_id} gehört zu {actual_guild_slug}, "
+            f"der Datenbankeintrag aber zu {expected_guild_slug}."
+        )
+        return False
     wanted_raid = normalize_raid(payload.get("raid") or payload.get("raidName") or "")
     wanted_date = clean(payload.get("raidDate") or payload.get("date"))
     newest_match = None
     newest_rows = []
     newest_metadata = {}
-    async for message in channel.history(limit=100):
+    inspected_embeds = 0
+    inspected_raid_helper = 0
+    candidate_summaries = []
+    async for message in channel.history(limit=500):
         if not getattr(message, "embeds", None):
             continue
+        inspected_embeds += 1
         if not is_raid_helper_message(message):
             continue
+        inspected_raid_helper += 1
         metadata = raid_helper_message_metadata(message)
         message_raid = normalize_raid(metadata.get("raid") or "")
         message_date = clean(metadata.get("raidDate"))
+        if len(candidate_summaries) < 5:
+            candidate_summaries.append(
+                f"{getattr(message, 'id', '')}:{message_raid or '-'}:{message_date or '-'}"
+            )
         if wanted_raid and message_raid != wanted_raid:
             continue
         # Das Datum des PO-Eintrags kann nach Verschieben/Neuposten veraltet
@@ -5652,13 +5671,20 @@ async def sync_latest_raid_signup_from_po_channel(payload):
         newest_metadata = metadata
         break
     if newest_match is None:
+        if wanted_raid == "BWL":
+            print(
+                "PO-Channel BWL-Diagnose: "
+                f"Channel {channel_id}, PO-Datum {wanted_date or '-'}, "
+                f"{inspected_embeds} Embed(s), {inspected_raid_helper} Raid-Helper-Beitrag/Beiträge, "
+                f"Kandidaten {candidate_summaries or ['keine']}."
+            )
         return False
     matched_date = clean(newest_metadata.get("raidDate")) or wanted_date
     matched_time = clean(newest_metadata.get("raidTime")) or clean(payload.get("raidTime") or payload.get("time"))
     result = await asyncio.to_thread(api_post, {
         "action": "saveDiscordSignupRows",
         "queueToken": QUEUE_TOKEN,
-        "guild": payload_guild_slug(payload),
+        "guild": expected_guild_slug,
         "raid": wanted_raid,
         "raidDate": matched_date,
         "raidTime": matched_time,
