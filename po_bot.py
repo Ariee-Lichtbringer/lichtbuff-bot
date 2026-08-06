@@ -350,6 +350,7 @@ p0plus_cache = {}
 P0PLUS_CACHE_SECONDS = int(os.getenv("PO_BOT_P0PLUS_CACHE_SECONDS", "60") or "60")
 empty_queue_log_at = 0
 slash_commands_synced_for_guilds = False
+RAID_HELPER_RAW_DIAGNOSTICS = set()
 
 
 def clean(value):
@@ -5678,6 +5679,26 @@ async def sync_latest_raid_signup_from_po_channel(payload):
             continue
         rows = raid_helper_signup_rows_from_message(message)
         if not rows:
+            diagnostic_key = str(getattr(message, "id", "") or "")
+            if wanted_raid == "BWL" and diagnostic_key not in RAID_HELPER_RAW_DIAGNOSTICS:
+                RAID_HELPER_RAW_DIAGNOSTICS.add(diagnostic_key)
+                raw_parts = []
+                for embed in getattr(message, "embeds", []) or []:
+                    raw_parts.append({
+                        "title": clean(getattr(embed, "title", "")),
+                        "description": clean(getattr(embed, "description", "")),
+                        "fields": [
+                            {
+                                "name": clean(getattr(field, "name", "")),
+                                "value": clean(getattr(field, "value", "")),
+                            }
+                            for field in getattr(embed, "fields", []) or []
+                        ],
+                    })
+                print(
+                    "PO-Channel BWL-Rohformat "
+                    f"Nachricht {diagnostic_key}: {repr(raw_parts)[:5000]}"
+                )
             continue
         newest_match = message
         newest_rows = rows
