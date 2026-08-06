@@ -454,9 +454,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 # Für die vertrauliche SpielerLogin-Freigabe muss der Bot Mitglieder der
 # Discord-Rolle "Offiziere" ermitteln und ihnen direkt schreiben können.
-intents.members = os.getenv("DISCORD_MEMBERS_INTENT", "true").strip().lower() in {
-    "1", "true", "yes", "ja", "on"
-}
+intents.members = True
 
 client = discord.Client(intents=intents)
 
