@@ -3341,7 +3341,7 @@ async def send_raid_staff_action_notice(interaction, raid, char_name, action, no
     return len(sent)
 
 
-async def send_queue_targeted_embed(payload, embed):
+async def send_queue_targeted_embed(payload, embed, image_path=None):
     targets = list(payload.get("targets") or payload.get("roleTargets") or [])
     wanted_names = {
         normalized_prio_player_name(target.get("value") or target.get("name"))
@@ -3401,7 +3401,11 @@ async def send_queue_targeted_embed(payload, embed):
             if not (configured_discord_name_matches(wanted_names, member_names) or wanted_roles.intersection(member_roles)):
                 continue
             try:
-                await member.send(embed=embed)
+                if image_path and Path(image_path).is_file():
+                    image_file = discord.File(str(image_path), filename=Path(image_path).name)
+                    await member.send(embed=embed, file=image_file)
+                else:
+                    await member.send(embed=embed)
                 sent.add(member.id)
             except Exception as error:
                 print(f"Raid-DM an {member} fehlgeschlagen: {error}")
@@ -3657,7 +3661,17 @@ async def send_loot_master_leadpin_notice_from_queue(payload):
         inline=False,
     )
     embed.set_footer(text="PM-PIN: nur PO+ übertragen und Item erhalten/Punkte entfernen. Der Mastercode bleibt voll gültig.")
-    count = await send_queue_targeted_embed(payload, embed)
+    guide_path = Path(__file__).resolve().parent / "assets" / "pluendermeister-anleitung-ariee.png"
+    if guide_path.is_file():
+        embed.add_field(
+            name="📘 Schritt-für-Schritt-Anleitung",
+            value="Die vollständige Anleitung findest du direkt unter dieser Nachricht.",
+            inline=False,
+        )
+        embed.set_image(url=f"attachment://{guide_path.name}")
+    else:
+        print(f"Plündermeister-Anleitung nicht gefunden: {guide_path}")
+    count = await send_queue_targeted_embed(payload, embed, guide_path)
     print(f"LeadPIN-DM an {count} Plündermeister gesendet: {raid_name}")
     return count
 
