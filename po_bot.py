@@ -5441,54 +5441,67 @@ def raid_helper_signup_rows_from_message(message):
     rows = []
     seen = set()
     guild = getattr(message, "guild", None)
-    for embed in getattr(message, "embeds", []) or []:
-        for field in getattr(embed, "fields", []) or []:
-            heading = clean(getattr(field, "name", ""))
-            heading_lower = heading.lower()
-            heading_class = raid_helper_class_from_text(heading)
-            if not heading_class and not any(word in heading_lower for word in ("tank", "heal", "heiler", "melee", "nahkampf", "range", "ranged", "fernkampf", "dd", "signup", "anmeld")):
+
+    def append_section(heading, section_value):
+        heading = clean(heading)
+        heading_lower = heading.lower()
+        heading_class = raid_helper_class_from_text(heading)
+        if not heading_class and not any(word in heading_lower for word in ("tank", "heal", "heiler", "melee", "nahkampf", "range", "ranged", "fernkampf", "dd", "signup", "anmeld")):
+            return
+        role = raid_helper_role_from_heading(heading)
+        field_value = clean(section_value)
+        field_value = re.sub(
+            r"\s+(?=<a?:[^:>]+:\d+>\s*(?:`\d+`|\*\*\d+\*\*|\d+\b))",
+            "\n",
+            field_value,
+        )
+        for raw_line in field_value.splitlines():
+            line = clean(raw_line)
+            if not line or line in {"-", "—"}:
                 continue
-            role = raid_helper_role_from_heading(heading)
-            field_value = clean(getattr(field, "value", ""))
-            # Raid-Helper setzt mehrere Spieler in Inline-Feldern teilweise ohne
-            # echten Zeilenumbruch hintereinander. Jeder Eintrag beginnt dann
-            # mit einem Klassen/Spec-Emoji und der Platznummer in `Backticks`.
-            # Vor diesen Markern künstlich trennen, damit nicht nur der erste
-            # Spieler eines Klassenfeldes übernommen wird.
-            field_value = re.sub(
-                r"\s+(?=<a?:[^:>]+:\d+>\s*(?:`\d+`|\*\*\d+\*\*|\d+\b))",
-                "\n",
-                field_value,
-            )
-            for raw_line in field_value.splitlines():
-                line = clean(raw_line)
-                if not line or line in {"-", "—"}:
-                    continue
-                mention = re.search(r"<@!?(\d+)>", line)
-                member = guild.get_member(int(mention.group(1))) if mention and guild else None
-                without_markup = re.sub(r"<a?:[^:>]+:\d+>", " ", line)
-                without_markup = re.sub(r"<@!?\d+>", " ", without_markup)
-                without_markup = re.sub(r"[*_`~>|•✅❌🪑🕒⚖️🚫]+", " ", without_markup)
-                without_markup = re.sub(r"^\s*\d+[.)-]?\s*", "", without_markup).strip(" -–—")
-                player = clean(getattr(member, "display_name", "")) or clean(without_markup.split(" - ")[0].split(" | ")[0])
-                if not player:
-                    continue
-                key = normalized_prio_player_name(player)
-                if not key or key in seen:
-                    continue
-                seen.add(key)
-                rows.append({
-                    "char": player,
-                    "spieler": player,
-                    "klasse": heading_class or raid_helper_class_from_text(line),
-                    "role": role,
-                    "status": "signed",
-                    "discordUserId": str(getattr(member, "id", "") or (mention.group(1) if mention else "")),
-                    "discordName": clean(getattr(member, "display_name", "")),
-                    "discordChannelId": str(getattr(message.channel, "id", "") or ""),
-                    "discordMessageId": str(getattr(message, "id", "") or ""),
-                    "source": f"Raid-Helper:{getattr(message, 'id', '')}",
-                })
+            mention = re.search(r"<@!?(\d+)>", line)
+            member = guild.get_member(int(mention.group(1))) if mention and guild else None
+            without_markup = re.sub(r"<a?:[^:>]+:\d+>", " ", line)
+            without_markup = re.sub(r"<@!?\d+>", " ", without_markup)
+            without_markup = re.sub(r"[*_`~>|•✅❌🪑🕒⚖️🚫]+", " ", without_markup)
+            without_markup = re.sub(r"^\s*\d+[.)-]?\s*", "", without_markup).strip(" -–—")
+            player = clean(getattr(member, "display_name", "")) or clean(without_markup.split(" - ")[0].split(" | ")[0])
+            if not player:
+                continue
+            key = normalized_prio_player_name(player)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            rows.append({
+                "char": player,
+                "spieler": player,
+                "klasse": heading_class or raid_helper_class_from_text(line),
+                "role": role,
+                "status": "signed",
+                "discordUserId": str(getattr(member, "id", "") or (mention.group(1) if mention else "")),
+                "discordName": clean(getattr(member, "display_name", "")),
+                "discordChannelId": str(getattr(message.channel, "id", "") or ""),
+                "discordMessageId": str(getattr(message, "id", "") or ""),
+                "source": f"Raid-Helper:{getattr(message, 'id', '')}",
+            })
+
+    class_header_pattern = re.compile(
+        r"(?i)(tank|warrior|krieger|druid|druide|paladin|pala|rogue|schurke|hunter|jäger|jaeger|priest|priester|mage|magier|warlock|hexenmeister|shaman|schamane)\s*\(\s*\d+\s*\)"
+    )
+    for embed in getattr(message, "embeds", []) or []:
+        sources = [("", clean(getattr(embed, "description", "")))]
+        sources.extend(
+            (clean(getattr(field, "name", "")), clean(getattr(field, "value", "")))
+            for field in getattr(embed, "fields", []) or []
+        )
+        for heading, value in sources:
+            matches = list(class_header_pattern.finditer(value))
+            if matches:
+                for index, match in enumerate(matches):
+                    end = matches[index + 1].start() if index + 1 < len(matches) else len(value)
+                    append_section(match.group(1), value[match.end():end])
+                continue
+            append_section(heading, value)
     return rows
 
 
