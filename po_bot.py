@@ -5449,7 +5449,18 @@ def raid_helper_signup_rows_from_message(message):
             if not heading_class and not any(word in heading_lower for word in ("tank", "heal", "heiler", "melee", "nahkampf", "range", "ranged", "fernkampf", "dd", "signup", "anmeld")):
                 continue
             role = raid_helper_role_from_heading(heading)
-            for raw_line in clean(getattr(field, "value", "")).splitlines():
+            field_value = clean(getattr(field, "value", ""))
+            # Raid-Helper setzt mehrere Spieler in Inline-Feldern teilweise ohne
+            # echten Zeilenumbruch hintereinander. Jeder Eintrag beginnt dann
+            # mit einem Klassen/Spec-Emoji und der Platznummer in `Backticks`.
+            # Vor diesen Markern künstlich trennen, damit nicht nur der erste
+            # Spieler eines Klassenfeldes übernommen wird.
+            field_value = re.sub(
+                r"\s+(?=<a?:[^:>]+:\d+>\s*(?:`\d+`|\*\*\d+\*\*|\d+\b))",
+                "\n",
+                field_value,
+            )
+            for raw_line in field_value.splitlines():
                 line = clean(raw_line)
                 if not line or line in {"-", "—"}:
                     continue
