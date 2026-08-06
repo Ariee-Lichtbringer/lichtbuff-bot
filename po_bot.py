@@ -3182,7 +3182,23 @@ async def send_po_approval_message(client, entry):
         user = client.get_user(int(user_id)) or await client.fetch_user(int(user_id))
         player = clean(entry.get("player")) or "dein Charakter"
         item = clean(entry.get("item") or entry.get("itemName")) or "deine PO"
-        await user.send(f"✅ Deine PO für **{player}** auf **{item}** wurde freigegeben.")
+        raid = display_raid_name(entry.get("raid") or entry.get("raidName") or "") or "Raid"
+        guild_name = guild_display_name(payload=entry)
+        icon = item_icon(item)
+        embed = discord.Embed(
+            title="✅ Deine Item-PO wurde freigegeben",
+            description=f"Deine Priorität für **{item}** wurde bestätigt.",
+            color=0x22C55E,
+        )
+        embed.add_field(name="🏰 Gilde", value=guild_name, inline=True)
+        embed.add_field(name="⚔️ Raid", value=raid, inline=True)
+        embed.add_field(name="👤 Charakter", value=player, inline=False)
+        embed.add_field(name="🎁 Item", value=f"{icon} **{item}**", inline=False)
+        emoji_match = re.match(r"<a?:[^:]+:(\d+)>", icon)
+        if emoji_match:
+            embed.set_thumbnail(url=f"https://cdn.discordapp.com/emojis/{emoji_match.group(1)}.png?size=128&quality=lossless")
+        embed.set_footer(text="Deine freigegebene PO ist jetzt für den Raid hinterlegt.")
+        await user.send(embed=embed)
         return True
     except Exception as error:
         print(f"PO-Freigabe: DM konnte nicht gesendet werden: {error}")
@@ -3201,15 +3217,18 @@ async def send_raid_signup_confirmation(interaction, raid, char_name, class_name
             return False
         RAID_SIGNUP_DM_CACHE[cache_key] = now
         embed = discord.Embed(
-            title="Raidanmeldung gespeichert",
-            description=f"Du bist für **{raid_name}** angemeldet.",
+            title="✅ Raidanmeldung gespeichert",
+            description=f"Du bist erfolgreich für **{raid_name}** angemeldet.",
             color=0x22C55E,
         )
-        embed.add_field(name="Charakter", value=clean(char_name) or "-", inline=True)
-        embed.add_field(name="Klasse", value=class_display_name(class_name) or "-", inline=True)
-        embed.add_field(name="Skillung", value=clean(spec) or "-", inline=True)
+        embed.add_field(name="🏰 Gilde", value=guild_display_name(payload=raid), inline=True)
+        embed.add_field(name="⚔️ Raid", value=raid_name, inline=True)
+        embed.add_field(name="👤 Charakter", value=clean(char_name) or "-", inline=True)
+        embed.add_field(name="🛡️ Klasse", value=f"{class_icon(class_name)} {class_display_name(class_name) or '-'}", inline=True)
+        embed.add_field(name="✨ Skillung", value=clean(spec) or "-", inline=True)
         if raid_date != "noch offen" or raid_time != "noch offen":
-            embed.add_field(name="Termin", value=f"{raid_date} · {raid_time}", inline=False)
+            embed.add_field(name="📅 Termin", value=f"{raid_date} · {raid_time}", inline=False)
+        embed.set_footer(text="Änderungen kannst du jederzeit über den Raidanmelder vornehmen.")
         await interaction.user.send(embed=embed)
         return True
     except Exception as error:
@@ -3555,9 +3574,47 @@ async def send_po_release_request_notice_from_queue(payload):
     return count
 
 
+async def send_po_release_granted_notice_from_queue(payload):
+    user_id = clean(payload.get("discordUserId") or payload.get("discord_user_id"))
+    if not user_id:
+        return 0
+    guild_name = guild_display_name(payload=payload)
+    raid_name = clean(payload.get("raidLabel") or payload.get("raidName")) or display_raid_name(payload.get("raid") or "") or "Raid"
+    character = clean(payload.get("character") or payload.get("player")) or "Unbekannt"
+    server = clean(payload.get("server"))
+    class_name = clean(payload.get("className") or payload.get("class"))
+    embed = discord.Embed(
+        title="✅ PO-Freigabe erteilt",
+        description=f"Deine PO-Freigabe für **{raid_name}** wurde erfolgreich bestätigt.",
+        color=0x22C55E,
+    )
+    embed.add_field(name="🏰 Gilde", value=guild_name, inline=True)
+    embed.add_field(name="⚔️ Raid", value=raid_name, inline=True)
+    embed.add_field(name="👤 Charakter", value=f"{character}{f'-{server}' if server else ''}", inline=True)
+    if class_name:
+        embed.add_field(name="🛡️ Klasse", value=f"{class_icon(class_name)} {class_display_name(class_name)}", inline=True)
+    embed.set_footer(text="Du kannst deine Prios jetzt auf der entsprechenden Lootseite eintragen.")
+    try:
+        user = client.get_user(int(user_id)) or await client.fetch_user(int(user_id))
+        await user.send(embed=embed)
+        return 1
+    except Exception as error:
+        print(f"PO-Freigabe-DM an {character} konnte nicht gesendet werden: {error}")
+        return 0
+
+
 async def send_loot_master_leadpin_notice_from_queue(payload):
     raid_name = clean(payload.get("raidName")) or "Raid"
-    guild_name = clean(payload.get("guildName") or payload.get("guild") or payload.get("guildSlug")) or "Unbekannte Gilde"
+    guild_slug = normalize_guild_slug(payload.get("guildSlug") or payload.get("guild") or "")
+    guild_name = clean(payload.get("guildName") or payload.get("guild") or guild_slug)
+    guild_display_names = {
+        "lichtloot": "Lichtbringer",
+        "nachtloot": "Die Nachtwächter",
+        "panemloot": "Panem et Circenses",
+    }
+    if guild_slug in guild_display_names or guild_name.lower() in {"lichtloot", "nachtloot", "panemloot"}:
+        guild_name = guild_display_names.get(guild_slug, guild_display_names.get(guild_name.lower(), guild_name))
+    guild_name = guild_name or "Unbekannte Gilde"
     raid_id = clean(payload.get("raidId") or payload.get("id"))
     lead_pin = clean(payload.get("leadPin"))
     loot_master_pin = clean(payload.get("lootMasterPin") or payload.get("lootMasterPassword"))
@@ -4693,7 +4750,7 @@ async def po_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": QUEUE_TOKEN,
                 "limit": "50",
-                "types": "player_login_approval_notice,po_post,p0_post_refresh,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,loot_master_leadpin_notice,po_release_request_notice,po_rejection_notice,po_approval_notice,po_post_delete",
+                "types": "player_login_approval_notice,po_post,p0_post_refresh,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,loot_master_leadpin_notice,po_release_request_notice,po_release_granted_notice,po_rejection_notice,po_approval_notice,po_post_delete",
                 "t": int(time.time()),
             })
             if result.get("success"):
@@ -4708,6 +4765,7 @@ async def po_queue_loop():
                         "raid_status_staff_notice",
                         "loot_master_leadpin_notice",
                         "po_release_request_notice",
+                        "po_release_granted_notice",
                         "po_rejection_notice",
                         "po_approval_notice",
                     }
@@ -4866,6 +4924,10 @@ async def po_queue_loop():
                             continue
                         if item_type == "po_release_request_notice":
                             await send_po_release_request_notice_from_queue(payload)
+                            await resolve_queue_item(item.get("rowNumber"))
+                            continue
+                        if item_type == "po_release_granted_notice":
+                            await send_po_release_granted_notice_from_queue(payload)
                             await resolve_queue_item(item.get("rowNumber"))
                             continue
                         if item_type == "raid_signup_notice":
@@ -5314,9 +5376,148 @@ async def run_po_emoji_sync_for_message(message, raid: str, limit: int = 25):
     await send_po_emoji_sync_text(message, "\n".join(lines))
 
 
+def raid_helper_role_from_heading(value):
+    heading = clean(value).lower()
+    if any(word in heading for word in ("tank", "main tank", "off tank")):
+        return "tank"
+    if any(word in heading for word in ("heal", "heiler", "healing")):
+        return "heal"
+    if any(word in heading for word in ("melee", "nahkampf")):
+        return "melee"
+    if any(word in heading for word in ("range", "ranged", "fernkampf")):
+        return "range"
+    return "dd"
+
+
+def raid_helper_class_from_text(value):
+    normalized = clean(value).lower()
+    aliases = {
+        "warrior": "Warrior", "krieger": "Warrior", "druid": "Druid", "druide": "Druid",
+        "paladin": "Paladin", "pala": "Paladin", "rogue": "Rogue", "schurke": "Rogue",
+        "hunter": "Hunter", "jäger": "Hunter", "jaeger": "Hunter", "priest": "Priest",
+        "priester": "Priest", "mage": "Mage", "magier": "Mage", "warlock": "Warlock",
+        "hexenmeister": "Warlock", "shaman": "Shaman", "schamane": "Shaman",
+    }
+    for alias, class_name in aliases.items():
+        if alias in normalized:
+            return class_name
+    return ""
+
+
+def raid_helper_signup_rows_from_message(message):
+    rows = []
+    seen = set()
+    guild = getattr(message, "guild", None)
+    for embed in getattr(message, "embeds", []) or []:
+        for field in getattr(embed, "fields", []) or []:
+            heading = clean(getattr(field, "name", ""))
+            heading_lower = heading.lower()
+            if not any(word in heading_lower for word in ("tank", "heal", "heiler", "melee", "nahkampf", "range", "fernkampf", "dd", "signup", "anmeld")):
+                continue
+            role = raid_helper_role_from_heading(heading)
+            for raw_line in clean(getattr(field, "value", "")).splitlines():
+                line = clean(raw_line)
+                if not line or line in {"-", "—"}:
+                    continue
+                mention = re.search(r"<@!?(\d+)>", line)
+                member = guild.get_member(int(mention.group(1))) if mention and guild else None
+                without_markup = re.sub(r"<a?:[^:>]+:\d+>", " ", line)
+                without_markup = re.sub(r"<@!?\d+>", " ", without_markup)
+                without_markup = re.sub(r"[*_`~>|•✅❌🪑🕒⚖️🚫]+", " ", without_markup)
+                without_markup = re.sub(r"^\s*\d+[.)-]?\s*", "", without_markup).strip(" -–—")
+                player = clean(getattr(member, "display_name", "")) or clean(without_markup.split(" - ")[0].split(" | ")[0])
+                if not player:
+                    continue
+                key = normalized_prio_player_name(player)
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                rows.append({
+                    "char": player,
+                    "spieler": player,
+                    "klasse": raid_helper_class_from_text(line),
+                    "role": role,
+                    "status": "signed",
+                    "discordUserId": str(getattr(member, "id", "") or (mention.group(1) if mention else "")),
+                    "discordName": clean(getattr(member, "display_name", "")),
+                    "discordChannelId": str(getattr(message.channel, "id", "") or ""),
+                    "discordMessageId": str(getattr(message, "id", "") or ""),
+                    "source": f"Raid-Helper:{getattr(message, 'id', '')}",
+                })
+    return rows
+
+
+def raid_helper_message_metadata(message):
+    parts = []
+    for embed in getattr(message, "embeds", []) or []:
+        parts.extend([clean(getattr(embed, "title", "")), clean(getattr(embed, "description", ""))])
+        for field in getattr(embed, "fields", []) or []:
+            parts.extend([clean(getattr(field, "name", "")), clean(getattr(field, "value", ""))])
+    text = "\n".join(part for part in parts if part)
+    lowered = text.lower()
+    raid = ""
+    for aliases, raid_key in (
+        (("naxxramas", "naxx"), "naxx"), (("blackwing lair", "bwl"), "bwl"),
+        (("molten core", " mc "), "mc"), (("ahn'qiraj 40", "aq40"), "aq40"),
+        (("ahn'qiraj 20", "aq20"), "aq20"), (("zul'gurub", "zul gurub", " zg "), "zg"),
+        (("onyxia", "ony"), "ony"),
+    ):
+        if any(alias in f" {lowered} " for alias in aliases):
+            raid = raid_key
+            break
+    date_match = re.search(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b", text)
+    iso_match = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", text)
+    raid_date = ""
+    if date_match:
+        raid_date = f"{date_match.group(3)}-{int(date_match.group(2)):02d}-{int(date_match.group(1)):02d}"
+    elif iso_match:
+        raid_date = iso_match.group(0)
+    time_match = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
+    return {"raid": raid, "raidDate": raid_date, "raidTime": time_match.group(0) if time_match else ""}
+
+
+async def sync_foreign_raid_helper_message(message):
+    author_name = clean(getattr(getattr(message, "author", None), "name", "")).lower().replace("_", "-")
+    if "raid-helper" not in author_name and "raidhelper" not in author_name:
+        return False
+    if not getattr(message, "embeds", None):
+        return False
+    rows = raid_helper_signup_rows_from_message(message)
+    metadata = raid_helper_message_metadata(message)
+    try:
+        result = await asyncio.to_thread(api_post, {
+            "action": "saveDiscordSignupRows",
+            "queueToken": QUEUE_TOKEN,
+            "guild": guild_slug_for_discord_server(message.guild, GUILD_SLUG),
+            "discordChannelId": str(message.channel.id),
+            "raidHelperMessageId": str(message.id),
+            "discordMessageId": str(message.id),
+            "raid": metadata.get("raid") or "",
+            "raidDate": metadata.get("raidDate") or "",
+            "raidTime": metadata.get("raidTime") or "",
+            "replaceSnapshot": "true",
+            "rows": rows,
+        })
+        if result.get("success"):
+            print(f"Raid-Helper-Spiegel aktualisiert: {result.get('guild') or current_guild_slug()}:{message.id} ({len(rows)} Anmeldungen)")
+            return True
+    except Exception as error:
+        # Nur bereits mit einem LichtLoot-Raid verknüpfte Nachrichten werden übernommen.
+        if "nicht gefunden" not in str(error).lower() and "404" not in str(error):
+            print(f"Raid-Helper-Spiegel konnte nicht aktualisiert werden ({message.id}): {error}")
+    return False
+
+
+@client.event
+async def on_message_edit(before, after):
+    if getattr(getattr(after, "author", None), "bot", False):
+        await sync_foreign_raid_helper_message(after)
+
+
 @client.event
 async def on_message(message):
     if message.author.bot:
+        await sync_foreign_raid_helper_message(message)
         return
     text = clean(getattr(message, "content", ""))
     lower = text.lower()
