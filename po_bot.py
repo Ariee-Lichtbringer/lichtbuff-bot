@@ -5104,6 +5104,7 @@ class PoBot(discord.Client):
         self.add_view(NachtlootHelpView())
         self.bg_task = asyncio.create_task(po_queue_loop())
         self.raid_signup_restore_task = asyncio.create_task(restore_active_raid_signup_views())
+        self.po_channel_signup_sync_task = asyncio.create_task(po_channel_signup_sync_loop())
         if TEST_GUILD_ID:
             guild = discord.Object(id=int(TEST_GUILD_ID))
             self.tree.copy_global_to(guild=guild)
@@ -5538,6 +5539,94 @@ async def sync_foreign_raid_helper_message(message):
         if "nicht gefunden" not in str(error).lower() and "404" not in str(error):
             print(f"Raid-Helper-Spiegel konnte nicht aktualisiert werden ({message.id}): {error}")
     return False
+
+
+def po_signup_channel_sync_payloads():
+    payloads = []
+    seen = set()
+    for payload in load_state().values():
+        if not isinstance(payload, dict):
+            continue
+        raid = normalize_raid(payload.get("raid") or payload.get("raidName") or "")
+        raid_date = clean(payload.get("raidDate") or payload.get("date"))
+        channel_id = payload_target_channel_id(payload) or payload_source_channel_id(payload)
+        if not raid or not raid_date or not channel_id:
+            continue
+        key = (payload_guild_slug(payload), raid, raid_date, channel_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        payloads.append(dict(payload))
+    return payloads[-30:]
+
+
+async def sync_latest_raid_signup_from_po_channel(payload):
+    channel_id = payload_target_channel_id(payload) or payload_source_channel_id(payload)
+    channel = await fetch_accessible_channel(client, channel_id)
+    if channel is None or not hasattr(channel, "history"):
+        return False
+    wanted_raid = normalize_raid(payload.get("raid") or payload.get("raidName") or "")
+    wanted_date = clean(payload.get("raidDate") or payload.get("date"))
+    newest_match = None
+    newest_rows = []
+    async for message in channel.history(limit=100):
+        if not getattr(message, "embeds", None):
+            continue
+        metadata = raid_helper_message_metadata(message)
+        message_raid = normalize_raid(metadata.get("raid") or "")
+        message_date = clean(metadata.get("raidDate"))
+        if wanted_raid and message_raid != wanted_raid:
+            continue
+        if wanted_date and message_date and message_date != wanted_date:
+            continue
+        rows = raid_helper_signup_rows_from_message(message)
+        if not rows:
+            continue
+        newest_match = message
+        newest_rows = rows
+        break
+    if newest_match is None:
+        return False
+    raid_id = clean(
+        payload.get("lichtlootRaidId") or payload.get("raidId") or payload.get("id")
+        or payload.get("raidPin") or payload.get("prioPin")
+    )
+    result = await asyncio.to_thread(api_post, {
+        "action": "saveDiscordSignupRows",
+        "queueToken": QUEUE_TOKEN,
+        "guild": payload_guild_slug(payload),
+        "raidId": raid_id,
+        "raid": wanted_raid,
+        "raidDate": wanted_date,
+        "raidTime": clean(payload.get("raidTime") or payload.get("time")),
+        "discordChannelId": str(channel.id),
+        "raidHelperMessageId": str(newest_match.id),
+        "discordMessageId": str(newest_match.id),
+        "replaceSnapshot": "true",
+        "rows": newest_rows,
+    })
+    if result.get("success"):
+        print(
+            "PO-Channel Raidanmelder-Sync: "
+            f"{wanted_raid.upper()} {wanted_date} aus Channel {channel.id}, "
+            f"Nachricht {newest_match.id}: {len(newest_rows)} Anmeldung(en)."
+        )
+        return True
+    return False
+
+
+async def po_channel_signup_sync_loop():
+    await client.wait_until_ready()
+    while not client.is_closed():
+        for payload in po_signup_channel_sync_payloads():
+            try:
+                await sync_latest_raid_signup_from_po_channel(payload)
+            except Exception as error:
+                print(
+                    "PO-Channel Raidanmelder-Sync fehlgeschlagen "
+                    f"({payload.get('postKey') or payload.get('raid')}): {error}"
+                )
+        await asyncio.sleep(60)
 
 
 @client.event
