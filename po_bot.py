@@ -5492,6 +5492,17 @@ def raid_helper_signup_rows_from_message(message):
     return rows
 
 
+def is_raid_helper_message(message):
+    author = getattr(message, "author", None)
+    author_name = clean(getattr(author, "name", "")).lower().replace("_", "-").replace(" ", "-")
+    display_name = clean(getattr(author, "display_name", "")).lower().replace("_", "-").replace(" ", "-")
+    return any(
+        marker in value
+        for value in (author_name, display_name)
+        for marker in ("raid-helper", "raidhelper")
+    )
+
+
 def raid_helper_message_metadata(message):
     parts = []
     for embed in getattr(message, "embeds", []) or []:
@@ -5526,8 +5537,7 @@ def raid_helper_message_metadata(message):
 
 
 async def sync_foreign_raid_helper_message(message):
-    author_name = clean(getattr(getattr(message, "author", None), "name", "")).lower().replace("_", "-")
-    if "raid-helper" not in author_name and "raidhelper" not in author_name:
+    if not is_raid_helper_message(message):
         return False
     if not getattr(message, "embeds", None):
         return False
@@ -5621,12 +5631,14 @@ async def sync_latest_raid_signup_from_po_channel(payload):
     async for message in channel.history(limit=100):
         if not getattr(message, "embeds", None):
             continue
+        if not is_raid_helper_message(message):
+            continue
         metadata = raid_helper_message_metadata(message)
         message_raid = normalize_raid(metadata.get("raid") or "")
         message_date = clean(metadata.get("raidDate"))
         if wanted_raid and message_raid != wanted_raid:
             continue
-        if wanted_date and message_date and message_date != wanted_date:
+        if wanted_date and message_date != wanted_date:
             continue
         rows = raid_helper_signup_rows_from_message(message)
         if not rows:
