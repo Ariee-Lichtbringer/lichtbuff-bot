@@ -3341,7 +3341,7 @@ async def send_raid_staff_action_notice(interaction, raid, char_name, action, no
     return len(sent)
 
 
-async def send_queue_targeted_embed(payload, embed, image_path=None):
+async def send_queue_targeted_embed(payload, embed, image_path=None, show_recipients=False):
     targets = list(payload.get("targets") or payload.get("roleTargets") or [])
     wanted_names = {
         normalized_prio_player_name(target.get("value") or target.get("name"))
@@ -3384,13 +3384,13 @@ async def send_queue_targeted_embed(payload, embed, image_path=None):
         )
     if target_guild is None:
         raise RuntimeError(f"Discord-Server fuer {guild_slug} wurde nicht gefunden.")
-    sent = set()
+    recipients = []
     for guild in [target_guild]:
         guild_role_ids = {str(role.id) for role in guild.roles}
         if wanted_roles and not wanted_roles.intersection(guild_role_ids) and not wanted_names:
             continue
         for member in guild.members:
-            if member.bot or member.id in sent:
+            if member.bot or any(existing.id == member.id for existing in recipients):
                 continue
             member_names = {
                 normalized_prio_player_name(getattr(member, "name", "")),
@@ -3400,15 +3400,33 @@ async def send_queue_targeted_embed(payload, embed, image_path=None):
             member_roles = {str(role.id) for role in getattr(member, "roles", [])}
             if not (configured_discord_name_matches(wanted_names, member_names) or wanted_roles.intersection(member_roles)):
                 continue
-            try:
-                if image_path and Path(image_path).is_file():
-                    image_file = discord.File(str(image_path), filename=Path(image_path).name)
-                    await member.send(embed=embed, file=image_file)
-                else:
-                    await member.send(embed=embed)
-                sent.add(member.id)
-            except Exception as error:
-                print(f"Raid-DM an {member} fehlgeschlagen: {error}")
+            recipients.append(member)
+
+    if show_recipients and recipients:
+        recipient_names = sorted(
+            {clean(getattr(member, "display_name", "")) or clean(getattr(member, "name", "")) for member in recipients},
+            key=str.lower,
+        )
+        recipient_text = ", ".join(f"**{name}**" for name in recipient_names if name)
+        if len(recipient_text) > 1024:
+            recipient_text = recipient_text[:1018].rstrip(", ") + " …"
+        embed.add_field(
+            name=f"👥 Empfänger dieses Raids ({len(recipients)})",
+            value=recipient_text or "Keine Empfänger gefunden.",
+            inline=False,
+        )
+
+    sent = set()
+    for member in recipients:
+        try:
+            if image_path and Path(image_path).is_file():
+                image_file = discord.File(str(image_path), filename=Path(image_path).name)
+                await member.send(embed=embed, file=image_file)
+            else:
+                await member.send(embed=embed)
+            sent.add(member.id)
+        except Exception as error:
+            print(f"Raid-DM an {member} fehlgeschlagen: {error}")
     return len(sent)
 
 
@@ -3657,7 +3675,7 @@ async def send_loot_master_leadpin_notice_from_queue(payload):
     )
     embed.add_field(
         name="✅ Erinnerung für nach dem Raid",
-        value="• **PO+ Punkte übertragen**\n• **Erhaltene Items markieren** und die zugehörigen Punkte entfernen",
+        value="• **Erhaltene Items markieren** und die zugehörigen Punkte entfernen\n• Danach **PO+ Punkte übertragen**",
         inline=False,
     )
     embed.set_footer(text="PM-PIN: nur PO+ übertragen und Item erhalten/Punkte entfernen. Der Mastercode bleibt voll gültig.")
@@ -3671,7 +3689,7 @@ async def send_loot_master_leadpin_notice_from_queue(payload):
         embed.set_image(url=f"attachment://{guide_path.name}")
     else:
         print(f"Plündermeister-Anleitung nicht gefunden: {guide_path}")
-    count = await send_queue_targeted_embed(payload, embed, guide_path)
+    count = await send_queue_targeted_embed(payload, embed, guide_path, show_recipients=True)
     print(f"LeadPIN-DM an {count} Plündermeister gesendet: {raid_name}")
     return count
 
