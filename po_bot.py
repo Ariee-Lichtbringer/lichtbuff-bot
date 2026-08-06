@@ -5445,7 +5445,8 @@ def raid_helper_signup_rows_from_message(message):
         for field in getattr(embed, "fields", []) or []:
             heading = clean(getattr(field, "name", ""))
             heading_lower = heading.lower()
-            if not any(word in heading_lower for word in ("tank", "heal", "heiler", "melee", "nahkampf", "range", "fernkampf", "dd", "signup", "anmeld")):
+            heading_class = raid_helper_class_from_text(heading)
+            if not heading_class and not any(word in heading_lower for word in ("tank", "heal", "heiler", "melee", "nahkampf", "range", "ranged", "fernkampf", "dd", "signup", "anmeld")):
                 continue
             role = raid_helper_role_from_heading(heading)
             for raw_line in clean(getattr(field, "value", "")).splitlines():
@@ -5468,7 +5469,7 @@ def raid_helper_signup_rows_from_message(message):
                 rows.append({
                     "char": player,
                     "spieler": player,
-                    "klasse": raid_helper_class_from_text(line),
+                    "klasse": heading_class or raid_helper_class_from_text(line),
                     "role": role,
                     "status": "signed",
                     "discordUserId": str(getattr(member, "id", "") or (mention.group(1) if mention else "")),
@@ -5505,6 +5506,10 @@ def raid_helper_message_metadata(message):
         raid_date = f"{date_match.group(3)}-{int(date_match.group(2)):02d}-{int(date_match.group(1)):02d}"
     elif iso_match:
         raid_date = iso_match.group(0)
+    else:
+        discord_date_match = re.search(r"<t:(\d{9,12}):D>", text)
+        if discord_date_match:
+            raid_date = datetime.fromtimestamp(int(discord_date_match.group(1))).strftime("%Y-%m-%d")
     time_match = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
     return {"raid": raid, "raidDate": raid_date, "raidTime": time_match.group(0) if time_match else ""}
 
