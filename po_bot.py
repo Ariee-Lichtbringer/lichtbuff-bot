@@ -5628,6 +5628,7 @@ async def sync_latest_raid_signup_from_po_channel(payload):
     wanted_date = clean(payload.get("raidDate") or payload.get("date"))
     newest_match = None
     newest_rows = []
+    newest_metadata = {}
     async for message in channel.history(limit=100):
         if not getattr(message, "embeds", None):
             continue
@@ -5638,28 +5639,29 @@ async def sync_latest_raid_signup_from_po_channel(payload):
         message_date = clean(metadata.get("raidDate"))
         if wanted_raid and message_raid != wanted_raid:
             continue
-        if wanted_date and message_date != wanted_date:
+        # Das Datum des PO-Eintrags kann nach Verschieben/Neuposten veraltet
+        # sein. Maßgeblich ist der neueste echte Raid-Helper-Anmelder im
+        # gespeicherten Channel und dessen eigenes Raid-Datum.
+        if not message_date:
             continue
         rows = raid_helper_signup_rows_from_message(message)
         if not rows:
             continue
         newest_match = message
         newest_rows = rows
+        newest_metadata = metadata
         break
     if newest_match is None:
         return False
-    raid_id = clean(
-        payload.get("lichtlootRaidId") or payload.get("raidId") or payload.get("id")
-        or payload.get("raidPin") or payload.get("prioPin")
-    )
+    matched_date = clean(newest_metadata.get("raidDate")) or wanted_date
+    matched_time = clean(newest_metadata.get("raidTime")) or clean(payload.get("raidTime") or payload.get("time"))
     result = await asyncio.to_thread(api_post, {
         "action": "saveDiscordSignupRows",
         "queueToken": QUEUE_TOKEN,
         "guild": payload_guild_slug(payload),
-        "raidId": raid_id,
         "raid": wanted_raid,
-        "raidDate": wanted_date,
-        "raidTime": clean(payload.get("raidTime") or payload.get("time")),
+        "raidDate": matched_date,
+        "raidTime": matched_time,
         "discordChannelId": str(channel.id),
         "raidHelperMessageId": str(newest_match.id),
         "discordMessageId": str(newest_match.id),
@@ -5669,7 +5671,7 @@ async def sync_latest_raid_signup_from_po_channel(payload):
     if result.get("success"):
         print(
             "PO-Channel Raidanmelder-Sync: "
-            f"{wanted_raid.upper()} {wanted_date} aus Channel {channel.id}, "
+            f"{wanted_raid.upper()} {matched_date} aus Channel {channel.id}, "
             f"Nachricht {newest_match.id}: {len(newest_rows)} Anmeldung(en)."
         )
         return True
