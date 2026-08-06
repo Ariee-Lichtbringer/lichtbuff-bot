@@ -5541,12 +5541,13 @@ async def sync_foreign_raid_helper_message(message):
     return False
 
 
-def po_signup_channel_sync_payloads():
+async def po_signup_channel_sync_payloads():
     payloads = []
     seen = set()
-    for payload in load_state().values():
+
+    def add_payload(payload):
         if not isinstance(payload, dict):
-            continue
+            return
         raid_snapshot = payload.get("combinedRaidSnapshot") or payload.get("raidSnapshot") or {}
         merged = {**raid_snapshot, **payload} if isinstance(raid_snapshot, dict) else dict(payload)
         raid = normalize_raid(
@@ -5559,15 +5560,36 @@ def po_signup_channel_sync_payloads():
         )
         channel_id = payload_target_channel_id(merged) or payload_source_channel_id(merged)
         if not raid or not raid_date or not channel_id:
-            continue
+            return
         merged["raid"] = raid
         merged["raidDate"] = raid_date
         merged["targetChannelId"] = channel_id
         key = (payload_guild_slug(merged), raid, raid_date, channel_id)
         if key in seen:
-            continue
+            return
         seen.add(key)
         payloads.append(merged)
+
+    for payload in load_state().values():
+        add_payload(payload)
+
+    guild_slugs = {normalize_guild_slug(GUILD_SLUG), *GUILD_REGISTRY.keys()}
+    for guild_slug in sorted(guild_slugs):
+        try:
+            result = await asyncio.to_thread(api_get, {
+                "action": "lichtbotGetPoPostChannels",
+                "queueToken": QUEUE_TOKEN,
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
+                "includeArchived": "false",
+                "t": int(time.time()),
+            })
+            for entry in result.get("posts") or []:
+                entry = dict(entry)
+                entry["guildSlug"] = guild_slug
+                add_payload(entry)
+        except Exception as error:
+            print(f"PO-Channel-Liste konnte für {guild_slug} nicht geladen werden: {error}")
     return payloads[-30:]
 
 
@@ -5629,7 +5651,7 @@ async def sync_latest_raid_signup_from_po_channel(payload):
 async def po_channel_signup_sync_loop():
     await client.wait_until_ready()
     while not client.is_closed():
-        payloads = po_signup_channel_sync_payloads()
+        payloads = await po_signup_channel_sync_payloads()
         print(f"PO-Channel Raidanmelder-Sync prüft {len(payloads)} Raid-Channel(s).")
         for payload in payloads:
             try:
