@@ -5782,12 +5782,21 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def start_health_server():
     port = int(os.getenv("PORT", "8080"))
-    server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+    try:
+        server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+    except OSError as error:
+        if getattr(error, "errno", None) == 98:
+            print(f"PO-Bot nutzt vorhandenen Healthserver auf Port {port}.")
+            return
+        raise
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
 
 if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("PO_BOT_TOKEN fehlt.")
+    # Im gemeinsamen Railway-Container bekommt der Hauptbot zuerst die Chance,
+    # den öffentlichen API-/Health-Port zu öffnen.
+    time.sleep(2)
     start_health_server()
     client.run(TOKEN)
