@@ -614,6 +614,19 @@ async def sync_discord_roles_to_lichtloot():
             for role in discord_guild.roles
             if not role.is_default()
         ]
+        members = [
+            {
+                "id": str(member.id),
+                "username": str(member.name),
+                "displayName": str(member.display_name or member.name),
+                "globalName": str(getattr(member, "global_name", "") or ""),
+                "avatarUrl": str(member.display_avatar.url) if getattr(member, "display_avatar", None) else "",
+                "bot": bool(member.bot),
+                "discordGuildId": str(discord_guild.id),
+            }
+            for member in discord_guild.members
+            if not member.bot
+        ]
         token = CURRENT_GUILD_SLUG.set(guild_slug)
         try:
             await asyncio.to_thread(lichtloot_post, {
@@ -622,8 +635,14 @@ async def sync_discord_roles_to_lichtloot():
                 "roles": roles,
             })
             print(f"Discord-Rollen fuer {guild_slug} synchronisiert: {len(roles)}")
+            await asyncio.to_thread(lichtloot_post, {
+                "action": "lichtbotSaveDiscordMembers",
+                "queueToken": LICHTBOT_QUEUE_TOKEN,
+                "members": members,
+            })
+            print(f"Discord-Mitglieder fuer {guild_slug} synchronisiert: {len(members)}")
         except Exception as error:
-            print(f"Discord-Rollen fuer {guild_slug} konnten nicht synchronisiert werden: {error}")
+            print(f"Discord-Rollen/Mitglieder fuer {guild_slug} konnten nicht synchronisiert werden: {error}")
         finally:
             CURRENT_GUILD_SLUG.reset(token)
 
@@ -4201,10 +4220,7 @@ async def post_log_analysis_from_queue(payload):
         embed=build_log_analysis_post_embed(payload),
         view=build_log_analysis_post_view(payload)
     )
-    print(
-        f"Loganalyse gepostet: guild={current_guild_slug()} "
-        f"type={payload.get('analysisType')} raid={raid} channel={channel_id}"
-    )
+    print(f"Loganalyse gepostet: {payload.get('analysisType')} {raid} in {channel_id}")
 
 
 def build_p0plus_transfer_export_text(payload):
@@ -4354,11 +4370,7 @@ async def post_p0plus_transfer_export_from_queue(payload):
         fallback_name = "po-plus-export.csv"
     file = discord.File(data, filename=safe_filename or fallback_name)
     await send_silent(channel, build_p0plus_transfer_export_text(payload), file=file)
-    print(
-        f"PO+-Transfer-Export gepostet: guild={current_guild_slug()} "
-        f"raid={payload.get('raid') or payload.get('raidName') or '-'} "
-        f"file={safe_filename} channel={channel_id}"
-    )
+    print(f"PO+-Transfer-Export gepostet: {safe_filename} in {channel_id}")
 
 
 async def post_worldbuff_backup_export_from_queue(payload):
@@ -4468,20 +4480,39 @@ def normalized_discord_name(value):
     return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().casefold())
 
 
+def member_matches_configured_names(member, configured_names):
+    candidates = {
+        normalized_discord_name(getattr(member, "name", "")),
+        normalized_discord_name(getattr(member, "display_name", "")),
+        normalized_discord_name(getattr(member, "global_name", "")),
+    }
+    candidates.discard("")
+    return any(wanted == candidate or wanted in candidate for wanted in configured_names for candidate in candidates)
+
+
+def render_notification_template(template, values):
+    text = str(template or "")
+    for key, value in values.items():
+        text = text.replace("{" + str(key) + "}", str(value or ""))
+    return text.strip()
+
+
 async def post_player_login_approval_notice(payload):
-    registry_entry = GUILD_REGISTRY.get(current_guild_slug()) or {}
+    guild_slug = normalize_guild_slug(payload.get("guildSlug") or payload.get("guild") or current_guild_slug())
+    guild_name = str(payload.get("guildName") or (GUILD_REGISTRY.get(guild_slug) or {}).get("name") or guild_slug).strip()
+    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
     discord_guild_id = str(
         registry_entry.get("discordGuildId")
-        or (NACHTLOOT_DISCORD_GUILD_ID if current_guild_slug() == NACHTLOOT_GUILD_SLUG else "")
+        or (NACHTLOOT_DISCORD_GUILD_ID if guild_slug == NACHTLOOT_GUILD_SLUG else "")
     ).strip()
     discord_guild = client.get_guild(int(discord_guild_id)) if discord_guild_id.isdigit() else None
-    if discord_guild is None and current_guild_slug() == LICHTLOOT_GUILD_SLUG:
+    if discord_guild is None and guild_slug == LICHTLOOT_GUILD_SLUG:
         discord_guild = next(
             (guild for guild in client.guilds if "lichtbringer" in str(getattr(guild, "name", "")).casefold()),
             None
         )
     if discord_guild is None:
-        raise RuntimeError(f"Discord-Server fuer {current_guild_slug()} wurde nicht gefunden.")
+        raise RuntimeError(f"Discord-Server fuer {guild_slug} wurde nicht gefunden.")
 
     configured_role_ids = {
         int(str(role_id)) for role_id in (payload.get("notificationRoleIds") or [])
@@ -4507,23 +4538,34 @@ async def post_player_login_approval_notice(payload):
     lines = [
         "🔐 **Neuer SpielerLogin wartet auf Freigabe**",
         "",
+        f"**Gilde:** {guild_name}",
         f"**Charakter:** {character_label}",
     ]
     if class_name:
         lines.append(f"**Klasse:** {class_name}")
+    approval_url = f"{LICHTLOOT_URL.rstrip('/')}/gildenleitung.html?" + urllib.parse.urlencode({
+        "guild": guild_slug,
+        "panel": "spielerlogins",
+        "player": character,
+    })
     lines.extend([
         "",
-        "Bitte den neuen SpielerLogin in der Gildenleitung prüfen und freigeben."
+        "Bitte den neuen SpielerLogin in der Gildenleitung prüfen und freigeben.",
+        f"🔗 **[Direkt zur Spielerfreigabe]({approval_url})**"
     ])
-    message = "\n".join(line for line in lines if line is not None)
+    default_message = "\n".join(line for line in lines if line is not None)
+    message = render_notification_template(payload.get("messageTemplate"), {
+        "gilde": guild_name, "charakter": character, "server": server,
+        "klasse": class_name, "link": approval_url
+    }) or default_message
     role_ids = {int(role.id) for role in roles}
     recipients = [
         member for member in getattr(discord_guild, "members", [])
         if not getattr(member, "bot", False)
         and (any(int(getattr(role, "id", 0) or 0) in role_ids for role in getattr(member, "roles", []))
-             or normalized_discord_name(getattr(member, "display_name", "")) in configured_names
-             or normalized_discord_name(getattr(member, "name", "")) in configured_names)
+             or member_matches_configured_names(member, configured_names))
     ]
+    recipients = list({int(member.id): member for member in recipients}.values())
     if not recipients:
         try:
             fetched_members = [member async for member in discord_guild.fetch_members(limit=None)]
@@ -4531,9 +4573,9 @@ async def post_player_login_approval_notice(payload):
                 member for member in fetched_members
                 if not getattr(member, "bot", False)
                 and (any(int(getattr(role, "id", 0) or 0) in role_ids for role in getattr(member, "roles", []))
-                     or normalized_discord_name(getattr(member, "display_name", "")) in configured_names
-                     or normalized_discord_name(getattr(member, "name", "")) in configured_names)
+                     or member_matches_configured_names(member, configured_names))
             ]
+            recipients = list({int(member.id): member for member in recipients}.values())
         except Exception as error:
             raise RuntimeError(f'Discord-Mitglieder für die Rolle "Offiziere" konnten nicht geladen werden: {error}') from error
     if not recipients:
@@ -4548,7 +4590,7 @@ async def post_player_login_approval_notice(payload):
             failed.append(f"{member} ({error})")
     if delivered == 0:
         raise RuntimeError('Direktnachricht an die Rolle "Offiziere" konnte niemandem zugestellt werden.')
-    print(f"SpielerLogin-Freigabehinweis per DM an {delivered} Offiziere gesendet; Fehler: {len(failed)}.")
+    print(f"SpielerLogin-Freigabehinweis fuer {guild_slug} per DM an {delivered} Empfaenger gesendet; Fehler: {len(failed)}.")
 
 
 def format_raid_announcement_date(value):
@@ -4956,7 +4998,7 @@ def po_item_icon(item_name):
     return "◇"
 
 
-def refresh_class_emoji_cache():
+async def refresh_class_emoji_cache():
     found_classes = {}
     found_specs = {}
     found_items = {}
@@ -4965,7 +5007,15 @@ def refresh_class_emoji_cache():
         for guild in client.guilds:
             all_emojis.extend(getattr(guild, "emojis", []) or [])
     except Exception:
-        return found_classes, found_specs, found_items
+        pass
+
+    # App-Emojis aus dem Discord Developer Portal gehören nicht zu einer
+    # einzelnen Guild und erscheinen deshalb nicht in guild.emojis.
+    # discord.py 2.5+ stellt sie über diesen separaten Endpunkt bereit.
+    try:
+        all_emojis.extend(await client.fetch_application_emojis())
+    except Exception as exc:
+        print(f"App-Emojis konnten nicht geladen werden: {exc}")
 
     by_name = {normalize_emoji_name(emoji.name): emoji for emoji in all_emojis}
     for class_key, names in CLASS_EMOJI_NAME_ALIASES.items():
@@ -7971,10 +8021,13 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
     # Hauptbot und PO-Bot sie parallel abholen, könnten beide dieselbe DM oder
     # denselben Raidpost senden, bevor der Queue-Eintrag auf erledigt steht.
     po_bot_owned_types = {
+        "player_login_approval_notice",
         "raid_announcement",
         "raid_announcement_refresh",
         "raid_announcement_role_notice",
         "raid_status_staff_notice",
+        "loot_master_leadpin_notice",
+        "po_release_request_notice",
         "po_post",
         "po_post_delete",
         "p0_post_refresh",
@@ -7988,6 +8041,7 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
     try:
         raw_payload = item.get("payload") or {}
         payload = raw_payload if isinstance(raw_payload, dict) else json.loads(raw_payload or "{}")
+        payload.setdefault("guildSlug", queue_guild_slug)
     except Exception:
         payload = {}
 
@@ -8033,7 +8087,10 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
 
 
 async def send_worldbuff_player_change_notice(payload):
-    recipient_name = str(payload.get("recipient") or "Ariee").strip().lower()
+    recipient_name = str(payload.get("recipient") or "").strip().lower()
+    targets = list(payload.get("targets") or [])
+    if recipient_name:
+        targets.append({"type": "name", "value": recipient_name})
     character = str(payload.get("character") or "Unbekannter Charakter").strip()
     action_label = str(payload.get("actionLabel") or "geändert").strip()
     reason = str(payload.get("reason") or "-").strip()
@@ -8042,28 +8099,52 @@ async def send_worldbuff_player_change_notice(payload):
     lines = [
         f"🌍 **Worldbuff-Termin {action_label}**",
         f"**Charakter:** {character}",
-        f"**Bisheriger Termin:** {old_slot}",
+        f"**{'Termin' if str(payload.get('action') or '') == 'registered' else 'Bisheriger Termin'}:** {old_slot}",
     ]
     if new_slot:
         lines.append(f"**Neuer Termin:** {new_slot}")
     lines.append(f"**Grund:** {reason}")
-    message = "\n".join(lines)
+    default_message = "\n".join(lines)
+    message = render_notification_template(payload.get("messageTemplate"), {
+        "charakter": character, "aktion": action_label, "termin": old_slot,
+        "neuer_termin": new_slot, "grund": reason
+    }) or default_message
 
-    for guild in client.guilds:
+    wanted_names = {
+        normalized_discord_name(target.get("value") or target.get("name"))
+        for target in targets if str(target.get("type") or "name").lower() == "name"
+    }
+    wanted_role_ids = {
+        str(target.get("value") or target.get("id") or "").strip()
+        for target in targets if str(target.get("type") or "").lower() == "role"
+    }
+    sent = set()
+    guild_slug = normalize_guild_slug(payload.get("guildSlug") or payload.get("guild") or current_guild_slug())
+    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
+    discord_guild_id = str(registry_entry.get("discordGuildId") or (NACHTLOOT_DISCORD_GUILD_ID if guild_slug == NACHTLOOT_GUILD_SLUG else "")).strip()
+    selected_guild = client.get_guild(int(discord_guild_id)) if discord_guild_id.isdigit() else None
+    guilds = [selected_guild] if selected_guild else []
+    for guild in guilds:
         for member in guild.members:
-            candidates = {
-                str(member.name or "").strip().lower(),
-                str(member.display_name or "").strip().lower(),
-                str(getattr(member, "global_name", "") or "").strip().lower(),
+            member_names = {
+                normalized_discord_name(getattr(member, "name", "")),
+                normalized_discord_name(getattr(member, "display_name", "")),
+                normalized_discord_name(getattr(member, "global_name", "")),
             }
-            if recipient_name in candidates or any(recipient_name in candidate for candidate in candidates if candidate):
-                try:
-                    await member.send(message)
-                    print(f"Worldbuff-Aenderung per DM an {member} gesendet.")
-                    return
-                except Exception as error:
-                    print(f"Worldbuff-DM an {member} fehlgeschlagen: {error}")
-    print(f"Discord-Empfaenger fuer Worldbuff-Aenderung nicht gefunden: {recipient_name}")
+            member_roles = {str(role.id) for role in getattr(member, "roles", [])}
+            if not (wanted_names.intersection(member_names) or wanted_role_ids.intersection(member_roles)):
+                continue
+            if member.id in sent or member.bot:
+                continue
+            try:
+                await member.send(message)
+                sent.add(member.id)
+                print(f"Worldbuff-Aenderung per DM an {member} gesendet.")
+            except Exception as error:
+                print(f"Worldbuff-DM an {member} fehlgeschlagen: {error}")
+    if not sent:
+        print("Kein Discord-Empfaenger fuer die Worldbuff-Aenderung gefunden.")
+    return len(sent)
 
 
 async def lichtloot_queue_loop():
@@ -8081,6 +8162,8 @@ async def lichtloot_queue_loop():
             result = await asyncio.to_thread(lichtloot_get, {
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
+                "limit": 500,
+                "types": "worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,worldbuff_replacement,boss_token_notice,worldbuff_backup_export",
                 "t": int(time.time())
             })
 
@@ -8097,6 +8180,13 @@ async def lichtloot_queue_loop():
                         await handle_lichtloot_queue_item(item)
                     except Exception as item_error:
                         print(f"Fehler beim Verarbeiten eines LichtLoot-Queue-Eintrags fuer {guild_slug}:", item_error)
+                        if str(item.get("type") or "").strip() == "player_login_approval_notice" and item.get("rowNumber"):
+                            await asyncio.to_thread(lichtloot_post, {
+                                "action": "lichtbotResolveQueue",
+                                "queueToken": LICHTBOT_QUEUE_TOKEN,
+                                "rowNumber": item.get("rowNumber")
+                            })
+                            print(f"Nicht zustellbaren alten SpielerLogin-Hinweis fuer {guild_slug} aus der Queue entfernt.")
                     finally:
                         CURRENT_GUILD_SLUG.reset(token)
             else:
@@ -8105,6 +8195,8 @@ async def lichtloot_queue_loop():
             railway_result = await asyncio.to_thread(railway_get, {
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
+                "limit": 500,
+                "types": "worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,worldbuff_replacement,boss_token_notice,worldbuff_backup_export",
                 "t": int(time.time())
             })
 
@@ -8120,10 +8212,14 @@ async def lichtloot_queue_loop():
                     try:
                         railway_type = str(item.get("type") or "").strip()
                         if railway_type in {
+                            "player_login_approval_notice",
                             "raid_announcement",
                             "raid_announcement_refresh",
                             "raid_announcement_role_notice",
                             "raid_status_staff_notice",
+                            "loot_master_leadpin_notice",
+                            "po_release_request_notice",
+                            "po_release_granted_notice",
                             "po_post",
                             "po_post_delete",
                             "p0_post_refresh",
@@ -8142,6 +8238,13 @@ async def lichtloot_queue_loop():
                             })
                     except Exception as item_error:
                         print(f"Fehler beim Verarbeiten eines Railway-Queue-Eintrags fuer {guild_slug}:", item_error)
+                        if str(item.get("type") or "").strip() == "player_login_approval_notice" and item.get("rowNumber"):
+                            await asyncio.to_thread(railway_post, {
+                                "action": "lichtbotResolveQueue",
+                                "queueToken": LICHTBOT_QUEUE_TOKEN,
+                                "rowNumber": item.get("rowNumber")
+                            })
+                            print(f"Nicht zustellbaren alten Railway-SpielerLogin-Hinweis fuer {guild_slug} aus der Queue entfernt.")
                     finally:
                         CURRENT_GUILD_SLUG.reset(token)
             else:
@@ -10082,7 +10185,12 @@ class PoSignupItemSelect(discord.ui.Select):
             options.append(discord.SelectOption(
                 label=item["label"],
                 value=item["label"],
-                description=item["description"] or None
+                description=item["description"] or None,
+                emoji=(
+                    discord.PartialEmoji.from_str(po_item_icon(item["label"]))
+                    if po_item_icon(item["label"]).startswith(("<:", "<a:"))
+                    else None
+                )
             ))
         super().__init__(
             placeholder="Item auswählen und PO eintragen",
@@ -10968,7 +11076,7 @@ async def on_ready():
     print("Postet Worldbuff-Uebersichten in den gildenabhaengig gespeicherten Worldbuff-Channel.")
     print(f"Hordenbuff-Channels: {sorted(HORDENBUFF_CHANNEL_IDS)}")
     print(f"Loganalyse-Channels: {sorted(LOG_ANALYSIS_CHANNEL_IDS)}")
-    found_class_emojis, found_spec_emojis, found_item_emojis = refresh_class_emoji_cache()
+    found_class_emojis, found_spec_emojis, found_item_emojis = await refresh_class_emoji_cache()
     print(f"Raid-Anmelder Klassenemojis gefunden: {', '.join(sorted(found_class_emojis.keys())) or 'keine'}")
     print(f"Raid-Anmelder Skillungsemojis gefunden: {', '.join(sorted(found_spec_emojis.keys())) or 'keine'}")
     print(f"PO-Item Emojis gefunden: {len(found_item_emojis)}")
