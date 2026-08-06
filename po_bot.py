@@ -5547,16 +5547,27 @@ def po_signup_channel_sync_payloads():
     for payload in load_state().values():
         if not isinstance(payload, dict):
             continue
-        raid = normalize_raid(payload.get("raid") or payload.get("raidName") or "")
-        raid_date = clean(payload.get("raidDate") or payload.get("date"))
-        channel_id = payload_target_channel_id(payload) or payload_source_channel_id(payload)
+        raid_snapshot = payload.get("combinedRaidSnapshot") or payload.get("raidSnapshot") or {}
+        merged = {**raid_snapshot, **payload} if isinstance(raid_snapshot, dict) else dict(payload)
+        raid = normalize_raid(
+            payload.get("raid") or payload.get("raidName")
+            or raid_snapshot.get("raid") or raid_snapshot.get("raidName") or ""
+        )
+        raid_date = clean(
+            payload.get("raidDate") or payload.get("date")
+            or raid_snapshot.get("raidDate") or raid_snapshot.get("date")
+        )
+        channel_id = payload_target_channel_id(merged) or payload_source_channel_id(merged)
         if not raid or not raid_date or not channel_id:
             continue
-        key = (payload_guild_slug(payload), raid, raid_date, channel_id)
+        merged["raid"] = raid
+        merged["raidDate"] = raid_date
+        merged["targetChannelId"] = channel_id
+        key = (payload_guild_slug(merged), raid, raid_date, channel_id)
         if key in seen:
             continue
         seen.add(key)
-        payloads.append(dict(payload))
+        payloads.append(merged)
     return payloads[-30:]
 
 
@@ -5618,7 +5629,9 @@ async def sync_latest_raid_signup_from_po_channel(payload):
 async def po_channel_signup_sync_loop():
     await client.wait_until_ready()
     while not client.is_closed():
-        for payload in po_signup_channel_sync_payloads():
+        payloads = po_signup_channel_sync_payloads()
+        print(f"PO-Channel Raidanmelder-Sync prüft {len(payloads)} Raid-Channel(s).")
+        for payload in payloads:
             try:
                 await sync_latest_raid_signup_from_po_channel(payload)
             except Exception as error:
