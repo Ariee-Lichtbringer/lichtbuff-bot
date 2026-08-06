@@ -3144,26 +3144,62 @@ async def send_queue_targeted_embed(payload, embed, excluded_user_ids=None):
         (target_guild_id and str(guild.id) == target_guild_id)
         or (not target_guild_id and guild_slug_for_discord_server(guild) == target_slug)
     )]
+    if not guilds:
+        print(
+            "Discord-DM abgebrochen: keine verbundene Discord-Gilde für "
+            f"{target_slug} gefunden (discordGuildId={target_guild_id or '-'})."
+        )
     for guild in guilds:
         guild_role_ids = {str(role.id) for role in guild.roles}
         if wanted_roles and not wanted_roles.intersection(guild_role_ids) and not wanted_names:
+            print(
+                f"Discord-DM für {target_slug}: ausgewählte Rollen gehören nicht zur "
+                f"Discord-Gilde {guild.name}; Auftrag wird nicht gildenübergreifend versendet."
+            )
             continue
-        for member in guild.members:
-            if member.bot or member.id in sent:
-                continue
-            member_names = {
-                normalized_prio_player_name(getattr(member, "name", "")),
-                normalized_prio_player_name(getattr(member, "display_name", "")),
-                normalized_prio_player_name(getattr(member, "global_name", "")),
-            }
-            member_roles = {str(role.id) for role in getattr(member, "roles", [])}
-            if not (wanted_names.intersection(member_names) or wanted_roles.intersection(member_roles)):
-                continue
+        members = list(guild.members)
+
+        def matching_members(entries):
+            matches = []
+            for member in entries:
+                if member.bot or member.id in sent:
+                    continue
+                member_names = {
+                    normalized_prio_player_name(getattr(member, "name", "")),
+                    normalized_prio_player_name(getattr(member, "display_name", "")),
+                    normalized_prio_player_name(getattr(member, "global_name", "")),
+                }
+                member_roles = {str(role.id) for role in getattr(member, "roles", [])}
+                if wanted_names.intersection(member_names) or wanted_roles.intersection(member_roles):
+                    matches.append(member)
+            return matches
+
+        matches = matching_members(members)
+        if (wanted_names or wanted_roles) and not matches:
+            try:
+                members = [member async for member in guild.fetch_members(limit=None)]
+                matches = matching_members(members)
+                print(
+                    f"Discord-Mitglieder für {target_slug}/{guild.name} neu geladen: "
+                    f"{len(members)} Mitglied(er), {len(matches)} Empfänger."
+                )
+            except Exception as error:
+                print(
+                    f"Discord-Rollen/Namen für {target_slug}/{guild.name} konnten nicht "
+                    f"vollständig geladen werden: {error}. Bereits geladene Empfänger werden weiter verwendet."
+                )
+
+        for member in matches:
             try:
                 await member.send(embed=embed)
                 sent.add(member.id)
             except Exception as error:
                 print(f"Raid-DM an {member} fehlgeschlagen: {error}")
+        if (wanted_names or wanted_roles) and not matches:
+            print(
+                f"Keine Discord-Empfänger für {target_slug}/{guild.name} gefunden. "
+                f"Namen={sorted(wanted_names)}, Rollen={sorted(wanted_roles)}"
+            )
     return len(sent)
 
 
@@ -3207,6 +3243,36 @@ async def send_raid_status_notice_from_queue(payload):
         embed.add_field(name="Hinweis", value=clean(payload.get("message"))[:1024], inline=False)
     count = await send_queue_targeted_embed(payload, embed)
     print(f"Raidstatus-Queue-DM an {count} Empfänger gesendet: {raid_name}")
+    return count
+
+
+async def send_loot_master_leadpin_notice_from_queue(payload):
+    raid_name = clean(payload.get("raidName")) or "Raid"
+    raid_id = clean(payload.get("raidId") or payload.get("id"))
+    lead_pin = clean(payload.get("leadPin"))
+    loot_master_pin = clean(payload.get("lootMasterPin") or payload.get("lootMasterPassword"))
+    if not lead_pin:
+        return 0
+    custom_description = clean(payload.get("messageTemplate")).replace("{raid}", raid_name)
+    embed = discord.Embed(
+        title="LeadPIN für deinen Raid",
+        description=custom_description or f"Du bist für **{raid_name}** als Plündermeister eingetragen.",
+        color=0xFACC15,
+    )
+    embed.add_field(name="LeadPIN", value=f"`{lead_pin}`", inline=False)
+    if loot_master_pin:
+        embed.add_field(name="Plündermeister-PIN", value=f"`{loot_master_pin}`", inline=False)
+    embed.add_field(name="Zugang", value="Alternativ wird auch der **Mastercode der Gildenleitung** als Plündermeister-Passwort akzeptiert.", inline=False)
+    embed.add_field(name="Datum", value=format_raid_announcement_date(payload.get("raidDate") or ""), inline=True)
+    embed.add_field(name="Uhrzeit", value=format_raid_announcement_time(payload.get("raidTime") or ""), inline=True)
+    raidlead_url = f"{LICHTLOOT_URL.rstrip('/')}/raidlead-panel.html?" + urllib.parse.urlencode({
+        "guild": payload_guild_slug(payload), "raidId": raid_id, "leadPin": lead_pin,
+    })
+    embed.add_field(name="Direkt zum Plündermeisterpanel", value=f"[Plündermeisterseite für {raid_name} öffnen]({raidlead_url})", inline=False)
+    embed.add_field(name="Erinnerung für nach dem Raid", value="• **PO+ Punkte übertragen**\n• **Erhaltene Items markieren** und die zugehörigen Punkte entfernen", inline=False)
+    embed.set_footer(text="PM-PIN: nur PO+ übertragen und Item erhalten/Punkte entfernen. Der Mastercode bleibt voll gültig.")
+    count = await send_queue_targeted_embed(payload, embed)
+    print(f"LeadPIN-DM an {count} Plündermeister gesendet: {payload_guild_slug(payload)}:{raid_name}")
     return count
 
 
@@ -4326,7 +4392,7 @@ async def po_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": QUEUE_TOKEN,
                 "limit": "50",
-                "types": "po_post,p0_post_refresh,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,po_rejection_notice,po_approval_notice,po_release_granted_notice,po_post_delete",
+                "types": "po_post,p0_post_refresh,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,loot_master_leadpin_notice,po_rejection_notice,po_approval_notice,po_release_granted_notice,po_post_delete",
                 "t": int(time.time()),
             })
             if result.get("success"):
@@ -4339,6 +4405,7 @@ async def po_queue_loop():
                         "raid_announcement_refresh",
                         "raid_announcement_role_notice",
                         "raid_status_staff_notice",
+                        "loot_master_leadpin_notice",
                         "po_rejection_notice",
                         "po_approval_notice",
                         "po_release_granted_notice",
@@ -4408,6 +4475,10 @@ async def po_queue_loop():
                             continue
                         if item_type == "po_release_granted_notice":
                             await send_po_release_granted_notice_from_queue(payload)
+                            await resolve_queue_item(item.get("rowNumber"))
+                            continue
+                        if item_type == "loot_master_leadpin_notice":
+                            await send_loot_master_leadpin_notice_from_queue(payload)
                             await resolve_queue_item(item.get("rowNumber"))
                             continue
                         if item_type == "raid_announcement":
