@@ -3210,36 +3210,64 @@ async def send_raid_status_notice_from_queue(payload):
     return count
 
 
-def render_po_release_granted_template(payload):
-    template = clean(payload.get("messageTemplate")) or (
-        "✅ **Deine PO-Freigabe wurde erteilt**\n\n"
-        "Deine PO für **{raid}** wurde freigegeben.\n\n"
-        "**Gilde:** {gilde}\n**Charakter:** {charakter}-{server}\n**Klasse:** {klasse}"
-    )
-    values = {
+def po_release_granted_template_values(payload):
+    return {
         "gilde": clean(payload.get("guildName") or payload.get("guildSlug")),
         "charakter": clean(payload.get("character")),
         "server": clean(payload.get("server")),
         "klasse": clean(payload.get("className")),
         "raid": clean(payload.get("raidLabel") or payload.get("raid")),
     }
-    for key, value in values.items():
+
+
+def fill_po_release_granted_template(template, payload):
+    for key, value in po_release_granted_template_values(payload).items():
         template = template.replace("{" + key + "}", value or "-")
     return template[:4000]
 
 
+def render_po_release_granted_staff_template(payload):
+    template = clean(payload.get("messageTemplate")) or (
+        "✅ **PO-Freigabe wurde verschickt**\n\n"
+        "Für **{charakter}-{server}** wurde die PO-Freigabe für **{raid}** erteilt "
+        "und der Spieler per DM informiert.\n\n**Gilde:** {gilde}\n**Klasse:** {klasse}"
+    )
+    old_default = "✅ **Deine PO-Freigabe wurde erteilt**"
+    if template.startswith(old_default):
+        template = (
+            "✅ **PO-Freigabe wurde verschickt**\n\n"
+            "Für **{charakter}-{server}** wurde die PO-Freigabe für **{raid}** erteilt "
+            "und der Spieler per DM informiert.\n\n**Gilde:** {gilde}\n**Klasse:** {klasse}"
+        )
+    return fill_po_release_granted_template(template, payload)
+
+
+def render_po_release_granted_player_template(payload):
+    return fill_po_release_granted_template(
+        "✅ **Deine PO-Freigabe wurde erteilt**\n\n"
+        "Deine PO für **{raid}** wurde freigegeben.\n\n"
+        "**Charakter:** {charakter}-{server}\n**Gilde:** {gilde}",
+        payload,
+    )
+
+
 async def send_po_release_granted_notice_from_queue(payload):
-    embed = discord.Embed(
-        title="PO-Freigabe erteilt",
-        description=render_po_release_granted_template(payload),
+    player_embed = discord.Embed(
+        title="Deine PO-Freigabe wurde erteilt",
+        description=render_po_release_granted_player_template(payload),
         color=0x22C55E,
     )
     primary_user_id = clean(payload.get("discordUserId") or payload.get("discord_user_id"))
     if not primary_user_id.isdigit():
         raise RuntimeError("Der Discord-Account des freigegebenen Charakters fehlt.")
     primary_user = client.get_user(int(primary_user_id)) or await client.fetch_user(int(primary_user_id))
-    await primary_user.send(embed=embed)
-    extra_count = await send_queue_targeted_embed(payload, embed, {primary_user_id})
+    await primary_user.send(embed=player_embed)
+    staff_embed = discord.Embed(
+        title="Gildeninformation: PO-Freigabe",
+        description=render_po_release_granted_staff_template(payload),
+        color=0xFACC15,
+    )
+    extra_count = await send_queue_targeted_embed(payload, staff_embed, {primary_user_id})
     print(f"PO-Freigabe-DM an Charakter und {extra_count} zusaetzliche Empfänger gesendet: {current_guild_slug()}:{payload.get('character') or '?'}:{payload.get('raid') or '?'}")
     return 1 + extra_count
 
