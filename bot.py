@@ -603,6 +603,19 @@ async def sync_discord_roles_to_lichtloot():
         guild_slug = guild_slug_for_discord_server(discord_guild, "")
         if not guild_slug:
             continue
+        # Der lokale Discord-Cache kann direkt nach dem Start noch leer sein.
+        # Fuer die Namensauswahl in der Gildenleitung laden wir die Mitglieder
+        # deshalb aktiv vom Discord-Server und verwenden den Cache nur als Fallback.
+        discord_members = list(discord_guild.members)
+        try:
+            fetched_members = [member async for member in discord_guild.fetch_members(limit=None)]
+            if fetched_members:
+                discord_members = fetched_members
+        except Exception as error:
+            print(
+                f"Discord-Mitglieder fuer {guild_slug} konnten nicht aktiv geladen werden; "
+                f"verwende Cache mit {len(discord_members)} Eintraegen: {error}"
+            )
         roles = [
             {
                 "id": str(role.id),
@@ -624,7 +637,7 @@ async def sync_discord_roles_to_lichtloot():
                 "bot": bool(member.bot),
                 "discordGuildId": str(discord_guild.id),
             }
-            for member in discord_guild.members
+            for member in discord_members
             if not member.bot
         ]
         token = CURRENT_GUILD_SLUG.set(guild_slug)
