@@ -1410,14 +1410,25 @@ async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None,
             raise last_error or RuntimeError("Raid-Anmelder konnte nicht geladen werden.")
         helper = await asyncio.to_thread(hydrate_helper_prio_flags, helper, guild_slug)
         if optimistic_signup:
-            all_rows = list(helper.get("signups") or []) + list(helper.get("externalSignups") or [])
+            helper = dict(helper)
+            optimistic_user_id = clean(optimistic_signup.get("discordUserId"))
             optimistic_char = clean(optimistic_signup.get("char") or optimistic_signup.get("player")).lower()
-            if optimistic_char and not any(
-                clean(row.get("char") or row.get("player")).lower() == optimistic_char
-                for row in all_rows
-            ):
-                helper = dict(helper)
-                helper["externalSignups"] = list(helper.get("externalSignups") or []) + [optimistic_signup]
+            # Beim Charakterwechsel muss die alte Anmeldung desselben
+            # Discord-Nutzers sofort aus dem gerenderten Snapshot verschwinden.
+            # Die API hat sie bereits ersetzt, aber ein unmittelbar folgender
+            # GET kann noch einen kurzen alten Stand liefern.
+            def keep_signup(row):
+                row_char = clean(row.get("char") or row.get("player")).lower()
+                row_user_id = clean(row.get("discordUserId") or row.get("discord_user_id"))
+                if optimistic_user_id and row_user_id == optimistic_user_id:
+                    return row_char == optimistic_char
+                return True
+
+            helper["signups"] = [row for row in (helper.get("signups") or []) if keep_signup(row)]
+            helper["externalSignups"] = [row for row in (helper.get("externalSignups") or []) if keep_signup(row)]
+            all_rows = list(helper["signups"]) + list(helper["externalSignups"])
+            if optimistic_char and not any(clean(row.get("char") or row.get("player")).lower() == optimistic_char for row in all_rows):
+                helper["externalSignups"].append(optimistic_signup)
         fresh_raid = helper.get("raid") or raid or {}
         fresh_raid = dict(fresh_raid)
         fresh_raid["guildSlug"] = guild_slug
@@ -1430,6 +1441,7 @@ async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None,
             print(f"Raidanmelder direkt aktualisiert: {clean(fresh_raid.get('raidId') or raid_lookup_id)} mit {raid_signup_row_count(helper)} Anmeldung(en).")
     except Exception as error:
         print(f"Raid-Anmelder-Message konnte nicht aktualisiert werden: {error}")
+        raise
 
 
 async def edit_raid_signup_message_from_helper(raid, helper, origin_channel_id=None, origin_message_id=None):
