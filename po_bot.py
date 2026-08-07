@@ -5910,6 +5910,64 @@ async def on_message(message):
         return
     text = clean(getattr(message, "content", ""))
     lower = text.lower()
+    if lower == "!clearchannel" or lower == "!clearchannel bestätigen":
+        permissions = getattr(message.author, "guild_permissions", None)
+        clear_channel_names = {
+            normalized_prio_player_name(value)
+            for value in [
+                getattr(message.author, "name", ""),
+                getattr(message.author, "display_name", ""),
+                getattr(message.author, "global_name", ""),
+            ]
+            if normalized_prio_player_name(value)
+        }
+        personally_allowed = any(
+            name in clear_channel_names
+            for name in {
+                normalized_prio_player_name("Ariee"),
+                normalized_prio_player_name("Juksi"),
+                normalized_prio_player_name("Ariee / Juksi"),
+            }
+        )
+        may_clear_channel = bool(
+            permissions
+            and (permissions.administrator or permissions.manage_messages)
+        ) or personally_allowed
+        if not may_clear_channel:
+            await message.channel.send(
+                "⚠️ Nur Administratoren oder Mitglieder mit „Nachrichten verwalten“ dürfen diesen Channel leeren.",
+                delete_after=20,
+            )
+            return
+        if lower != "!clearchannel bestätigen":
+            await message.channel.send(
+                "⚠️ Dadurch werden alle nicht angehefteten Nachrichten in diesem Channel gelöscht. "
+                "Zum Bestätigen bitte `!clearchannel bestätigen` senden.",
+                delete_after=30,
+            )
+            return
+        try:
+            deleted = await message.channel.purge(
+                limit=None,
+                check=lambda old_message: not old_message.pinned,
+                bulk=True,
+                reason=f"!clearchannel von {message.author} ({message.author.id})",
+            )
+            await message.channel.send(
+                f"✅ Channel geleert: **{len(deleted)}** nicht angeheftete Nachrichten gelöscht.",
+                delete_after=15,
+            )
+        except discord.Forbidden:
+            await message.channel.send(
+                "⚠️ Der Bot hat in diesem Channel nicht die Berechtigung „Nachrichten verwalten“.",
+                delete_after=20,
+            )
+        except Exception as error:
+            await message.channel.send(
+                f"⚠️ Channel konnte nicht vollständig geleert werden: `{error}`",
+                delete_after=30,
+            )
+        return
     if lower in {"!hilfe-start", "!hilfe-aktualisieren", "!hilfe-stop"}:
         if int(message.channel.id) != NACHTLOOT_HELP_CHANNEL_ID:
             await message.channel.send(
