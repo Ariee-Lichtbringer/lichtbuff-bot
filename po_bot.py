@@ -1795,6 +1795,28 @@ class RaidSignupSpecSelect(discord.ui.Select):
     async def callback(self, interaction):
         spec_key = self.values[0]
         spec_label = next((label for label, key in RAID_SIGNUP_SPECS.get(self.class_name, []) if key == spec_key), spec_key)
+        characters = await load_po_linked_characters(interaction.user.id, self.raid)
+        matching_characters = [
+            character for character in characters
+            if canonical_signup_class(character.get("className")) == self.class_name
+        ]
+        if matching_characters:
+            player_pin = clean(matching_characters[0].get("playerPin"))
+            await interaction.response.send_message(
+                "Charakter für die Anmeldung wählen:",
+                view=RaidSignupCharacterView(
+                    self.raid,
+                    self.class_name,
+                    spec_label,
+                    spec_key,
+                    player_pin,
+                    matching_characters,
+                    self.origin_channel_id,
+                    self.origin_message_id,
+                ),
+                ephemeral=True,
+            )
+            return
         await interaction.response.send_modal(RaidSignupPinModal(self.raid, self.class_name, spec_label, spec_key, self.origin_channel_id, self.origin_message_id))
 
 
@@ -2364,7 +2386,7 @@ async def load_po_linked_characters(discord_user_id, payload=None):
             "className": class_display_name(row.get("className") or row.get("class_name")),
             "playerPin": pin,
         })
-    return chars[:3]
+    return chars[:25]
 
 
 async def load_po_characters_by_pin(player_pin, payload=None):
