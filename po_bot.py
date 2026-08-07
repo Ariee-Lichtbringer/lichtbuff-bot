@@ -3616,25 +3616,29 @@ async def send_raid_announcement_notice_from_queue(payload):
     raid_time = format_raid_announcement_time(payload.get("raidTime") or "")
     channel_id = clean(payload.get("channelId"))
     channel_label = f"<#{channel_id}>" if channel_id else "dem vorgesehenen Raid-Channel"
+    guild_icon = guild_prio_link_icon(payload)
     embed = discord.Embed(
-        title="Neuer Raidanmelder",
-        description="Bitte meldet euch rechtzeitig an und tragt eure Prios ein.",
+        title=f"{guild_icon} Neuer Raidanmelder",
+        description="📣 Bitte meldet euch rechtzeitig an und tragt eure Prios ein.",
         color=0x7C3AED,
     )
-    embed.add_field(name="Raid", value=raid_name, inline=True)
-    embed.add_field(name="Datum", value=raid_date, inline=True)
-    embed.add_field(name="Uhrzeit", value=raid_time, inline=True)
-    embed.add_field(name="Discord-Channel", value=channel_label, inline=False)
+    embed.add_field(name="⚔️ Raid", value=raid_name, inline=True)
+    embed.add_field(name="🗓️ Datum", value=raid_date, inline=True)
+    embed.add_field(name="⏰ Uhrzeit", value=raid_time, inline=True)
+    embed.add_field(name="💬 Discord-Channel", value=channel_label, inline=False)
     additional_message = clean(payload.get("announcementMessage") or payload.get("notificationMessage"))
     if additional_message:
         embed.add_field(
-            name="Zusätzliche Informationen",
+            name="📌 Zusätzliche Informationen",
             value=additional_message[:1024],
             inline=False,
         )
-    signup_url = clean(payload.get("signupUrl"))
-    if signup_url:
-        embed.add_field(name="Direkt zum Anmelder", value=f"[Raidanmelder öffnen]({signup_url})", inline=False)
+    prio_url = lichtloot_prio_url(payload)
+    embed.add_field(
+        name="🔗 Direkt zur Prioseite",
+        value=f"➡️ [{guild_icon}]({prio_url}) **Hier geht’s zur Prioseite dieses Raids.**",
+        inline=False,
+    )
     count = await send_queue_targeted_embed(payload, embed)
     print(f"Raidankündigungs-DM an {count} Empfänger gesendet: {raid_name}")
     return count
