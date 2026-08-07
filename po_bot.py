@@ -5192,6 +5192,20 @@ async def on_ready():
         client.discord_channel_sync_started = True
         client.loop.create_task(discord_channel_sync_loop())
     found_classes, found_specs, found_items = await refresh_emoji_cache()
+    # Der PO-Anmelder und der Raidanmelder verwenden denselben Emoji-Cache.
+    # Fehlen in der PO-Bot-App noch Klassen-/Skillungsbilder, werden sie beim
+    # Start einmalig wie die Itemicons ergänzt und anschließend neu geladen.
+    if len(found_classes) < len(CLASS_EMOJI_NAME_ALIASES) or len(found_specs) < len(SPEC_EMOJI_NAME_ALIASES):
+        try:
+            emoji_sync = await sync_raid_application_emojis()
+            found_classes, found_specs, found_items = await refresh_emoji_cache()
+            print(
+                "PO Raid-Emojis automatisch synchronisiert: "
+                f"{len(emoji_sync['created'])} neu, {len(emoji_sync['skipped'])} vorhanden, "
+                f"{len(emoji_sync['failed'])} Fehler."
+            )
+        except Exception as error:
+            print(f"PO Raid-Emoji-Autosync übersprungen: {error}")
     print(f"PO Klassenemojis gefunden: {', '.join(sorted(found_classes.keys())) or 'keine'}")
     print(f"PO Skill-Emojis gefunden: {', '.join(sorted(found_specs.keys())) or 'keine'}")
     print(f"PO Item-Emojis gefunden: {len(found_items)}")
@@ -5312,24 +5326,14 @@ async def poemoji(interaction, raid: str, limit: int = 25):
     await run_po_emoji_sync(interaction, raid, limit)
 
 
-@client.tree.command(name="raid_emojis_sync", description="Lädt Klassen-, Skillungs-, Rollen- und Koffer-Emojis in die Discord-App.")
-async def raid_emojis_sync(interaction):
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    if not await can_sync_item_emojis(interaction.user):
-        await interaction.followup.send("⚠️ Dafür brauchst du Gildenleitungs- oder Emoji-Rechte.", ephemeral=True)
-        return
+async def sync_raid_application_emojis():
     create_emoji = getattr(client, "create_application_emoji", None)
     if not callable(create_emoji):
-        await interaction.followup.send(
-            "⚠️ Die installierte discord.py-Version unterstützt Application Emojis noch nicht. Bitte discord.py aktualisieren.",
-            ephemeral=True,
-        )
-        return
+        raise RuntimeError("Die installierte discord.py-Version unterstützt Application Emojis noch nicht.")
     try:
         application_emojis = await client.fetch_application_emojis()
     except Exception as error:
-        await interaction.followup.send(f"⚠️ Application Emojis konnten nicht geladen werden: {error}", ephemeral=True)
-        return
+        raise RuntimeError(f"Application Emojis konnten nicht geladen werden: {error}") from error
     existing = {normalize_emoji_name(emoji.name): emoji for emoji in application_emojis}
     created = []
     skipped = []
@@ -5348,6 +5352,23 @@ async def raid_emojis_sync(interaction):
         except Exception as error:
             failed.append(f"{emoji_name}: {error}")
     await refresh_emoji_cache()
+    return {"created": created, "skipped": skipped, "failed": failed}
+
+
+@client.tree.command(name="raid_emojis_sync", description="Lädt Klassen-, Skillungs-, Rollen- und Koffer-Emojis in die Discord-App.")
+async def raid_emojis_sync(interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    if not await can_sync_item_emojis(interaction.user):
+        await interaction.followup.send("⚠️ Dafür brauchst du Gildenleitungs- oder Emoji-Rechte.", ephemeral=True)
+        return
+    try:
+        result = await sync_raid_application_emojis()
+    except Exception as error:
+        await interaction.followup.send(f"⚠️ Raid-Emojis konnten nicht synchronisiert werden: {error}", ephemeral=True)
+        return
+    created = result["created"]
+    skipped = result["skipped"]
+    failed = result["failed"]
     lines = [
         "✅ Raid-Application-Emoji-Sync abgeschlossen.",
         f"Neu im Developer Portal: **{len(created)}**",
