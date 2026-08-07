@@ -1199,7 +1199,14 @@ def hydrate_helper_prio_flags(helper, guild_slug):
         }
         for row in list(helper.get("signups") or []) + list(helper.get("externalSignups") or []):
             player_key = normalized_prio_player_name(row.get("player") or row.get("char"))
-            row["hasPrio"] = bool(player_key and player_key in prio_players)
+            # getRaidHelper gleicht auch verbundene Raid-Datensätze ab. Eine
+            # dort bereits erkannte Prio darf durch die zusätzliche Abfrage
+            # eines einzelnen Raid-Datensatzes nicht wieder gelöscht werden.
+            already_has_prio = (
+                row.get("hasPrio") is True
+                or clean(row.get("hasPrio")).lower() in {"1", "true", "yes", "ja"}
+            )
+            row["hasPrio"] = already_has_prio or bool(player_key and player_key in prio_players)
     except Exception as error:
         print(f"Prio-Symbole konnten nicht geladen werden: {error}")
     return helper
