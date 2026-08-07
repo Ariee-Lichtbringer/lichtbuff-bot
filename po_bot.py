@@ -1466,7 +1466,13 @@ async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None,
             helper["signups"] = [row for row in (helper.get("signups") or []) if keep_signup(row)]
             helper["externalSignups"] = [row for row in (helper.get("externalSignups") or []) if keep_signup(row)]
             all_rows = list(helper["signups"]) + list(helper["externalSignups"])
-            if optimistic_char and not any(clean(row.get("char") or row.get("player")).lower() == optimistic_char for row in all_rows):
+            matching_row = next((row for row in all_rows if clean(row.get("char") or row.get("player")).lower() == optimistic_char), None)
+            if matching_row:
+                database_has_prio = matching_row.get("hasPrio") is True or clean(matching_row.get("hasPrio")).lower() in {"1", "true", "yes", "ja"}
+                optimistic_has_prio = optimistic_signup.get("hasPrio") is True or clean(optimistic_signup.get("hasPrio")).lower() in {"1", "true", "yes", "ja"}
+                matching_row.update({key: value for key, value in optimistic_signup.items() if value not in (None, "")})
+                matching_row["hasPrio"] = database_has_prio or optimistic_has_prio
+            elif optimistic_char:
                 helper["externalSignups"].append(optimistic_signup)
         fresh_raid = helper.get("raid") or raid or {}
         fresh_raid = dict(fresh_raid)
@@ -1708,6 +1714,7 @@ class RaidSignupCharacterSelect(discord.ui.Select):
                     "player": char_name,
                     "className": char_class,
                     "klasse": char_class,
+                    "hasPrio": bool((result.get("signup") or {}).get("hasPrio")),
                     "role": infer_signup_role(self.spec_label),
                     "status": "signed",
                     "note": f"Skillung: {self.spec_label}",
