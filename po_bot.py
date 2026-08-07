@@ -3695,7 +3695,7 @@ async def send_raid_announcement_notice_from_queue(payload):
     embed.add_field(name="⚔️ Raid", value=raid_name, inline=True)
     embed.add_field(name="🗓️ Datum", value=raid_date, inline=True)
     embed.add_field(name="⏰ Uhrzeit", value=raid_time, inline=True)
-    embed.add_field(name="💬 Discord-Channel", value=channel_label, inline=False)
+    embed.add_field(name="Hier geht’s zu den Raidanmeldungen", value=channel_label, inline=False)
     additional_message = clean(payload.get("announcementMessage") or payload.get("notificationMessage"))
     if additional_message:
         embed.add_field(
@@ -3705,8 +3705,8 @@ async def send_raid_announcement_notice_from_queue(payload):
         )
     prio_url = lichtloot_prio_url(payload)
     embed.add_field(
-        name="Raidanmeldung & Prios",
-        value=f"**[{guild_icon} Hier geht’s zur Raidanmeldung.]({prio_url})**",
+        name="P1–P3 auf LichtLoot",
+        value=f"**[{guild_icon} Hier kannst du deine P1–P3 eintragen.]({prio_url})**",
         inline=False,
     )
     guide_path = RAID_ANNOUNCEMENT_GUIDE_IMAGE_PATH
