@@ -2858,10 +2858,10 @@ async def load_entries(payload):
         if not entry.get("configOnly")
         and (clean(entry.get("player")) or clean(entry.get("item") or entry.get("itemName")))
     ]
-    # Im Discord-Post eingebettete Einträge dienen nur als Rückfall für alte
-    # Posts. Der aktuelle Datenbankstatus muss immer Vorrang haben, damit eine
-    # Freigabe beim anschließenden Refresh nicht wieder orange erscheint.
-    return apply_po_item_variants(payload, merge_po_entries(entries, payload_po_post_entries(payload)))
+    # Sobald die Datenbank erfolgreich geantwortet hat, ist ihre Liste
+    # vollständig und verbindlich. Insbesondere darf ein dort gelöschter
+    # Eintrag nicht aus dem alten Discord-Snapshot wieder ergänzt werden.
+    return apply_po_item_variants(payload, entries)
 
 
 def payload_po_post_entries(payload):
@@ -4705,6 +4705,15 @@ async def refresh_po_message(client, payload):
     items = await items_for_payload(payload)
     entries = await load_entries(payload)
     p0plus_labels = await load_p0plus_labels(payload.get("raid") or "")
+    if combined_raid_snapshot(payload):
+        helper = await get_raid_helper_for_refresh(payload)
+        if helper and helper.get("success"):
+            payload = {
+                **payload,
+                "combinedRaidSnapshot": helper.get("raid") or combined_raid_snapshot(payload),
+                "combinedRaidSignups": helper.get("signups") or [],
+                "combinedRaidExternalSignups": helper.get("externalSignups") or [],
+            }
     embeds, view = po_message_parts(payload, entries, p0plus_labels, items)
     banner, _ = raid_banner_file(combined_raid_snapshot(payload) or {})
     if banner:
