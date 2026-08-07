@@ -4101,7 +4101,7 @@ class PoUseOtherLoginButton(discord.ui.Button):
     def __init__(self, payload, item_name, class_name=""):
         super().__init__(
             custom_id=f"po-other-login:{payload['postKey'][:55]}",
-            label="Anderen SpielerLogin verwenden",
+            label="Spielerlogin",
             style=discord.ButtonStyle.secondary,
         )
         self.payload = payload
@@ -5671,10 +5671,14 @@ async def sync_latest_raid_signup_from_po_channel(payload):
             )
         if wanted_raid and message_raid != wanted_raid:
             continue
-        # Das Datum des PO-Eintrags kann nach Verschieben/Neuposten veraltet
-        # sein. Maßgeblich ist der neueste echte Raid-Helper-Anmelder im
-        # gespeicherten Channel und dessen eigenes Raid-Datum.
         if not message_date:
+            continue
+        # Ein Channel kann mehrere Anmelder desselben Raidtyps enthalten.
+        # Ohne Datumsabgleich wurde z. B. für einen BWL am 07.08. der neueste
+        # BWL-Anmelder vom 11.08. übernommen. Der Server konnte diesen nicht
+        # dem erstellten Raid zuordnen und legte früher einen Discord-Import
+        # als zweiten Raid an.
+        if wanted_date and message_date != wanted_date:
             continue
         rows = raid_helper_signup_rows_from_message(message)
         if not rows:
@@ -5698,6 +5702,7 @@ async def sync_latest_raid_signup_from_po_channel(payload):
         "action": "saveDiscordSignupRows",
         "queueToken": QUEUE_TOKEN,
         "guild": expected_guild_slug,
+        "raidId": clean(payload.get("raidId") or payload.get("id")),
         "raid": wanted_raid,
         "raidDate": matched_date,
         "raidTime": matched_time,
