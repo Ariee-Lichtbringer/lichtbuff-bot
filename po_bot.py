@@ -208,6 +208,12 @@ QUEUE_CHECK_SECONDS = int(os.getenv("PO_BOT_QUEUE_CHECK_SECONDS", "10") or "10")
 PRIO_SERVER = os.getenv("PO_BOT_PRIO_SERVER", "Lichtbringer")
 PO_HELP_IMAGE_FILENAME = "po-anmelder-hinweis.png"
 PO_HELP_IMAGE_PATH = Path(os.getenv("PO_BOT_HELP_IMAGE", str(Path(__file__).with_name(PO_HELP_IMAGE_FILENAME))))
+RAID_ANNOUNCEMENT_GUIDE_IMAGE_PATH = Path(
+    os.getenv(
+        "PO_BOT_RAID_ANNOUNCEMENT_GUIDE_IMAGE",
+        str(Path(__file__).resolve().parent / "assets" / "po-und-prio-anleitung.png"),
+    )
+)
 NACHTLOOT_HELP_CHANNEL_ID = int(
     os.getenv("NACHTLOOT_HELP_CHANNEL_ID", "1533899479734947881") or "1533899479734947881"
 )
@@ -3664,7 +3670,18 @@ async def send_raid_announcement_notice_from_queue(payload):
         value=f"➡️ [{guild_icon}]({prio_url}) **Hier geht’s zur Prioseite dieses Raids.**",
         inline=False,
     )
-    count = await send_queue_targeted_embed(payload, embed)
+    guide_path = RAID_ANNOUNCEMENT_GUIDE_IMAGE_PATH
+    if guide_path.is_file():
+        embed.add_field(
+            name="📘 PO- & Prio-Anleitung",
+            value="Die vollständige Schritt-für-Schritt-Anleitung findest du direkt unter dieser Nachricht.",
+            inline=False,
+        )
+        embed.set_image(url=f"attachment://{guide_path.name}")
+    else:
+        print(f"PO- & Prio-Anleitung nicht gefunden: {guide_path}")
+        guide_path = None
+    count = await send_queue_targeted_embed(payload, embed, guide_path)
     print(f"Raidankündigungs-DM an {count} Empfänger gesendet: {raid_name}")
     return count
 
