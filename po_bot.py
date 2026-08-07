@@ -2262,7 +2262,7 @@ def build_fixed_po_header(payload):
         f"👤 Erstellt von: {created_by}",
         "",
         f"🔑 Prio-PIN: {lichtloot_id or '-'}",
-        f"➡️ [{guild_prio_link_icon(payload)}]({lichtloot_prio_url(payload)}) Hier geht’s zur Prioseite dieses Raids.",
+        f"**[{guild_prio_link_icon(payload)} Hier geht’s zur Raidanmeldung.]({lichtloot_prio_url(payload)})**",
         "",
         "Bitte tragt eure Prios rechtzeitig ein.",
         "",
@@ -3701,14 +3701,14 @@ async def send_raid_announcement_notice_from_queue(payload):
         )
     prio_url = lichtloot_prio_url(payload)
     embed.add_field(
-        name="🔗 Direkt zur Prioseite",
-        value=f"➡️ [{guild_icon}]({prio_url}) **Hier geht’s zur Prioseite dieses Raids.**",
+        name="Raidanmeldung & Prios",
+        value=f"**[{guild_icon} Hier geht’s zur Raidanmeldung.]({prio_url})**",
         inline=False,
     )
     guide_path = RAID_ANNOUNCEMENT_GUIDE_IMAGE_PATH
     if guide_path.is_file():
         embed.add_field(
-            name="📘 PO- & Prio-Anleitung",
+            name="PO- & Prio-Anleitung",
             value="Die vollständige Schritt-für-Schritt-Anleitung findest du direkt unter dieser Nachricht.",
             inline=False,
         )
