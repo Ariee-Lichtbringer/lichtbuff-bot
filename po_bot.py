@@ -3618,13 +3618,20 @@ async def send_raid_announcement_notice_from_queue(payload):
     channel_label = f"<#{channel_id}>" if channel_id else "dem vorgesehenen Raid-Channel"
     embed = discord.Embed(
         title="Neuer Raidanmelder",
-        description=(
-            f"Der neue Anmelder für **{raid_name}** wurde in {channel_label} "
-            f"für den **{raid_date} um {raid_time}** erstellt.\n\n"
-            "Bitte meldet euch rechtzeitig an und tragt eure Prios ein."
-        ),
+        description="Bitte meldet euch rechtzeitig an und tragt eure Prios ein.",
         color=0x7C3AED,
     )
+    embed.add_field(name="Raid", value=raid_name, inline=True)
+    embed.add_field(name="Datum", value=raid_date, inline=True)
+    embed.add_field(name="Uhrzeit", value=raid_time, inline=True)
+    embed.add_field(name="Discord-Channel", value=channel_label, inline=False)
+    additional_message = clean(payload.get("announcementMessage") or payload.get("notificationMessage"))
+    if additional_message:
+        embed.add_field(
+            name="Zusätzliche Informationen",
+            value=additional_message[:1024],
+            inline=False,
+        )
     signup_url = clean(payload.get("signupUrl"))
     if signup_url:
         embed.add_field(name="Direkt zum Anmelder", value=f"[Raidanmelder öffnen]({signup_url})", inline=False)
