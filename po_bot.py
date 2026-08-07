@@ -2162,6 +2162,13 @@ def payload_with_saved_lichtloot_id(payload):
             if clean(stored.get(source)):
                 result[target] = stored.get(source)
                 break
+    raid_date, raid_time = payload_raid_schedule(result, stored)
+    if raid_date:
+        result["date"] = raid_date
+        result["raidDate"] = raid_date
+    if raid_time:
+        result["time"] = raid_time
+        result["raidTime"] = raid_time
     return result
 
 
@@ -2176,6 +2183,33 @@ def normalize_post_date(value):
 def normalize_post_time(value):
     text = clean(value)
     return re.sub(r"\s*Uhr\s*$", "", text, flags=re.I)
+
+
+def po_schedule_from_post_key(payload):
+    post_key = clean(
+        (payload or {}).get("postKey")
+        or (payload or {}).get("poPostKey")
+        or (payload or {}).get("postId")
+    )
+    match = re.search(r"(?:^|-)(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-|$)", post_key)
+    if not match:
+        return "", ""
+    year, month, day, hour, minute = match.groups()
+    return f"{year}-{month}-{day}", f"{hour}:{minute}"
+
+
+def payload_raid_schedule(payload, *sources):
+    candidates = [payload or {}, *(source or {} for source in sources)]
+    raid_date = ""
+    raid_time = ""
+    for candidate in candidates:
+        raid_date = raid_date or clean(candidate.get("raidDate") or candidate.get("date") or candidate.get("datum"))
+        raid_time = raid_time or clean(candidate.get("raidTime") or candidate.get("time") or candidate.get("uhrzeit"))
+    if not raid_date or not raid_time:
+        fallback_date, fallback_time = po_schedule_from_post_key(payload)
+        raid_date = raid_date or fallback_date
+        raid_time = raid_time or fallback_time
+    return raid_date, raid_time
 
 
 def lichtloot_prio_url(payload=None):
@@ -2214,8 +2248,9 @@ def guild_prio_link_icon(payload):
 
 def build_fixed_po_header(payload):
     raid_name = display_raid(payload.get("raid") or "")
-    date = normalize_post_date(payload.get("date") or payload.get("raidDate") or payload.get("datum"))
-    time_value = normalize_post_time(payload.get("time") or payload.get("raidTime") or payload.get("uhrzeit"))
+    raid_date, raid_time = payload_raid_schedule(payload)
+    date = normalize_post_date(raid_date)
+    time_value = normalize_post_time(raid_time)
     guild_name = guild_display_name(payload=payload)
     created_by = clean(payload.get("createdBy") or payload.get("created_by") or payload.get("erstelltVon")) or "Gildenleitung"
     lichtloot_id = payload_lichtloot_raid_pin(payload)
@@ -3271,7 +3306,7 @@ async def send_po_approval_message(client, entry):
         return False
     player = clean(entry.get("player")) or "dein Charakter"
     item = clean(entry.get("item") or entry.get("itemName")) or "deine PO"
-    raid = display_raid_name(entry.get("raid") or entry.get("raidName") or "") or "Raid"
+    raid = display_raid(entry.get("raid") or entry.get("raidName") or "") or "Raid"
     guild_name = guild_display_name(payload=entry)
     fallback_text = (
         "✅ **Deine Item-PO wurde freigegeben**\n\n"
@@ -3734,7 +3769,7 @@ async def send_po_release_granted_notice_from_queue(payload):
     if not user_id:
         return 0
     guild_name = guild_display_name(payload=payload)
-    raid_name = clean(payload.get("raidLabel") or payload.get("raidName")) or display_raid_name(payload.get("raid") or "") or "Raid"
+    raid_name = clean(payload.get("raidLabel") or payload.get("raidName")) or display_raid(payload.get("raid") or "") or "Raid"
     character = clean(payload.get("character") or payload.get("player")) or "Unbekannt"
     server = clean(payload.get("server"))
     class_name = clean(payload.get("className") or payload.get("class"))
@@ -4879,14 +4914,17 @@ async def post_or_update_from_queue(client, payload):
     previous_message_id = clean(
         stored.get("messageId") or payload.get("messageId") or payload.get("discordMessageId")
     )
+    raid_date, raid_time = payload_raid_schedule(payload, stored)
     normalized = {
         **stored,
         **payload,
         "guildSlug": payload_guild_slug(payload),
         "postKey": post_key,
         "raid": normalize_raid(payload.get("raid") or stored.get("raid")),
-        "date": clean(payload.get("raidDate") or payload.get("date") or stored.get("date")),
-        "time": clean(payload.get("raidTime") or payload.get("time") or stored.get("time")),
+        "date": raid_date,
+        "raidDate": raid_date,
+        "time": raid_time,
+        "raidTime": raid_time,
         "title": clean(payload.get("title") or stored.get("title")) or "PO-Anmelder",
         "sourceChannelId": str(source_channel_id),
         "targetChannelId": str(target_channel_id),
