@@ -3680,6 +3680,43 @@ async def send_player_login_approval_notice_from_queue(payload):
     return delivered
 
 
+async def send_player_login_granted_notice_from_queue(payload):
+    discord_user_id = clean(payload.get("discordUserId") or payload.get("discord_user_id"))
+    if not discord_user_id.isdigit():
+        raise RuntimeError("SpielerLogin-Freigabe: Discord-User-ID fehlt.")
+
+    user = client.get_user(int(discord_user_id))
+    if user is None:
+        user = await client.fetch_user(int(discord_user_id))
+
+    guild_slug = payload_guild_slug(payload)
+    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
+    guild_name = guild_display_name(
+        payload.get("guildName") or registry_entry.get("name") or guild_slug,
+        payload,
+    )
+    character = clean(payload.get("character"))
+    server = clean(payload.get("server"))
+    character_label = f"{character}-{server}" if character and server else character
+    start_url = f"{LICHTLOOT_URL.rstrip('/')}/start.html?" + urllib.parse.urlencode({"guild": guild_slug})
+
+    embed = discord.Embed(
+        title="✅ Dein SpielerLogin wurde freigeschaltet",
+        description=(
+            f"Dein SpielerLogin für **{guild_name}** wurde von der Gildenleitung freigegeben.\n\n"
+            "Du kannst dich jetzt bei LichtLoot anmelden und deine Charaktere, Prios und Raidtermine verwenden."
+        ),
+        color=0x22C55E,
+    )
+    if character_label:
+        embed.add_field(name="Charakter", value=character_label, inline=False)
+    embed.add_field(name="LichtLoot öffnen", value=f"[Jetzt zum SpielerLogin]({start_url})", inline=False)
+    embed.set_footer(text="Diese Nachricht wurde automatisch nach der Freigabe verschickt.")
+    await user.send(embed=embed)
+    print(f"SpielerLogin-Freigabe-DM an {user} gesendet: {guild_slug}:{character_label or discord_user_id}")
+    return 1
+
+
 async def send_raid_announcement_notice_from_queue(payload):
     raid_name = clean(payload.get("raidName")) or "Raid"
     raid_date = format_raid_announcement_date(payload.get("raidDate") or "")
@@ -5030,14 +5067,14 @@ async def po_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": QUEUE_TOKEN,
                 "limit": "50",
-                "types": "player_login_approval_notice,po_post,p0_post_refresh,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,loot_master_leadpin_notice,po_release_request_notice,po_release_granted_notice,po_rejection_notice,po_approval_notice,po_post_delete",
+                "types": "player_login_approval_notice,player_login_granted_notice,po_post,p0_post_refresh,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,loot_master_leadpin_notice,po_release_request_notice,po_release_granted_notice,po_rejection_notice,po_approval_notice,po_post_delete",
                 "t": int(time.time()),
             })
             if result.get("success"):
                 items = result.get("items") or []
                 po_items = [
                     item for item in items
-                    if clean(item.get("type")) in {"player_login_approval_notice", "po_post", "p0_post_refresh"}
+                    if clean(item.get("type")) in {"player_login_approval_notice", "player_login_granted_notice", "po_post", "p0_post_refresh"}
                     or clean(item.get("type")) in {
                         "raid_announcement",
                         "raid_announcement_refresh",
@@ -5082,6 +5119,10 @@ async def po_queue_loop():
                             continue
                         if item_type == "player_login_approval_notice":
                             await send_player_login_approval_notice_from_queue(payload)
+                            await resolve_queue_item(item.get("rowNumber"))
+                            continue
+                        if item_type == "player_login_granted_notice":
+                            await send_player_login_granted_notice_from_queue(payload)
                             await resolve_queue_item(item.get("rowNumber"))
                             continue
                         if (
