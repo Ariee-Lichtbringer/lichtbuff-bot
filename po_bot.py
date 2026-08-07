@@ -3258,13 +3258,25 @@ async def send_po_rejection_message(client, entry, reason):
 async def send_po_approval_message(client, entry):
     user_id = clean(entry.get("discordUserId") or entry.get("discord_user_id"))
     if not user_id:
+        print(
+            "PO-Freigabe: Discord-User-ID fehlt "
+            f"({clean(entry.get('player')) or '?'}, {clean(entry.get('item') or entry.get('itemName')) or '?'})"
+        )
         return False
+    player = clean(entry.get("player")) or "dein Charakter"
+    item = clean(entry.get("item") or entry.get("itemName")) or "deine PO"
+    raid = display_raid_name(entry.get("raid") or entry.get("raidName") or "") or "Raid"
+    guild_name = guild_display_name(payload=entry)
+    fallback_text = (
+        "✅ **Deine Item-PO wurde freigegeben**\n\n"
+        f"🏰 **Gilde:** {guild_name}\n"
+        f"⚔️ **Raid:** {raid}\n"
+        f"👤 **Charakter:** {player}\n"
+        f"🎁 **Item:** {item}\n\n"
+        "Deine freigegebene PO ist jetzt für den Raid hinterlegt."
+    )
     try:
         user = client.get_user(int(user_id)) or await client.fetch_user(int(user_id))
-        player = clean(entry.get("player")) or "dein Charakter"
-        item = clean(entry.get("item") or entry.get("itemName")) or "deine PO"
-        raid = display_raid_name(entry.get("raid") or entry.get("raidName") or "") or "Raid"
-        guild_name = guild_display_name(payload=entry)
         icon = item_icon(item)
         embed = discord.Embed(
             title="✅ Deine Item-PO wurde freigegeben",
@@ -3282,8 +3294,20 @@ async def send_po_approval_message(client, entry):
         await user.send(embed=embed)
         return True
     except Exception as error:
-        print(f"PO-Freigabe: DM konnte nicht gesendet werden: {error}")
-        return False
+        print(
+            "PO-Freigabe: Embed-DM fehlgeschlagen, Text-Fallback wird versucht: "
+            f"{type(error).__name__}: {error!r}"
+        )
+        try:
+            user = client.get_user(int(user_id)) or await client.fetch_user(int(user_id))
+            await user.send(fallback_text)
+            return True
+        except Exception as fallback_error:
+            print(
+                "PO-Freigabe: Auch Text-DM fehlgeschlagen: "
+                f"{type(fallback_error).__name__}: {fallback_error!r}"
+            )
+            return False
 
 
 async def send_raid_signup_confirmation(interaction, raid, char_name, class_name, spec):
