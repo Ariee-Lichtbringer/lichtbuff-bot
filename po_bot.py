@@ -3058,7 +3058,8 @@ def po_review_entry_options(entries):
         if key in seen:
             continue
         seen.add(key)
-        result.append((str(idx), f"{player} · {item}"[:100]))
+        entry_id = clean(entry.get("id") or entry.get("entryId"))
+        result.append((f"id:{entry_id}" if entry_id else str(idx), f"{player} · {item}"[:100]))
         if len(result) >= 25:
             break
     return result
@@ -4406,8 +4407,48 @@ class PoReviewSelect(discord.ui.Select):
                     ephemeral=True,
                 )
                 return
-            entry = self.entries[int(self.values[0])]
             action_payload = payload_for_interaction(self.payload, interaction)
+            selected_value = clean(self.values[0])
+            current_entries = await fresh_entries_for_payload(action_payload)
+            entry = None
+            if selected_value.startswith("id:"):
+                selected_id = selected_value[3:]
+                entry = next(
+                    (row for row in current_entries if clean(row.get("id") or row.get("entryId")) == selected_id),
+                    None,
+                )
+            else:
+                try:
+                    old_index = int(selected_value)
+                    old_entry = self.entries[old_index] if 0 <= old_index < len(self.entries) else None
+                except (TypeError, ValueError):
+                    old_entry = None
+                if old_entry:
+                    old_id = clean(old_entry.get("id") or old_entry.get("entryId"))
+                    old_key = (slug(old_entry.get("player")), slug(old_entry.get("item") or old_entry.get("itemName")))
+                    entry = next(
+                        (
+                            row for row in current_entries
+                            if (old_id and clean(row.get("id") or row.get("entryId")) == old_id)
+                            or (slug(row.get("player")), slug(row.get("item") or row.get("itemName"))) == old_key
+                        ),
+                        None,
+                    )
+                if entry is None:
+                    pending_entries = [
+                        row for row in current_entries
+                        if not row.get("approved")
+                        and clean(row.get("approvalStatus")).lower() not in {"approved", "rejected"}
+                    ]
+                    if len(pending_entries) == 1:
+                        entry = pending_entries[0]
+            if entry is None:
+                await refresh_po_message(interaction.client, action_payload)
+                await interaction.followup.send(
+                    "⚠️ Diese Auswahl war nicht mehr aktuell. Der PO-Anmelder wurde aktualisiert – bitte die Freigabe erneut auswählen.",
+                    ephemeral=True,
+                )
+                return
             result = await review_entry(action_payload, entry, interaction.user)
             saved = result.get("entry") or entry
             await refresh_po_message(interaction.client, action_payload)
@@ -4481,7 +4522,31 @@ class PoRejectSelect(discord.ui.Select):
                 )
                 return
             action_payload = payload_for_interaction(self.payload, interaction)
-            await interaction.response.send_modal(PoRejectModal(action_payload, self.entries[int(self.values[0])]))
+            selected_value = clean(self.values[0])
+            current_entries = await fresh_entries_for_payload(action_payload)
+            entry = None
+            if selected_value.startswith("id:"):
+                selected_id = selected_value[3:]
+                entry = next((row for row in current_entries if clean(row.get("id") or row.get("entryId")) == selected_id), None)
+            else:
+                try:
+                    old_index = int(selected_value)
+                    old_entry = self.entries[old_index] if 0 <= old_index < len(self.entries) else None
+                except (TypeError, ValueError):
+                    old_entry = None
+                if old_entry:
+                    old_key = (slug(old_entry.get("player")), slug(old_entry.get("item") or old_entry.get("itemName")))
+                    entry = next(
+                        (row for row in current_entries if (slug(row.get("player")), slug(row.get("item") or row.get("itemName"))) == old_key),
+                        None,
+                    )
+            if entry is None:
+                await interaction.response.send_message(
+                    "⚠️ Diese Auswahl ist nicht mehr aktuell. Bitte den PO-Anmelder neu laden und erneut auswählen.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.send_modal(PoRejectModal(action_payload, entry))
         except Exception as error:
             if interaction.response.is_done():
                 await interaction.followup.send(f"⚠️ Ablehnen konnte nicht geöffnet werden: `{error}`", ephemeral=True)
