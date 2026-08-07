@@ -482,33 +482,41 @@ async def refresh_emoji_cache():
     found_classes = {}
     found_specs = {}
     found_items = {}
-    all_emojis = []
+    guild_emojis = []
+    application_emojis = []
     try:
         for guild in client.guilds:
-            all_emojis.extend(getattr(guild, "emojis", []) or [])
+            guild_emojis.extend(getattr(guild, "emojis", []) or [])
     except Exception:
         pass
 
     # Emojis aus dem Developer Portal gehören der App und sind nicht in
     # guild.emojis enthalten. Sie müssen separat über die App geladen werden.
     try:
-        all_emojis.extend(await client.fetch_application_emojis())
+        application_emojis = list(await client.fetch_application_emojis())
     except Exception as exc:
         print(f"PO App-Emojis konnten nicht geladen werden: {exc}")
 
-    by_name = {normalize_emoji_name(emoji.name): emoji for emoji in all_emojis}
+    # Klassen und Skillungen kommen ausschließlich aus der eigenen Emoji-
+    # Datenbank der Discord-App. Dadurch können gleichnamige, veraltete
+    # Server-Emojis nie wieder unbemerkt verwendet werden.
+    app_by_name = {normalize_emoji_name(emoji.name): emoji for emoji in application_emojis}
     for key, names in CLASS_EMOJI_NAME_ALIASES.items():
         for name in names:
-            emoji = by_name.get(normalize_emoji_name(name))
+            emoji = app_by_name.get(normalize_emoji_name(name))
             if emoji:
                 found_classes[key] = str(emoji)
                 break
     for key, names in SPEC_EMOJI_NAME_ALIASES.items():
         for name in names:
-            emoji = by_name.get(normalize_emoji_name(name))
+            emoji = app_by_name.get(normalize_emoji_name(name))
             if emoji:
                 found_specs[key] = str(emoji)
                 break
+    # Item-Emojis dürfen weiterhin aus Server und App stammen. Bei gleichem
+    # Namen hat die eigene App-Datenbank Vorrang.
+    by_name = {normalize_emoji_name(emoji.name): emoji for emoji in guild_emojis}
+    by_name.update(app_by_name)
     for emoji_name, emoji in by_name.items():
         found_items[emoji_name] = str(emoji)
     class_emoji_cache.clear()
@@ -522,12 +530,8 @@ async def refresh_emoji_cache():
 
 def class_icon(class_name):
     key = class_key(class_name)
-    env_name, emoji_name = CLASS_EMOJI_ENV.get(key, ("", ""))
-    raw = clean(os.getenv(env_name, ""))
-    if raw.startswith("<:") or raw.startswith("<a:"):
-        return raw
-    if raw.isdigit() and len(raw) >= 15:
-        return f"<:{emoji_name}:{raw}>"
+    # Keine fest eingetragenen alten Emoji-IDs mehr: maßgeblich ist nur der
+    # beim Start aus der Discord-App geladene Cache.
     return class_emoji_cache.get(key) or CLASS_EMOJI_FALLBACKS.get(key, "◆")
 
 
@@ -658,7 +662,7 @@ RAID_APPLICATION_EMOJI_ICONS = {
     "feral": "ability_druid_catform", "eule": "spell_nature_starfall",
     "survival": "ability_hunter_camouflage", "marksman": "ability_marksmanship",
     "beastmaster": "ability_hunter_beasttaming", "elemental": "spell_nature_lightningshield",
-    "enhancement": "ability_shaman_windwalk",
+    "enhancement": "ability_shaman_stormstrike",
     "Kofferlila": "inv_misc_bag_10", "kofferorange": "inv_misc_bag_19",
     "koffergrun": "inv_misc_bag_11",
 }
@@ -2262,7 +2266,7 @@ def build_fixed_po_header(payload):
         f"👤 Erstellt von: {created_by}",
         "",
         f"🔑 Prio-PIN: {lichtloot_id or '-'}",
-        f"**[{guild_prio_link_icon(payload)} Hier geht’s zur Raidanmeldung.]({lichtloot_prio_url(payload)})**",
+        f"**[{guild_prio_link_icon(payload)} Hier kannst du deine P1–P3 eintragen.]({lichtloot_prio_url(payload)})**",
         "",
         "Bitte tragt eure Prios rechtzeitig ein.",
         "",
