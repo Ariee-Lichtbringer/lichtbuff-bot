@@ -631,6 +631,32 @@ SPEC_EMOJI_NAME_ALIASES = {
     "enhancement": ["enhancement", "enh"],
 }
 
+# Feste WoW-Iconnamen für die Discord-Application-Emojis. Sie werden über
+# dieselbe Bildquelle geladen wie die Lootitem-Icons.
+RAID_APPLICATION_EMOJI_ICONS = {
+    "krieger": "classicon_warrior", "druide": "classicon_druid",
+    "paladin": "classicon_paladin", "schurke": "classicon_rogue",
+    "jaeger": "classicon_hunter", "priester": "classicon_priest",
+    "magier": "classicon_mage", "hexenmeister": "classicon_warlock",
+    "schamane": "classicon_shaman",
+    "tank": "inv_shield_06", "heilung": "spell_holy_flashheal",
+    "melee": "ability_dualwield", "range": "ability_marksmanship",
+    "waffen": "ability_warrior_savageblow", "fury": "ability_warrior_innerrage",
+    "holy_pala": "spell_holy_holybolt", "retri": "spell_holy_auraoflight",
+    "disziplin": "spell_holy_powerwordshield", "holy_priester": "spell_holy_guardianspirit",
+    "schatten": "spell_shadow_shadowwordpain", "feuer": "spell_fire_firebolt02",
+    "frost": "spell_frost_frostbolt02", "arkan": "spell_holy_magicalsentry",
+    "assa": "ability_rogue_eviscerate", "combat": "ability_backstab",
+    "subtlety": "ability_stealth", "affliction": "spell_shadow_deathcoil",
+    "demo": "spell_shadow_metamorphosis", "destro": "spell_shadow_rainoffire",
+    "feral": "ability_druid_catform", "eule": "spell_nature_starfall",
+    "survival": "ability_hunter_camouflage", "marksman": "ability_marksmanship",
+    "beastmaster": "ability_hunter_beasttaming", "elemental": "spell_nature_lightningshield",
+    "enhancement": "ability_shaman_windwalk",
+    "Kofferlila": "inv_misc_bag_10", "kofferorange": "inv_misc_bag_19",
+    "koffergrun": "inv_misc_bag_11",
+}
+
 
 def format_raid_announcement_date(value):
     raw = clean(value)
@@ -705,9 +731,15 @@ def raid_announcement_image_url(raid):
 
 
 def custom_emoji(name, fallback):
-    """Use the guild emoji uploaded in Discord and keep a portable fallback."""
+    """Use a guild or Developer-Portal app emoji and keep a portable fallback."""
     emoji = discord.utils.get(getattr(client, "emojis", []), name=name)
-    return str(emoji) if emoji else fallback
+    if emoji:
+        return str(emoji)
+    # refresh_emoji_cache lädt zusätzlich die Application Emojis aus dem
+    # Discord Developer Portal. Dadurch funktionieren dort gespeicherte
+    # Koffer-, Rollen-, Klassen- und Skillungsbilder genauso wie Server-Emojis.
+    app_emoji = item_emoji_cache.get(normalize_emoji_name(name))
+    return app_emoji or fallback
 
 
 WORLDBUFF_EMOJIS = {
@@ -5278,6 +5310,55 @@ async def po_emojis_sync(interaction, raid: str, limit: int = 25):
 ])
 async def poemoji(interaction, raid: str, limit: int = 25):
     await run_po_emoji_sync(interaction, raid, limit)
+
+
+@client.tree.command(name="raid_emojis_sync", description="Lädt Klassen-, Skillungs-, Rollen- und Koffer-Emojis in die Discord-App.")
+async def raid_emojis_sync(interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    if not await can_sync_item_emojis(interaction.user):
+        await interaction.followup.send("⚠️ Dafür brauchst du Gildenleitungs- oder Emoji-Rechte.", ephemeral=True)
+        return
+    create_emoji = getattr(client, "create_application_emoji", None)
+    if not callable(create_emoji):
+        await interaction.followup.send(
+            "⚠️ Die installierte discord.py-Version unterstützt Application Emojis noch nicht. Bitte discord.py aktualisieren.",
+            ephemeral=True,
+        )
+        return
+    try:
+        application_emojis = await client.fetch_application_emojis()
+    except Exception as error:
+        await interaction.followup.send(f"⚠️ Application Emojis konnten nicht geladen werden: {error}", ephemeral=True)
+        return
+    existing = {normalize_emoji_name(emoji.name): emoji for emoji in application_emojis}
+    created = []
+    skipped = []
+    failed = []
+    for configured_name, icon_name in RAID_APPLICATION_EMOJI_ICONS.items():
+        emoji_name = normalize_emoji_name(configured_name)
+        if emoji_name in existing:
+            skipped.append(emoji_name)
+            continue
+        try:
+            image = await asyncio.to_thread(download_item_icon, icon_name)
+            emoji = await create_emoji(name=emoji_name, image=image)
+            existing[emoji_name] = emoji
+            created.append(str(emoji))
+            await asyncio.sleep(1.0)
+        except Exception as error:
+            failed.append(f"{emoji_name}: {error}")
+    await refresh_emoji_cache()
+    lines = [
+        "✅ Raid-Application-Emoji-Sync abgeschlossen.",
+        f"Neu im Developer Portal: **{len(created)}**",
+        f"Bereits vorhanden: **{len(skipped)}**",
+        f"Fehler: **{len(failed)}**",
+    ]
+    if created:
+        lines.append("Neu: " + " ".join(created[:20]))
+    if failed:
+        lines.append("Erste Fehler: " + " | ".join(failed[:5]))
+    await interaction.followup.send("\n".join(lines)[:1900], ephemeral=True)
 
 
 async def run_po_emoji_sync(interaction, raid: str, limit: int = 25):
