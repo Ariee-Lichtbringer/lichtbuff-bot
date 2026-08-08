@@ -1065,10 +1065,17 @@ def get_open_worldbuff_signup_slots(limit=25):
         if slot_date < today or slot_date > max_date:
             continue
 
-        # Ony und Nef teilen sich auf der Worldbuff-Seite einen Tagesplatz.
-        # Der tatsächlich veröffentlichte Buff darf nicht als Gegenstück ein
-        # zweites Mal künstlich in der Discord-Auswahl erscheinen.
-        for choice_index, choice_buff in enumerate([buff]):
+        # Ony und Nef teilen sich auf der Worldbuff-Seite einen gemeinsamen
+        # Tagesplatz. Solange er frei ist, darf der Spieler auswählen, welchen
+        # der beiden Buffs er wirft. Nach der Anmeldung wird der Termin in
+        # Railway auf den gewählten Buff umgestellt und ist insgesamt belegt.
+        choice_buffs = [buff]
+        if buff == "Ony":
+            choice_buffs.append("Nef")
+        elif buff == "Nef":
+            choice_buffs.append("Ony")
+
+        for choice_index, choice_buff in enumerate(choice_buffs):
             key = "|".join([
                 choice_buff,
                 row.get("datum", ""),
