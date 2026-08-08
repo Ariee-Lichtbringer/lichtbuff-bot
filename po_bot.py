@@ -2972,6 +2972,38 @@ async def find_existing_message_id(client, payload):
     return ""
 
 
+async def deduplicate_po_messages(client, channel, payload, preferred_message=None):
+    """Keep exactly one PO signup message for a post key, even after concurrent creates."""
+    post_key = clean((payload or {}).get("postKey") or (payload or {}).get("poPostKey"))
+    if not post_key:
+        return preferred_message
+    await asyncio.sleep(1.0)
+    matches = []
+    try:
+        async for candidate in channel.history(limit=250):
+            if getattr(getattr(candidate, "author", None), "id", None) != getattr(client.user, "id", None):
+                continue
+            if message_matches_post_key(candidate, post_key):
+                matches.append(candidate)
+    except Exception as error:
+        print(f"PO-Anmelder Dublettenprüfung fehlgeschlagen ({post_key}): {error}")
+        return preferred_message
+    if not matches:
+        return preferred_message
+    keep = max(matches, key=lambda candidate: int(candidate.id))
+    for duplicate in matches:
+        if duplicate.id == keep.id:
+            continue
+        try:
+            await duplicate.delete()
+            print(f"Doppelten PO-Anmelder entfernt: {post_key} -> {duplicate.id}")
+        except discord.NotFound:
+            pass
+        except Exception as error:
+            print(f"Doppelter PO-Anmelder konnte nicht entfernt werden ({post_key}/{duplicate.id}): {error}")
+    return keep
+
+
 async def remember_po_message(payload):
     message_id = clean(payload.get("messageId"))
     if not message_id:
@@ -5068,6 +5100,8 @@ async def post_or_update_from_queue(client, payload):
                     f"Alter PO-Anmelder konnte nach dem Neuposten nicht entfernt werden "
                     f"({post_key}/{previous_message_id}): {error}"
                 )
+    message = await deduplicate_po_messages(client, channel, normalized, message)
+    normalized["messageId"] = str(message.id)
     state[state_key] = normalized
     if post_key in state and post_key != state_key:
         state.pop(post_key, None)
