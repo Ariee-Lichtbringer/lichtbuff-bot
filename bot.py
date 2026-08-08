@@ -4415,7 +4415,7 @@ async def post_worldbuff_backup_export_from_queue(payload):
     print(f"Worldbuff-Sicherung gepostet: {safe_filename} in {channel_id}")
 
 
-def build_worldbuff_replacement_embed(payload, channel):
+def build_worldbuff_replacement_embed(payload, channel, worldbuff_channel_id=""):
     buff = str(payload.get("buff") or "Worldbuff").strip() or "Worldbuff"
     datum = str(payload.get("datum") or payload.get("date") or "").strip()
     uhrzeit = str(payload.get("uhrzeit") or payload.get("time") or "").strip()
@@ -4424,7 +4424,7 @@ def build_worldbuff_replacement_embed(payload, channel):
     note = str(payload.get("note") or "").strip()
     buff_emoji = get_buff_emoji(buff)
     guild_id = str(getattr(getattr(channel, "guild", None), "id", "") or "")
-    channel_id = str(getattr(channel, "id", "") or "")
+    channel_id = clean_channel_id_value(worldbuff_channel_id) or str(getattr(channel, "id", "") or "")
     channel_url = f"https://discord.com/channels/{guild_id}/{channel_id}" if guild_id and channel_id else ""
     embed = discord.Embed(
         title="🔔 Ersatz für Worldbuff gesucht",
@@ -4456,10 +4456,16 @@ def build_worldbuff_replacement_embed(payload, channel):
 
 async def post_worldbuff_replacement_from_queue(payload):
     sent = 0
+    worldbuff_channel_id = clean_channel_id_value(
+        payload.get("worldbuffChannelId") or get_configured_worldbuff_channel_id()
+    )
     for channel_id in worldbuff_replacement_channel_ids(payload.get("target"), payload):
         try:
             channel = client.get_channel(channel_id) or await client.fetch_channel(channel_id)
-            await send_silent(channel, embed=build_worldbuff_replacement_embed(payload, channel))
+            await send_silent(
+                channel,
+                embed=build_worldbuff_replacement_embed(payload, channel, worldbuff_channel_id)
+            )
             sent += 1
         except Exception as error:
             print(f"Worldbuff-Ersatzsuche konnte nicht in Channel {channel_id} gepostet werden: {error}")
