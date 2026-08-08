@@ -967,6 +967,8 @@ def signup_spec_from_note(note, role=""):
 
 def infer_signup_role(spec_text):
     text = clean(spec_text).lower()
+    if any(word in text for word in ["multi char", "multi-char", "multichar", "mehrere chars"]):
+        return "multi"
     if any(word in text for word in ["tank", "prot", "schutz", "def"]):
         return "tank"
     if any(word in text for word in ["heal", "heiler", "holy", "heilig", "resto", "diszi", "discipline"]):
@@ -1092,6 +1094,7 @@ def add_raid_signup_roster_fields(embed, helper):
             "late", "spät", "spaet",
             "tentative", "vorläufig", "vorlaeufig",
         }
+        and clean(row.get("role")).lower() not in {"multi", "multichar", "multi-char", "multi char"}
     ]
     role_counts = {"tank": 0, "heal": 0, "dd": 0}
     for row in active_rows:
@@ -1170,15 +1173,21 @@ def add_raid_signup_roster_fields(embed, helper):
         if (class_index + 1) % 2 == 0 and class_index < len(sorted_classes) - 1:
             embed.add_field(name="\u200b", value="\u200b", inline=False)
     status_groups = [
+        ("🔄 Multi Char", {"__multi_role__"}),
         ("🪑 Bank", {"bench", "bank"}),
         ("🕒 Spät", {"late", "spät", "spaet"}),
         ("⚖️ Vorläufig", {"tentative", "vorläufig", "vorlaeufig"}),
         ("🚫 Abwesenheit", {"absent", "abwesend"}),
     ]
-    if any(clean(row.get("status")).lower() in statuses for _, statuses in status_groups for row in rows):
+    def row_matches_status_group(row, statuses):
+        if "__multi_role__" in statuses:
+            return clean(row.get("role")).lower() in {"multi", "multichar", "multi-char", "multi char"}
+        return clean(row.get("status")).lower() in statuses
+
+    if any(row_matches_status_group(row, statuses) for _, statuses in status_groups for row in rows):
         embed.add_field(name="\u200b", value="\u200b\n\u200b", inline=False)
     for label, statuses in status_groups:
-        status_rows = [row for row in rows if clean(row.get("status")).lower() in statuses]
+        status_rows = [row for row in rows if row_matches_status_group(row, statuses)]
         if not status_rows:
             continue
         players = [
@@ -1867,6 +1876,7 @@ class RaidSignupStatusModal(discord.ui.Modal):
         if not char_name:
             await interaction.response.send_message("Bitte Charaktername angeben.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             helper = await get_raid_helper_for_refresh(self.raid)
             wanted_user = str(interaction.user.id)
@@ -1879,8 +1889,18 @@ class RaidSignupStatusModal(discord.ui.Modal):
                     or clean(row.get("source")) == wanted_source
                 )
             ), None)
-            if not existing:
-                raise RuntimeError("Für diesen Charakter wurde keine Anmeldung gefunden.")
+            existing = existing or {}
+            existing_note = clean(existing.get("note"))
+            if self.status == "bench":
+                saved_note = note or existing_note or "Bank"
+            elif self.status == "late":
+                saved_note = f"Spät: {note}" if note else (existing_note or "Spät")
+            elif self.status == "multi":
+                saved_note = note or existing_note or "Multi Char"
+            elif self.status == "absent":
+                saved_note = note or existing_note or "Abwesend"
+            else:
+                saved_note = note or existing_note
             result = await asyncio.to_thread(api_post, {
                 "action": "saveDiscordSignupRows",
                 "queueToken": QUEUE_TOKEN,
@@ -1896,9 +1916,9 @@ class RaidSignupStatusModal(discord.ui.Modal):
                     "char": char_name,
                     "spieler": char_name,
                     "klasse": clean(existing.get("className") or existing.get("klasse")),
-                    "role": clean(existing.get("role")),
-                    "status": self.status,
-                    "note": note or clean(existing.get("note")),
+                    "role": "multi" if self.status == "multi" else (clean(existing.get("role")) or infer_signup_role(note)),
+                    "status": "signed" if self.status == "multi" else self.status,
+                    "note": saved_note,
                     "discordUserId": wanted_user,
                     "discordName": str(interaction.user.display_name),
                     "source": raid_signup_source(interaction),
@@ -1910,18 +1930,16 @@ class RaidSignupStatusModal(discord.ui.Modal):
             label = {
                 "bench": "auf die Bank gesetzt",
                 "late": "als verspätet markiert",
+                "multi": "als Multi Char angemeldet",
                 "tentative": "als vorläufig markiert",
                 "absent": "als abwesend markiert",
             }.get(self.status, "aktualisiert")
-            await interaction.response.send_message(f"✅ **{char_name}** wurde {label}.", ephemeral=True)
+            await interaction.followup.send(f"✅ **{char_name}** wurde {label}.", ephemeral=True)
             await send_raid_player_status_confirmation(interaction, fresh_raid, char_name, self.status, note)
             await send_raid_staff_action_notice(interaction, fresh_raid, char_name, self.status, note)
             await refresh_raid_signup_message(interaction, self.raid)
         except Exception as error:
-            if interaction.response.is_done():
-                await interaction.followup.send(f"⚠️ Status konnte nicht geändert werden: {error}", ephemeral=True)
-            else:
-                await interaction.response.send_message(f"⚠️ Status konnte nicht geändert werden: {error}", ephemeral=True)
+            await interaction.followup.send(f"⚠️ Status konnte nicht geändert werden: {error}", ephemeral=True)
 
 
 class RaidSignupChangeView(discord.ui.View):
@@ -1944,6 +1962,10 @@ class RaidSignupView(discord.ui.View):
     async def late_signup(self, interaction, button):
         await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "late", "Verspätung eintragen"))
 
+    @discord.ui.button(label="Multi Char", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="raid_signup_multi")
+    async def multi_signup(self, interaction, button):
+        await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "multi", "Als Multi Char anmelden"))
+
     @discord.ui.button(label="Vorläufig", emoji="⚖️", style=discord.ButtonStyle.secondary, custom_id="raid_signup_tentative")
     async def tentative_signup(self, interaction, button):
         await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "tentative", "Vorläufig anmelden"))
@@ -1963,17 +1985,29 @@ class RaidSignupView(discord.ui.View):
 
 async def restore_active_raid_signup_views():
     await client.wait_until_ready()
-    await asyncio.sleep(3)
     try:
         result = await asyncio.to_thread(api_get, {"action": "getActiveRaids", "t": int(time.time())})
         restored = 0
+        refreshed = 0
         for raid in result.get("allRaids") or result.get("raids") or []:
             channel_id = clean(raid.get("discordChannelId") or raid.get("discord_channel_id"))
             message_id = clean(raid.get("discordMessageId") or raid.get("discord_message_id"))
             if channel_id and message_id:
                 client.add_view(RaidSignupView(raid), message_id=int(message_id))
                 restored += 1
-        print(f"Raid-Anmelder-Views im PO-Bot wiederhergestellt: {restored}.")
+                try:
+                    result_state = await refresh_raid_signup_message_by_id(
+                        clean(raid.get("raidId") or raid.get("id")),
+                        channel_id,
+                        message_id,
+                        raid,
+                    )
+                    if result_state not in {"missing_message", "foreign_author"}:
+                        refreshed += 1
+                except Exception as error:
+                    print(f"Raid-Anmelder konnte beim Start nicht neu gerendert werden ({message_id}): {error}")
+                await asyncio.sleep(0.35)
+        print(f"Raid-Anmelder-Views im PO-Bot wiederhergestellt: {restored}, mit Application-Emojis aktualisiert: {refreshed}.")
     except Exception as error:
         print(f"Raid-Anmelder-Views konnten beim PO-Bot-Start nicht wiederhergestellt werden: {error}")
 
@@ -3800,6 +3834,13 @@ async def send_raid_status_notice_from_queue(payload):
     custom_description = clean(payload.get("messageTemplate"))
     replacements = {"{spieler}": clean(payload.get("player")) or "Ein Spieler", "{raid}": raid_name, "{status}": raid_signup_action_label(action), "{datum}": format_raid_announcement_date(payload.get("raidDate") or ""), "{uhrzeit}": format_raid_announcement_time(payload.get("raidTime") or ""), "{hinweis}": clean(payload.get("message"))}
     for token,value in replacements.items(): custom_description = custom_description.replace(token,value)
+    custom_description = re.sub(
+        r"^\s*(?:📋\s*)?\*\*Änderung im Raidanmelder\*\*\s*",
+        "",
+        custom_description,
+        count=1,
+        flags=re.IGNORECASE,
+    ).strip()
     embed = discord.Embed(
         title="Änderung im Raidanmelder",
         description=custom_description or f"**{clean(payload.get('player')) or 'Ein Spieler'}** wurde für **{raid_name}** **{raid_signup_action_label(action)}**.",
@@ -3861,6 +3902,13 @@ async def send_po_release_request_notice_from_queue(payload):
     text = clean(payload.get("messageTemplate"))
     replacements = {"{gilde}":guild_name,"{charakter}":character,"{server}":server,"{klasse}":class_name,"{raid}":raid,"{antrag}":request_label,"{link}":discord_link}
     for token,value in replacements.items(): text = text.replace(token,value)
+    text = re.sub(
+        r"^\s*(?:🔎\s*)?\*\*Neue PO-Freigabe wartet\*\*\s*",
+        "",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    ).strip()
     embed = discord.Embed(
         title="🔎 Neue PO-Freigabe wartet",
         description=text or f"Für **{character}** wurde eine **{request_label}** eingereicht und wartet auf Prüfung.",
@@ -5481,7 +5529,6 @@ class PoBot(discord.Client):
     async def setup_hook(self):
         self.add_view(NachtlootHelpView())
         self.bg_task = asyncio.create_task(po_queue_loop())
-        self.raid_signup_restore_task = asyncio.create_task(restore_active_raid_signup_views())
         self.po_channel_signup_sync_task = asyncio.create_task(po_channel_signup_sync_loop())
         if TEST_GUILD_ID:
             guild = discord.Object(id=int(TEST_GUILD_ID))
@@ -5536,6 +5583,12 @@ async def on_ready():
     print(f"PO Klassenemojis gefunden: {', '.join(sorted(found_classes.keys())) or 'keine'}")
     print(f"PO Skill-Emojis gefunden: {', '.join(sorted(found_specs.keys())) or 'keine'}")
     print(f"PO Item-Emojis gefunden: {len(found_items)}")
+    # Erst nach dem Laden/Synchronisieren der Application-Emojis werden die
+    # persistenten Raidanmelder registriert und neu gerendert. Andernfalls
+    # bleiben nach einem Neustart die Unicode-Ersatzsymbole im alten Embed.
+    if not hasattr(client, "raid_signup_views_restored"):
+        client.raid_signup_views_restored = True
+        await restore_active_raid_signup_views()
     state = load_state()
     for payload in state.values():
         if not isinstance(payload, dict) or not payload.get("postKey"):
