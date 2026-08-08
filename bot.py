@@ -4943,6 +4943,8 @@ def raid_image_url(raid):
 
 def infer_signup_role(spec_text):
     text = str(spec_text or "").strip().lower()
+    if any(word in text for word in ["multi char", "multi-char", "multichar", "mehrere chars"]):
+        return "multi"
     if any(word in text for word in ["tank", "prot", "schutz", "def"]):
         return "tank"
     if any(word in text for word in ["heal", "heiler", "holy", "heilig", "resto", "restoration", "diszi", "disziplin", "discipline"]):
@@ -5375,6 +5377,8 @@ def signup_role_bucket(row):
         return "bench"
 
     role = str(row.get("role") or "").strip().lower()
+    if role in {"multi", "multichar", "multi-char", "multi char"}:
+        return "multi"
     spec = signup_spec_from_note(row.get("note"), role).lower()
     if role == "tank" or any(word in spec for word in ["tank", "prot", "schutz", "def"]):
         return "tank"
@@ -5421,6 +5425,7 @@ def raid_signup_roster_from_helper(helper):
         "tank": [],
         "classes": {},
         "tentative": [],
+        "multi": [],
         "bench": [],
         "absent": [],
     }
@@ -5439,6 +5444,9 @@ def raid_signup_roster_from_helper(helper):
             continue
         if bucket == "tentative":
             roster["tentative"].append(row)
+            continue
+        if bucket == "multi":
+            roster["multi"].append(row)
             continue
         if bucket == "bench":
             roster["bench"].append(row)
@@ -5534,6 +5542,13 @@ def add_raid_signup_roster_fields(embed, helper):
             for row in roster["tentative"][:14]
         )
         embed.add_field(name=f"⚖️ Vorläufig ({len(roster['tentative'])})", value=value[:1024], inline=False)
+
+    if roster["multi"]:
+        value = ", ".join(
+            f"**{str(row.get('player') or row.get('char') or '-').strip()}{p0_player_suffix(str(row.get('player') or row.get('char') or '-').strip(), raid_key, raid)}**"
+            for row in roster["multi"][:14]
+        )
+        embed.add_field(name=f"🔄 Multi Char ({len(roster['multi'])})", value=value[:1024], inline=False)
 
     if roster["bench"]:
         value = ", ".join(
@@ -5991,6 +6006,8 @@ async def save_raid_signup_status(interaction, raid, char_name, status, note="")
             note_text = late_note
         elif "spät" not in note_text.lower():
             note_text = f"{note_text} | {late_note}"
+    elif status == "multi":
+        note_text = status_note or existing_note or "Multi Char"
     elif status == "absent":
         note_text = existing_note or "Abwesend"
         if status_note:
@@ -6011,8 +6028,8 @@ async def save_raid_signup_status(interaction, raid, char_name, status, note="")
             "char": char_name,
             "spieler": char_name,
             "klasse": str(existing.get("className") or existing.get("klasse") or ""),
-            "role": str(existing.get("role") or infer_signup_role(status_note)),
-            "status": status,
+            "role": "multi" if status == "multi" else str(existing.get("role") or infer_signup_role(status_note)),
+            "status": "signed" if status == "multi" else status,
             "note": note_text,
             "discordUserId": str(interaction.user.id),
             "discordName": str(interaction.user.display_name),
@@ -6229,6 +6246,7 @@ class RaidSignupStatusModal(discord.ui.Modal):
             label = {
                 "bench": "auf die Bank gesetzt",
                 "late": "als verspätet markiert",
+                "multi": "als Multi Char angemeldet",
                 "tentative": "als vorläufig markiert",
                 "absent": "als abwesend markiert",
             }.get(self.status, "aktualisiert")
@@ -6345,6 +6363,10 @@ class RaidSignupView(discord.ui.View):
     @discord.ui.button(label="Spät", emoji="🕒", style=discord.ButtonStyle.secondary, custom_id="raid_signup_late")
     async def late_signup(self, interaction, button):
         await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "late", "Verspätung eintragen"))
+
+    @discord.ui.button(label="Multi Char", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="raid_signup_multi")
+    async def multi_signup(self, interaction, button):
+        await interaction.response.send_modal(RaidSignupStatusModal(self.raid, "multi", "Als Multi Char anmelden"))
 
     @discord.ui.button(label="Vorläufig", emoji="⚖️", style=discord.ButtonStyle.secondary, custom_id="raid_signup_tentative")
     async def tentative_signup(self, interaction, button):
