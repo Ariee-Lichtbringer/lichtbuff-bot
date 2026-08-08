@@ -8103,23 +8103,91 @@ async def send_worldbuff_player_change_notice(payload):
     if recipient_name:
         targets.append({"type": "name", "value": recipient_name})
     character = str(payload.get("character") or "Unbekannter Charakter").strip()
+    action = str(payload.get("action") or "").strip().lower()
     action_label = str(payload.get("actionLabel") or "geändert").strip()
     reason = str(payload.get("reason") or "-").strip()
     old_slot = str(payload.get("from") or "-").strip()
     new_slot = str(payload.get("to") or "").strip()
-    lines = [
-        f"🌍 **Worldbuff-Termin {action_label}**",
-        f"**Charakter:** {character}",
-        f"**{'Termin' if str(payload.get('action') or '') == 'registered' else 'Bisheriger Termin'}:** {old_slot}",
-    ]
-    if new_slot:
-        lines.append(f"**Neuer Termin:** {new_slot}")
-    lines.append(f"**Grund:** {reason}")
-    default_message = "\n".join(lines)
-    message = render_notification_template(payload.get("messageTemplate"), {
+    uses_new_appointment = action in {"moved", "changed"} and bool(payload.get("newDate") or payload.get("newTime"))
+    buff = normalize_buff((payload.get("newBuff") if uses_new_appointment else payload.get("buff")) or old_slot.split(" · ", 1)[0])
+    guild_name = str(payload.get("guildName") or payload.get("guildSlug") or "-").strip()
+    worldbuff_guild = str((payload.get("newWorldbuffGuild") if uses_new_appointment else payload.get("worldbuffGuild")) or "").strip()
+    date_text = str((payload.get("newDate") if uses_new_appointment else payload.get("date")) or "").strip()
+    time_text = str((payload.get("newTime") if uses_new_appointment else payload.get("time")) or "").strip()
+    try:
+        date_display = datetime.strptime(date_text[:10], "%Y-%m-%d").strftime("%d.%m.%Y")
+    except Exception:
+        date_display = date_text or "-"
+    time_display = time_text[:5] if time_text else "-"
+    buff_emoji = get_buff_emoji(buff)
+
+    def apply_buff_thumbnail(embed):
+        icon_url = getattr(buff_emoji, "url", None)
+        if icon_url:
+            embed.set_thumbnail(url=str(icon_url))
+            return
+        emoji_match = re.match(r"<a?:[^:]+:(\d+)>", str(buff_emoji))
+        if emoji_match:
+            embed.set_thumbnail(url=f"https://cdn.discordapp.com/emojis/{emoji_match.group(1)}.png?size=128&quality=lossless")
+
+    def add_appointment_fields(embed):
+        embed.add_field(name="🏰 Gilde", value=guild_name or "-", inline=True)
+        embed.add_field(name="👤 Charakter", value=character, inline=True)
+        embed.add_field(name="🌍 Worldbuff", value=f"{buff_emoji} **{buff or 'Worldbuff'}**", inline=False)
+        embed.add_field(name="📅 Datum", value=date_display, inline=True)
+        embed.add_field(name="⏰ Uhrzeit", value=f"{time_display} Uhr" if time_display != "-" else "-", inline=True)
+        if worldbuff_guild and normalized_discord_name(worldbuff_guild) != normalized_discord_name(guild_name):
+            embed.add_field(name="📣 Worldbuff-Gilde", value=worldbuff_guild, inline=False)
+        apply_buff_thumbnail(embed)
+
+    # Persönliche Bestätigung an den Spieler, der den Termin übernommen hat.
+    player_user_id = str(payload.get("playerDiscordUserId") or "").strip()
+    if player_user_id.isdigit():
+        try:
+            player_user = client.get_user(int(player_user_id)) or await client.fetch_user(int(player_user_id))
+            player_titles = {
+                "registered": "✅ Du bist für einen Worldbuff eingetragen",
+                "changed": "🔄 Dein Worldbuff-Termin wurde geändert",
+                "moved": "🔄 Dein Worldbuff-Termin wurde verschoben",
+                "cancelled": "❌ Dein Worldbuff-Termin wurde abgesagt",
+            }
+            player_descriptions = {
+                "registered": f"Dein Termin für **{buff or 'den Worldbuff'}** wurde erfolgreich gespeichert.",
+                "changed": f"Die Gildenleitung hat deinen Termin für **{buff or 'den Worldbuff'}** geändert.",
+                "moved": f"Dein Termin für **{buff or 'den Worldbuff'}** wurde verschoben.",
+                "cancelled": f"Dein Termin für **{buff or 'den Worldbuff'}** wurde entfernt.",
+            }
+            player_embed = discord.Embed(
+                title=player_titles.get(action, "🌍 Dein Worldbuff-Termin wurde aktualisiert"),
+                description=player_descriptions.get(action, f"Dein Termin für **{buff or 'den Worldbuff'}** wurde aktualisiert."),
+                color=0x22C55E if action == "registered" else (0xEF4444 if action == "cancelled" else 0xF59E0B),
+            )
+            add_appointment_fields(player_embed)
+            player_embed.set_footer(text="Automatische Nachricht des Lichtbuff-Bots")
+            await player_user.send(embed=player_embed)
+            print(f"Worldbuff-Bestaetigung per DM an {player_user} gesendet.")
+        except Exception as error:
+            print(f"Worldbuff-Bestaetigung an Spieler fehlgeschlagen: {error}")
+
+    template_message = render_notification_template(payload.get("messageTemplate"), {
         "charakter": character, "aktion": action_label, "termin": old_slot,
         "neuer_termin": new_slot, "grund": reason
-    }) or default_message
+    })
+    staff_embed = discord.Embed(
+        title="🌍 Neue Worldbuff-Anmeldung" if action == "registered" else f"🌍 Worldbuff-Termin {action_label}",
+        description=template_message or (
+            f"**{character}** hat sich für **{buff or 'einen Worldbuff'}** eingetragen."
+            if action == "registered"
+            else f"**{character}** hat einen Worldbuff-Termin **{action_label}**."
+        ),
+        color=0x3B82F6 if action == "registered" else (0xEF4444 if action == "cancelled" else 0xF59E0B),
+    )
+    add_appointment_fields(staff_embed)
+    if new_slot:
+        staff_embed.add_field(name="➡️ Neuer Termin", value=new_slot, inline=False)
+    if reason and reason != "-":
+        staff_embed.add_field(name="📝 Grund", value=reason[:1024], inline=False)
+    staff_embed.set_footer(text="Automatische Nachricht des Lichtbuff-Bots")
 
     wanted_names = {
         normalized_discord_name(target.get("value") or target.get("name"))
@@ -8148,7 +8216,7 @@ async def send_worldbuff_player_change_notice(payload):
             if member.id in sent or member.bot:
                 continue
             try:
-                await member.send(message)
+                await member.send(embed=staff_embed)
                 sent.add(member.id)
                 print(f"Worldbuff-Aenderung per DM an {member} gesendet.")
             except Exception as error:
