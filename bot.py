@@ -185,15 +185,15 @@ CLASS_EMOJI_ENV = {
     "shaman": ("CLASS_EMOJI_SHAMAN", "classicon_shaman"),
 }
 CLASS_EMOJI_NAME_ALIASES = {
-    "warrior": ["krieger", "warrior", "classicon_warrior"],
-    "druid": ["druide", "druid", "classicon_druid"],
-    "paladin": ["pala", "paladin", "classicon_paladin"],
-    "rogue": ["schurke", "rogue", "classicon_rogue"],
-    "hunter": ["jäger", "jaeger", "jager", "hunter", "classicon_hunter"],
-    "priest": ["priester", "priest", "classicon_priest"],
-    "mage": ["magier", "mage", "classicon_mage"],
-    "warlock": ["hexenmeister", "hexer", "warlock", "classicon_warlock"],
-    "shaman": ["schamane", "shaman", "classicon_shaman"],
+    "warrior": ["classicon_warrior", "krieger", "warrior"],
+    "druid": ["classicon_druid", "druide", "druid"],
+    "paladin": ["classicon_paladin", "pala", "paladin"],
+    "rogue": ["classicon_rogue", "schurke", "rogue"],
+    "hunter": ["classicon_hunter", "jäger", "jaeger", "jager", "hunter"],
+    "priest": ["classicon_priest", "priester", "priest"],
+    "mage": ["classicon_mage", "magier", "mage"],
+    "warlock": ["classicon_warlock", "hexenmeister", "hexer", "warlock"],
+    "shaman": ["classicon_shaman", "schamane", "shaman"],
 }
 PO_ITEM_EMOJI_ALIASES = {
     "amulett von veknilash": ["amulett_von_veknilash"],
@@ -5083,6 +5083,7 @@ async def refresh_class_emoji_cache():
 
 def signup_spec_icon_key(spec_text, role="", class_name=""):
     text = str(spec_text or role or "").strip().lower()
+    canonical_class = canonical_signup_class(class_name).lower()
     if any(word in text for word in ["tank", "prot", "schutz", "def"]):
         return "tank"
     if any(word in text for word in ["disziplin", "discipline", "disc"]):
@@ -5097,6 +5098,10 @@ def signup_spec_icon_key(spec_text, role="", class_name=""):
     if any(word in text for word in ["schatten", "shadow"]):
         return "shadow"
     if any(word in text for word in ["heal", "heiler", "resto", "restoration"]):
+        if canonical_class == "paladin":
+            return "paladin_holy"
+        if canonical_class == "priest":
+            return "priest_holy"
         return "heal"
     if any(word in text for word in ["arms", "waffen"]):
         return "arms"
@@ -5136,6 +5141,21 @@ def signup_spec_icon_key(spec_text, role="", class_name=""):
         return "elemental"
     if any(word in text for word in ["enhancement", "enh", "verstärkung", "verstaerkung"]):
         return "enhancement"
+    # Ältere, beim Botstart geladene Anmeldungen enthalten teilweise nur
+    # Klasse und Rolle. In diesem Fall ein passendes Klassensymbol verwenden,
+    # statt jeden DD pauschal mit gekreuzten Schwertern darzustellen.
+    if text in {"", "dd", "dps", "damage", "flex"}:
+        return {
+            "warrior": "fury",
+            "druid": "feral",
+            "paladin": "retri",
+            "rogue": "combat",
+            "hunter": "marksman",
+            "priest": "shadow",
+            "mage": "fire",
+            "warlock": "destruction",
+            "shaman": "enhancement",
+        }.get(canonical_class, "")
     return ""
 
 
@@ -5351,13 +5371,7 @@ def signup_role_bucket(row):
         return "absent"
     if status == "tentative":
         return "tentative"
-    api_status = status
-    if status == "late":
-        api_status = "signed"
-        note_text = f"Spät: {status_note}" if status_note else "Spät"
-        if existing_note and "spät" not in existing_note.lower():
-            note_text = f"{existing_note} | {note_text}"
-    elif status == "bench":
+    if status == "bench":
         return "bench"
 
     role = str(row.get("role") or "").strip().lower()
@@ -5392,7 +5406,8 @@ def format_signup_roster_line(row, raid_key="", raid=None):
     role = str(row.get("role") or "").strip()
     class_name = canonical_signup_class(row.get("className") or row.get("klasse"))
     spec = signup_spec_from_note(row.get("note"), role) or role or "Flex"
-    return f"**{player}{p0_player_suffix(player, raid_key, raid)}** · {signup_spec_icon(spec, role, class_name)}"
+    late_marker = " 🕒" if str(row.get("status") or "").strip().lower() == "late" else ""
+    return f"**{player}{p0_player_suffix(player, raid_key, raid)}**{late_marker} · {signup_spec_icon(spec, role, class_name)}"
 
 
 def raid_signup_roster_from_helper(helper):
@@ -5963,14 +5978,19 @@ async def find_existing_discord_signup(raid, char_name, interaction):
 
 async def save_raid_signup_status(interaction, raid, char_name, status, note=""):
     existing = await find_existing_discord_signup(raid, char_name, interaction)
-    if not existing:
-        raise RuntimeError("Für diesen Charakter wurde keine Anmeldung von dir gefunden.")
     existing_note = str(existing.get("note") or "").strip()
     status_note = str(note or "").strip()
     if status == "bench":
         note_text = existing_note or "Bank"
         if status_note:
             note_text = f"{note_text} | Bank: {status_note}"
+    elif status == "late":
+        note_text = existing_note
+        late_note = f"Spät: {status_note}" if status_note else "Spät"
+        if not note_text:
+            note_text = late_note
+        elif "spät" not in note_text.lower():
+            note_text = f"{note_text} | {late_note}"
     elif status == "absent":
         note_text = existing_note or "Abwesend"
         if status_note:
@@ -5991,7 +6011,7 @@ async def save_raid_signup_status(interaction, raid, char_name, status, note="")
             "char": char_name,
             "spieler": char_name,
             "klasse": str(existing.get("className") or existing.get("klasse") or ""),
-            "role": str(existing.get("role") or ""),
+            "role": str(existing.get("role") or infer_signup_role(status_note)),
             "status": status,
             "note": note_text,
             "discordUserId": str(interaction.user.id),
@@ -6183,7 +6203,7 @@ class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
 class RaidSignupStatusModal(discord.ui.Modal):
     char_name = discord.ui.TextInput(
         label="Charaktername",
-        placeholder="z. B. Ariee",
+        placeholder="Auch ohne bisherige Anmeldung möglich",
         max_length=40
     )
     note = discord.ui.TextInput(
