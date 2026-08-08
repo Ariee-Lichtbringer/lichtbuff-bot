@@ -1119,7 +1119,17 @@ def add_raid_signup_roster_fields(embed, helper):
     tank_max = clean(raid.get("tankSlots"))
     heal_max = clean(raid.get("healSlots"))
     dd_max = clean(raid.get("ddSlots"))
+    max_players = clean(raid.get("maxPlayers"))
+    total_signed = sum(
+        1 for row in rows
+        if clean(row.get("status")).lower() not in {"absent", "abwesend"}
+    )
     tank_role_icon = signup_spec_icon("Tank", "tank", "Warrior")
+    embed.add_field(
+        name="👥 Gesamt angemeldet",
+        value=f"**{total_signed}{('/' + max_players) if max_players else ''}**",
+        inline=False,
+    )
     embed.add_field(
         name=f"{tank_role_icon} Tanks",
         value=f"**{role_counts['tank']}{('/' + tank_max) if tank_max else ''}**",
