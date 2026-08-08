@@ -263,15 +263,15 @@ CLASS_EMOJI_ENV = {
 }
 
 CLASS_EMOJI_NAME_ALIASES = {
-    "warrior": ["classicon_warrior", "krieger", "warrior"],
-    "druid": ["classicon_druid", "druide", "druid"],
-    "paladin": ["classicon_paladin", "pala", "paladin"],
-    "rogue": ["classicon_rogue", "schurke", "rogue"],
-    "hunter": ["classicon_hunter", "jäger", "jaeger", "jager", "hunter"],
-    "priest": ["classicon_priest", "priester", "priest"],
-    "mage": ["classicon_mage", "magier", "mage"],
-    "warlock": ["classicon_warlock", "hexenmeister", "hexer", "warlock"],
-    "shaman": ["classicon_shaman", "schamane", "shaman"],
+    "warrior": ["classicon_warrior"],
+    "druid": ["classicon_druid"],
+    "paladin": ["classicon_paladin"],
+    "rogue": ["classicon_rogue"],
+    "hunter": ["classicon_hunter"],
+    "priest": ["classicon_priest"],
+    "mage": ["classicon_mage"],
+    "warlock": ["classicon_warlock"],
+    "shaman": ["classicon_shaman"],
 }
 
 CLASS_LABELS_DE = {
@@ -657,11 +657,11 @@ SPEC_EMOJI_NAME_ALIASES = {
 # Feste WoW-Iconnamen für die Discord-Application-Emojis. Sie werden über
 # dieselbe Bildquelle geladen wie die Lootitem-Icons.
 RAID_APPLICATION_EMOJI_ICONS = {
-    "krieger": "classicon_warrior", "druide": "classicon_druid",
-    "paladin": "classicon_paladin", "schurke": "classicon_rogue",
-    "jaeger": "classicon_hunter", "priester": "classicon_priest",
-    "magier": "classicon_mage", "hexenmeister": "classicon_warlock",
-    "schamane": "classicon_shaman",
+    "classicon_warrior": "classicon_warrior", "classicon_druid": "classicon_druid",
+    "classicon_paladin": "classicon_paladin", "classicon_rogue": "classicon_rogue",
+    "classicon_hunter": "classicon_hunter", "classicon_priest": "classicon_priest",
+    "classicon_mage": "classicon_mage", "classicon_warlock": "classicon_warlock",
+    "classicon_shaman": "classicon_shaman",
     "tank": "inv_shield_06", "heilung": "spell_holy_flashheal",
     "melee": "ability_dualwield", "range": "ability_marksmanship",
     "waffen": "ability_warrior_savageblow", "fury": "ability_warrior_innerrage",
@@ -1125,6 +1125,8 @@ def add_raid_signup_roster_fields(embed, helper):
         if clean(row.get("status")).lower() not in {"absent", "abwesend"}
     )
     tank_role_icon = signup_spec_icon("Tank", "tank", "Warrior")
+    heal_role_icon = custom_emoji("heilung", SPEC_EMOJI_FALLBACKS["heal"])
+    dd_role_icon = custom_emoji("melee", "⚔️")
     embed.add_field(
         name="👥 Gesamt angemeldet",
         value=f"**{total_signed}{('/' + max_players) if max_players else ''}**",
@@ -1136,12 +1138,12 @@ def add_raid_signup_roster_fields(embed, helper):
         inline=True,
     )
     embed.add_field(
-        name="➕ Heals",
+        name=f"{heal_role_icon} Heals",
         value=f"**{role_counts['heal']}{('/' + heal_max) if heal_max else ''}**",
         inline=True,
     )
     embed.add_field(
-        name="⚔️ DD",
+        name=f"{dd_role_icon} DD",
         value=f"**{role_counts['dd']}{('/' + dd_max) if dd_max else ''}**",
         inline=True,
     )
