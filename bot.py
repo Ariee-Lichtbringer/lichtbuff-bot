@@ -1065,13 +1065,10 @@ def get_open_worldbuff_signup_slots(limit=25):
         if slot_date < today or slot_date > max_date:
             continue
 
-        choice_buffs = [buff]
-        if buff == "Ony":
-            choice_buffs.append("Nef")
-        elif buff == "Nef":
-            choice_buffs.append("Ony")
-
-        for choice_index, choice_buff in enumerate(choice_buffs):
+        # Ony und Nef teilen sich auf der Worldbuff-Seite einen Tagesplatz.
+        # Der tatsächlich veröffentlichte Buff darf nicht als Gegenstück ein
+        # zweites Mal künstlich in der Discord-Auswahl erscheinen.
+        for choice_index, choice_buff in enumerate([buff]):
             key = "|".join([
                 choice_buff,
                 row.get("datum", ""),
@@ -8160,6 +8157,7 @@ async def send_worldbuff_player_change_notice(payload):
         apply_buff_thumbnail(embed)
 
     # Persönliche Bestätigung an den Spieler, der den Termin übernommen hat.
+    player_sent = False
     player_user_id = str(payload.get("playerDiscordUserId") or "").strip()
     if player_user_id.isdigit():
         try:
@@ -8169,12 +8167,14 @@ async def send_worldbuff_player_change_notice(payload):
                 "changed": "🔄 Dein Worldbuff-Termin wurde geändert",
                 "moved": "🔄 Dein Worldbuff-Termin wurde verschoben",
                 "cancelled": "❌ Dein Worldbuff-Termin wurde abgesagt",
+                "reminder": "🔔 Erinnerung an deinen Worldbuff-Termin",
             }
             player_descriptions = {
                 "registered": f"Dein Termin für **{buff or 'den Worldbuff'}** wurde erfolgreich gespeichert.",
                 "changed": f"Die Gildenleitung hat deinen Termin für **{buff or 'den Worldbuff'}** geändert.",
                 "moved": f"Dein Termin für **{buff or 'den Worldbuff'}** wurde verschoben.",
                 "cancelled": f"Dein Termin für **{buff or 'den Worldbuff'}** wurde entfernt.",
+                "reminder": f"Zur Erinnerung: Du bist für **{buff or 'diesen Worldbuff'}** als Werfer eingetragen.",
             }
             player_embed = discord.Embed(
                 title=player_titles.get(action, "🌍 Dein Worldbuff-Termin wurde aktualisiert"),
@@ -8184,9 +8184,13 @@ async def send_worldbuff_player_change_notice(payload):
             add_appointment_fields(player_embed)
             player_embed.set_footer(text="Automatische Nachricht des Lichtbuff-Bots")
             await player_user.send(embed=player_embed)
+            player_sent = True
             print(f"Worldbuff-Bestaetigung per DM an {player_user} gesendet.")
         except Exception as error:
             print(f"Worldbuff-Bestaetigung an Spieler fehlgeschlagen: {error}")
+
+    if payload.get("notifyStaff") is False:
+        return 1 if player_sent else 0
 
     template_message = render_notification_template(payload.get("messageTemplate"), {
         "charakter": character, "aktion": action_label, "termin": old_slot,
