@@ -263,15 +263,15 @@ CLASS_EMOJI_ENV = {
 }
 
 CLASS_EMOJI_NAME_ALIASES = {
-    "warrior": ["krieger", "warrior", "classicon_warrior"],
-    "druid": ["druide", "druid", "classicon_druid"],
-    "paladin": ["pala", "paladin", "classicon_paladin"],
-    "rogue": ["schurke", "rogue", "classicon_rogue"],
-    "hunter": ["jäger", "jaeger", "jager", "hunter", "classicon_hunter"],
-    "priest": ["priester", "priest", "classicon_priest"],
-    "mage": ["magier", "mage", "classicon_mage"],
-    "warlock": ["hexenmeister", "hexer", "warlock", "classicon_warlock"],
-    "shaman": ["schamane", "shaman", "classicon_shaman"],
+    "warrior": ["classicon_warrior", "krieger", "warrior"],
+    "druid": ["classicon_druid", "druide", "druid"],
+    "paladin": ["classicon_paladin", "pala", "paladin"],
+    "rogue": ["classicon_rogue", "schurke", "rogue"],
+    "hunter": ["classicon_hunter", "jäger", "jaeger", "jager", "hunter"],
+    "priest": ["classicon_priest", "priester", "priest"],
+    "mage": ["classicon_mage", "magier", "mage"],
+    "warlock": ["classicon_warlock", "hexenmeister", "hexer", "warlock"],
+    "shaman": ["classicon_shaman", "schamane", "shaman"],
 }
 
 CLASS_LABELS_DE = {
@@ -1037,6 +1037,8 @@ def signup_spec_icon(spec_text, role="", class_name=""):
         return "❄️"
     if any(word in text for word in ["shadow", "schatten"]):
         return "🌑"
+    if text in {"", "dd", "dps", "damage", "flex"} and clean(class_name):
+        return class_icon(class_name)
     if any(word in text for word in ["fury", "arms", "waffen", "combat", "assa", "feral", "enh", "ele", "balance", "dd", "dps"]):
         return "⚔️"
     return "✦"
@@ -1062,7 +1064,6 @@ def raid_signup_class_options():
         ("Priester", "Priest"),
         ("Magier", "Mage"),
         ("Hexenmeister", "Warlock"),
-        ("Schamane", "Shaman"),
     ]
     return [discord.SelectOption(label=label, value=value, emoji=class_select_emoji(value)) for label, value in labels]
 
