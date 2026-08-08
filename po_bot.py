@@ -3794,12 +3794,67 @@ async def send_po_release_request_notice_from_queue(payload):
     raid = clean(payload.get("raid")).upper() or "-"
     request_type = clean(payload.get("requestType"))
     request_label = {"recruit":"Rekrutenstatus aufheben","p1p3":"P1–P3 Freigabe","p0":"P0 Freigabe","po":"PO-Freigabe"}.get(request_type,request_type or "PO-Freigabe")
-    link = f"{LICHTLOOT_URL.rstrip('/')}/gildenleitung.html?" + urllib.parse.urlencode({"guild":guild_slug,"panel":"po-freigaben"})
+    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
+    discord_guild_id = clean(
+        payload.get("discordGuildId")
+        or registry_entry.get("discordGuildId")
+        or ({
+            "lichtloot": LICHTLOOT_DISCORD_GUILD_ID,
+            "nachtloot": NACHTLOOT_DISCORD_GUILD_ID,
+        }.get(guild_slug) or "")
+    )
+    discord_guild = client.get_guild(int(discord_guild_id)) if discord_guild_id.isdigit() else None
+    discord_channel_id = clean(
+        payload.get("targetChannelId")
+        or payload.get("sourceChannelId")
+        or payload.get("channelId")
+        or payload.get("discordChannelId")
+    )
+    if discord_guild and not discord_channel_id:
+        preferred_names = {"pofreigabe", "pofreigaben", "pofreigabeantraege", "pofreigabeanträge"}
+        matching_channel = next(
+            (
+                channel for channel in getattr(discord_guild, "text_channels", [])
+                if normalize_emoji_name(getattr(channel, "name", "")) in preferred_names
+            ),
+            None,
+        )
+        if matching_channel:
+            discord_channel_id = str(matching_channel.id)
+    discord_link = (
+        f"https://discord.com/channels/{discord_guild_id}/{discord_channel_id}"
+        if discord_guild_id.isdigit() and discord_channel_id.isdigit()
+        else ""
+    )
     text = clean(payload.get("messageTemplate"))
-    replacements = {"{gilde}":guild_name,"{charakter}":character,"{server}":server,"{klasse}":class_name,"{raid}":raid,"{antrag}":request_label,"{link}":link}
+    replacements = {"{gilde}":guild_name,"{charakter}":character,"{server}":server,"{klasse}":class_name,"{raid}":raid,"{antrag}":request_label,"{link}":discord_link}
     for token,value in replacements.items(): text = text.replace(token,value)
-    embed = discord.Embed(title="Neue PO-Freigabe wartet",description=text or f"**{character}** hat eine **{request_label}** für **{raid}** eingereicht.",color=0xFACC15)
-    if not text: embed.add_field(name="Direkt zur PO-Freigabe",value=f"[Antrag prüfen]({link})",inline=False)
+    embed = discord.Embed(
+        title="🔎 Neue PO-Freigabe wartet",
+        description=text or f"Für **{character}** wurde eine **{request_label}** eingereicht und wartet auf Prüfung.",
+        color=0xFACC15,
+    )
+    embed.add_field(name="🏰 Gilde", value=guild_name, inline=True)
+    embed.add_field(name="⚔️ Raid", value=display_raid(raid) or raid, inline=True)
+    embed.add_field(
+        name="👤 Charakter",
+        value=f"{character}{f'-{server}' if server else ''}",
+        inline=False,
+    )
+    if class_name:
+        embed.add_field(
+            name="🛡️ Klasse",
+            value=f"{class_icon(class_name)} {class_display_name(class_name)}",
+            inline=True,
+        )
+    embed.add_field(name="📋 Antrag", value=request_label, inline=True)
+    if discord_link:
+        embed.add_field(name="💬 Zum Discord-Channel", value=f"[PO-Freigabe-Channel öffnen]({discord_link})", inline=False)
+    class_emoji = class_icon(class_name)
+    emoji_match = re.match(r"<a?:[^:]+:(\d+)>", class_emoji)
+    if emoji_match:
+        embed.set_thumbnail(url=f"https://cdn.discordapp.com/emojis/{emoji_match.group(1)}.png?size=128&quality=lossless")
+    embed.set_footer(text="Der Antrag wartet auf Freigabe durch die Gildenleitung.")
     count = await send_queue_targeted_embed(payload,embed)
     print(f"PO-Freigabehinweis an {count} Empfänger gesendet: {character}")
     return count
