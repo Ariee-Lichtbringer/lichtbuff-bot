@@ -1101,7 +1101,7 @@ def get_open_worldbuff_signup_slots(limit=25):
     return slots[:limit]
 
 
-def claim_worldbuff_slot_in_sheet(slot, charakter, discord_name):
+def claim_worldbuff_slot_in_sheet(slot, charakter, discord_name, discord_user_id=""):
     payload = {
         "action": "lichtbotClaimWorldbuffSlot",
         "queueToken": LICHTBOT_QUEUE_TOKEN,
@@ -1112,6 +1112,7 @@ def claim_worldbuff_slot_in_sheet(slot, charakter, discord_name):
         "gilde": slot.get("gilde", ""),
         "charakter": charakter,
         "discord": discord_name,
+        "discordUserId": str(discord_user_id or ""),
         "status": "bestätigt",
         "source": "railway"
     }
@@ -1121,14 +1122,16 @@ def claim_worldbuff_slot_in_sheet(slot, charakter, discord_name):
     return result
 
 
-async def worldbuff_signup_core(slot, charakter, discord_name):
+async def worldbuff_signup_core(slot, charakter, discord_name, discord_user_id=""):
     charakter = str(charakter or "").strip()
     if not slot:
         return "⚠️ Dieser Worldbuff-Termin wurde nicht gefunden."
     if not charakter:
         return "Bitte trage einen Charakternamen ein."
 
-    result = await asyncio.to_thread(claim_worldbuff_slot_in_sheet, slot, charakter, discord_name)
+    result = await asyncio.to_thread(
+        claim_worldbuff_slot_in_sheet, slot, charakter, discord_name, discord_user_id
+    )
 
     if not result or not result.get("success"):
         reason = result.get("error") or result.get("message") if isinstance(result, dict) else "unbekannt"
@@ -1180,7 +1183,8 @@ class WorldbuffSignupModal(discord.ui.Modal):
             result_text = await worldbuff_signup_core(
                 self.slot,
                 str(self.charakter.value or ""),
-                interaction.user.display_name
+                interaction.user.display_name,
+                interaction.user.id
             )
             await interaction.followup.send(result_text, ephemeral=True)
         finally:
@@ -4407,36 +4411,51 @@ async def post_worldbuff_backup_export_from_queue(payload):
     print(f"Worldbuff-Sicherung gepostet: {safe_filename} in {channel_id}")
 
 
-def build_worldbuff_replacement_text(payload):
+def build_worldbuff_replacement_embed(payload, channel):
     buff = str(payload.get("buff") or "Worldbuff").strip() or "Worldbuff"
     datum = str(payload.get("datum") or payload.get("date") or "").strip()
     uhrzeit = str(payload.get("uhrzeit") or payload.get("time") or "").strip()
     gilde = str(payload.get("gilde") or payload.get("guild") or "").strip()
     charakter = str(payload.get("charakter") or payload.get("caster") or "").strip()
     note = str(payload.get("note") or "").strip()
-
-    lines = [
-        "🔔 **Ersatz für Worldbuff gesucht**",
-        "",
-        f"Für **{buff}** am **{datum or '-'}** um **{uhrzeit or '-'} Uhr** wird ein Werfer gesucht.",
-    ]
+    buff_emoji = get_buff_emoji(buff)
+    guild_id = str(getattr(getattr(channel, "guild", None), "id", "") or "")
+    channel_id = str(getattr(channel, "id", "") or "")
+    channel_url = f"https://discord.com/channels/{guild_id}/{channel_id}" if guild_id and channel_id else ""
+    embed = discord.Embed(
+        title="🔔 Ersatz für Worldbuff gesucht",
+        description=f"Für **{buff}** wird ein neuer Werfer gesucht.",
+        color=0xF59E0B,
+        url=channel_url or None,
+    )
+    embed.add_field(name="🌍 Worldbuff", value=f"{buff_emoji} **{buff}**", inline=False)
+    embed.add_field(name="📅 Datum", value=datum or "-", inline=True)
+    embed.add_field(name="⏰ Uhrzeit", value=f"{uhrzeit} Uhr" if uhrzeit else "-", inline=True)
     if gilde:
-        lines.append(f"🏰 Gilde: **{gilde}**")
+        embed.add_field(name="📣 Worldbuff-Gilde", value=gilde, inline=False)
     if charakter:
-        lines.append(f"🧙 Eingetragener Werfer: **{charakter}**")
+        embed.add_field(name="🧙 Bisheriger Werfer", value=charakter, inline=False)
     if note:
-        lines.extend(["", f"📝 {note}"])
-    lines.extend(["", "Bitte direkt melden, wenn ihr den Termin übernehmen könnt."])
-    return "\n".join(lines)
+        embed.add_field(name="📝 Hinweis", value=note[:1024], inline=False)
+    if channel_url:
+        embed.add_field(name="🔗 Termin übernehmen", value=f"[Direkt zum WB-Channel]({channel_url})", inline=False)
+    icon_url = getattr(buff_emoji, "url", None)
+    if icon_url:
+        embed.set_thumbnail(url=str(icon_url))
+    else:
+        emoji_match = re.match(r"<a?:[^:]+:(\d+)>", str(buff_emoji))
+        if emoji_match:
+            embed.set_thumbnail(url=f"https://cdn.discordapp.com/emojis/{emoji_match.group(1)}.png?size=128&quality=lossless")
+    embed.set_footer(text="Automatische Nachricht des Lichtbuff-Bots")
+    return embed
 
 
 async def post_worldbuff_replacement_from_queue(payload):
-    text = build_worldbuff_replacement_text(payload)
     sent = 0
     for channel_id in worldbuff_replacement_channel_ids(payload.get("target"), payload):
         try:
             channel = client.get_channel(channel_id) or await client.fetch_channel(channel_id)
-            await send_silent(channel, text)
+            await send_silent(channel, embed=build_worldbuff_replacement_embed(payload, channel))
             sent += 1
         except Exception as error:
             print(f"Worldbuff-Ersatzsuche konnte nicht in Channel {channel_id} gepostet werden: {error}")
@@ -8202,6 +8221,21 @@ async def send_worldbuff_player_change_notice(payload):
     registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
     discord_guild_id = str(registry_entry.get("discordGuildId") or (NACHTLOOT_DISCORD_GUILD_ID if guild_slug == NACHTLOOT_GUILD_SLUG else "")).strip()
     selected_guild = client.get_guild(int(discord_guild_id)) if discord_guild_id.isdigit() else None
+    if not selected_guild and (wanted_names or wanted_role_ids):
+        for candidate_guild in client.guilds:
+            candidate_role_ids = {str(role.id) for role in candidate_guild.roles}
+            candidate_names = {
+                normalized_discord_name(name)
+                for member in candidate_guild.members
+                for name in (
+                    getattr(member, "name", ""),
+                    getattr(member, "display_name", ""),
+                    getattr(member, "global_name", ""),
+                )
+            }
+            if wanted_role_ids.intersection(candidate_role_ids) or wanted_names.intersection(candidate_names):
+                selected_guild = candidate_guild
+                break
     guilds = [selected_guild] if selected_guild else []
     for guild in guilds:
         for member in guild.members:
