@@ -484,11 +484,20 @@ async def refresh_emoji_cache():
     found_items = {}
     guild_emojis = []
     application_emojis = []
-    try:
-        for guild in client.guilds:
-            guild_emojis.extend(getattr(guild, "emojis", []) or [])
-    except Exception:
-        pass
+    for guild in getattr(client, "guilds", []) or []:
+        try:
+            # Beim frühen Botstart kann guild.emojis noch unvollständig sein.
+            # Die direkte Discord-Abfrage stellt sicher, dass bereits auf dem
+            # Server gespeicherte PO-Item-Emojis sofort verfügbar sind.
+            fetched = await guild.fetch_emojis()
+            guild_emojis.extend(fetched or [])
+        except Exception as exc:
+            cached = list(getattr(guild, "emojis", []) or [])
+            guild_emojis.extend(cached)
+            print(
+                f"PO Server-Emojis konnten für {getattr(guild, 'name', guild.id)} "
+                f"nicht direkt geladen werden; Cache mit {len(cached)} Emojis wird verwendet: {exc}"
+            )
 
     # Emojis aus dem Developer Portal gehören der App und sind nicht in
     # guild.emojis enthalten. Sie müssen separat über die App geladen werden.
@@ -525,6 +534,10 @@ async def refresh_emoji_cache():
     spec_emoji_cache.update(found_specs)
     item_emoji_cache.clear()
     item_emoji_cache.update(found_items)
+    print(
+        f"PO Emoji-Cache: {len(application_emojis)} Application-Emojis, "
+        f"{len(guild_emojis)} Server-Emojis, {len(found_items)} insgesamt."
+    )
     return found_classes, found_specs, found_items
 
 
