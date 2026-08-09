@@ -1205,12 +1205,30 @@ def add_raid_signup_roster_fields(embed, helper):
     sorted_classes = sorted(grouped, key=lambda value: order.index(value) if value in order else 99)
     for class_index, cls in enumerate(sorted_classes):
         lines = []
-        # Innerhalb jeder Klasse gilt die globale Anmeldereihenfolge. Dadurch
-        # stehen die eingeblendeten Anmeldenummern auch tatsächlich von klein
-        # nach groß und nicht in der zufälligen Reihenfolge der API-Antwort.
+        # Gleiche Skillungen stehen innerhalb einer Klasse geschlossen
+        # untereinander. Die Skillungsgruppen richten sich nach der jeweils
+        # frühesten Anmeldung; innerhalb jeder Gruppe gilt anschließend die
+        # globale Anmeldenummer.
+        def row_spec_group(row):
+            spec = signup_spec_for_row(row) or clean(row.get("role")) or "Flex"
+            return signup_spec_icon_key(
+                spec,
+                row.get("role"),
+                row.get("className") or row.get("klasse") or cls,
+            ) or clean(spec).casefold()
+
+        spec_first_position = {}
+        for row in grouped[cls]:
+            spec_group = row_spec_group(row)
+            position = signup_positions.get(id(row), 10**9)
+            spec_first_position[spec_group] = min(
+                position,
+                spec_first_position.get(spec_group, 10**9),
+            )
         class_rows = sorted(
             grouped[cls],
             key=lambda row: (
+                spec_first_position.get(row_spec_group(row), 10**9),
                 signup_positions.get(id(row), 10**9),
                 clean(row.get("player") or row.get("char")).casefold(),
             ),
@@ -1274,6 +1292,11 @@ def add_raid_signup_roster_fields(embed, helper):
         players = [
             f"{class_icon(canonical_signup_class(row.get('className') or row.get('klasse')))} "
             f"`{signup_positions.get(id(row), 0)}` **{clean(row.get('player') or row.get('char'))}**"
+            + (
+                " *(automatisch gebencht)*"
+                if "automatisch gebencht" in clean(row.get("note")).casefold()
+                else ""
+            )
             for row in sorted(status_rows, key=lambda row: signup_positions.get(id(row), 0))
         ]
         embed.add_field(
@@ -1789,6 +1812,35 @@ class RaidSignupCharacterSelect(discord.ui.Select):
         server = clean(character.get("server"))
         char_class = canonical_signup_class(character.get("className") or character.get("Klasse") or character.get("class_name") or self.class_name)
         guild_slug = payload_guild_slug(payload_for_interaction(self.raid, interaction))
+        signup_status = "signed"
+        signup_note = f"Skillung: {self.spec_label}"
+        automatically_benched = False
+        try:
+            capacity_helper = await get_raid_helper_for_refresh(self.raid)
+            capacity_raid = (capacity_helper or {}).get("raid") or self.raid
+            maximum = int(clean(capacity_raid.get("maxPlayers") or capacity_raid.get("max_players") or "0") or 0)
+            capacity_rows = list((capacity_helper or {}).get("signups") or []) + list((capacity_helper or {}).get("externalSignups") or [])
+            wanted_user = str(interaction.user.id)
+            existing_signup = any(
+                clean(row.get("discordUserId")) == wanted_user
+                or clean(row.get("char") or row.get("player")).casefold() == char_name.casefold()
+                for row in capacity_rows
+            )
+            occupied = sum(
+                1 for row in capacity_rows
+                if clean(row.get("status")).lower() not in {
+                    "absent", "abwesend", "bench", "bank"
+                }
+                and clean(row.get("role")).lower() not in {
+                    "multi", "multichar", "multi-char", "multi char"
+                }
+            )
+            if maximum > 0 and occupied >= maximum and not existing_signup:
+                signup_status = "bench"
+                signup_note = f"Skillung: {self.spec_label} (automatisch gebencht)"
+                automatically_benched = True
+        except Exception as error:
+            print(f"Automatische Bench-Prüfung konnte nicht durchgeführt werden: {error}")
         result = await asyncio.to_thread(api_post, {
             "action": "saveRaidSignup",
             "queueToken": QUEUE_TOKEN,
@@ -1805,9 +1857,11 @@ class RaidSignupCharacterSelect(discord.ui.Select):
             "raidTime": self.raid.get("raidTime") or "",
             "role": infer_signup_role(self.spec_label),
             "signupRole": infer_signup_role(self.spec_label),
-            "status": "signed",
-            "signupStatus": "signed",
-            "note": f"Skillung: {self.spec_label}",
+            "status": signup_status,
+            "signupStatus": signup_status,
+            "specialization": self.spec_label,
+            "skillung": self.spec_label,
+            "note": signup_note,
             "discordUserId": str(interaction.user.id),
             "discordName": str(interaction.user.display_name),
             "source": raid_signup_source(interaction, self.origin_channel_id, self.origin_message_id)
@@ -1815,28 +1869,46 @@ class RaidSignupCharacterSelect(discord.ui.Select):
         if not result.get("success"):
             await interaction.response.send_message(f"⚠️ Anmeldung fehlgeschlagen: {result.get('error') or 'unbekannter Fehler'}", ephemeral=True)
             return
+        saved_signup = result.get("signup") or {}
+        saved_status = clean(saved_signup.get("status") or signup_status).lower()
+        if result.get("automaticallyBenched") is True or saved_status in {"bench", "bank"} and "automatisch gebencht" in clean(saved_signup.get("note") or signup_note).casefold():
+            automatically_benched = True
+            signup_status = "bench"
+            signup_note = clean(saved_signup.get("note") or signup_note)
         refresh_raid = dict(self.raid)
         if result.get("raid"):
             refresh_raid.update(result.get("raid") or {})
         if result.get("raidId"):
             refresh_raid["raidId"] = result.get("raidId")
         await interaction.response.edit_message(
-            content=f"✅ Anmeldung gespeichert: **{char_name}** · {class_display_name(char_class)} · {self.spec_label}",
+            content=(
+                f"✅ Anmeldung gespeichert: **{char_name}** · {class_display_name(char_class)} · {self.spec_label}"
+                + (" **(automatisch gebencht)**" if automatically_benched else "")
+            ),
             view=None
         )
-        await send_raid_signup_confirmation(
-            interaction,
-            refresh_raid,
-            char_name,
-            char_class,
-            self.spec_label
-        )
+        if automatically_benched:
+            await send_raid_player_status_confirmation(
+                interaction, refresh_raid, char_name, "bench", "automatisch gebencht"
+            )
+        else:
+            await send_raid_signup_confirmation(
+                interaction,
+                refresh_raid,
+                char_name,
+                char_class,
+                self.spec_label
+            )
         await send_raid_staff_action_notice(
             interaction,
             refresh_raid,
             char_name,
-            "signed",
-            f"{class_display_name(char_class)} · {self.spec_label}",
+            "bench" if automatically_benched else "signed",
+            (
+                "automatisch gebencht"
+                if automatically_benched
+                else f"{class_display_name(char_class)} · {self.spec_label}"
+            ),
         )
         try:
             await refresh_raid_signup_message(
@@ -1851,8 +1923,10 @@ class RaidSignupCharacterSelect(discord.ui.Select):
                     "klasse": char_class,
                     "hasPrio": bool((result.get("signup") or {}).get("hasPrio")),
                     "role": infer_signup_role(self.spec_label),
-                    "status": "signed",
-                    "note": f"Skillung: {self.spec_label}",
+                    "status": signup_status,
+                    "specialization": self.spec_label,
+                    "skillung": self.spec_label,
+                    "note": signup_note,
                     "discordUserId": str(interaction.user.id),
                     "discordName": str(interaction.user.display_name),
                     "source": raid_signup_source(interaction, self.origin_channel_id, self.origin_message_id),
