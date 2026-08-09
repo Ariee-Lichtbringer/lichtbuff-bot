@@ -1151,7 +1151,7 @@ def add_raid_signup_roster_fields(embed, helper):
         name="Rollenverteilung",
         value=(
             f"{tank_role_icon} **Tanks {role_counts['tank']}{('/' + tank_max) if tank_max else ''}**  ·  "
-            f"{melee_role_icon} **Melee {role_counts['melee']}**\n"
+            f"{melee_role_icon} **Melee {role_counts['melee']}**  ·  "
             f"{ranged_role_icon} **Ranged {role_counts['ranged']}**  ·  "
             f"{heal_role_icon} **Heiler {role_counts['heal']}{('/' + heal_max) if heal_max else ''}**\n\u200b"
         ),
@@ -1227,10 +1227,14 @@ def add_raid_signup_roster_fields(embed, helper):
             return clean(row.get("role")).lower() in {"multi", "multichar", "multi-char", "multi char"}
         return clean(row.get("status")).lower() in statuses
 
-    for label, statuses in status_groups:
-        status_rows = [row for row in rows if row_matches_status_group(row, statuses)]
-        if not status_rows:
-            continue
+    visible_status_groups = [
+        (label, [row for row in rows if row_matches_status_group(row, statuses)])
+        for label, statuses in status_groups
+    ]
+    visible_status_groups = [(label, status_rows) for label, status_rows in visible_status_groups if status_rows]
+    if visible_status_groups:
+        embed.add_field(name="\u200b", value="\u200b", inline=False)
+    for label, status_rows in visible_status_groups:
         players = [
             f"{class_icon(canonical_signup_class(row.get('className') or row.get('klasse')))} "
             f"`{signup_positions.get(id(row), 0)}` **{clean(row.get('player') or row.get('char'))}**"
@@ -1239,7 +1243,7 @@ def add_raid_signup_roster_fields(embed, helper):
         embed.add_field(
             name=f"__{label} ({len(players)})__",
             value="\n".join(filter(None, players))[:1024],
-            inline=False,
+            inline=True,
         )
     add_raid_signup_links_field(embed, (helper or {}).get("raid") or {})
 
