@@ -834,11 +834,11 @@ def build_raid_announcement_embed(raid):
     if worldbuff_block:
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
     embed.add_field(
-        name="\u200b",
+        name="Prios auf LichtLoot",
         value=(
-            f"{custom_emoji('Kofferlila', '🟪🧰')} **P1, P2, P3 auf LichtLoot:** P1, P2 oder P3 für diesen Raid eingetragen.\n"
-            f"{custom_emoji('kofferorange', '🟧🧰')} **PO auf LichtLoot eingetragen:** Oranger Koffer = PO angemeldet, aber noch nicht freigegeben.\n"
-            f"{custom_emoji('koffergrun', '🟩🧰')} **PO auf LichtLoot freigegeben:** Grüner Koffer = PO für diesen Raid eingetragen und freigegeben."
+            f"{custom_emoji('Kofferlila', '🟪🧰')} **P1–P3**  ·  "
+            f"{custom_emoji('kofferorange', '🟧🧰')} **PO offen**  ·  "
+            f"{custom_emoji('koffergrun', '🟩🧰')} **PO freigegeben**"
         ),
         inline=False,
     )
@@ -1143,12 +1143,17 @@ def add_raid_signup_roster_fields(embed, helper):
     melee_role_icon = custom_emoji("melee", "⚔️")
     ranged_role_icon = custom_emoji("range", "🏹")
     embed.add_field(
-        name=f"👥 Gesamt angemeldet: {total_signed}{('/' + max_players) if max_players else ''}",
+        name="👥 Gesamt angemeldet",
+        value=f"**{total_signed}{('/' + max_players) if max_players else ''}**\n\u200b",
+        inline=False,
+    )
+    embed.add_field(
+        name="Rollenverteilung",
         value=(
-            f"{tank_role_icon} **Tanks {role_counts['tank']}{('/' + tank_max) if tank_max else ''}** · "
+            f"{tank_role_icon} **Tanks {role_counts['tank']}{('/' + tank_max) if tank_max else ''}**  ·  "
             f"{melee_role_icon} **Melee {role_counts['melee']}**\n"
-            f"{ranged_role_icon} **Ranged {role_counts['ranged']}** · "
-            f"{heal_role_icon} **Heiler {role_counts['heal']}{('/' + heal_max) if heal_max else ''}**"
+            f"{ranged_role_icon} **Ranged {role_counts['ranged']}**  ·  "
+            f"{heal_role_icon} **Heiler {role_counts['heal']}{('/' + heal_max) if heal_max else ''}**\n\u200b"
         ),
         inline=False,
     )
@@ -1194,9 +1199,15 @@ def add_raid_signup_roster_fields(embed, helper):
                 row.get(key) is True or clean(row.get(key)).lower() in {"1", "true", "yes", "ja", "freigegeben"}
                 for key in ("p0Released", "poReleased", "p0PlusReleased", "poPlusReleased")
             ) else ""
-            lines.append(f"`{position}`{prio_icon} **{player}{star}** · {signup_spec_icon(spec, row.get('role'), cls)}")
+            lines.append(
+                f"{signup_spec_icon(spec, row.get('role'), cls)} "
+                f"`{position}` **{player}{star}**{prio_icon}"
+            )
         embed.add_field(
-            name=f"{tank_role_icon if cls == 'Tank' else class_icon(cls)} {german_class_names.get(cls, cls)} ({len(grouped[cls])})",
+            name=(
+                f"{tank_role_icon if cls == 'Tank' else class_icon(cls)} "
+                f"__{german_class_names.get(cls, cls)} ({len(grouped[cls])})__"
+            ),
             value=("\n".join(lines) or "\u200b")[:1024],
             inline=True,
         )
@@ -1218,12 +1229,12 @@ def add_raid_signup_roster_fields(embed, helper):
             continue
         players = [
             f"{class_icon(canonical_signup_class(row.get('className') or row.get('klasse')))} "
-            f"`{signup_positions.get(id(row), 0)}` {clean(row.get('player') or row.get('char'))}"
+            f"`{signup_positions.get(id(row), 0)}` **{clean(row.get('player') or row.get('char'))}**"
             for row in sorted(status_rows, key=lambda row: signup_positions.get(id(row), 0))
         ]
         embed.add_field(
-            name=f"{label} ({len(players)})",
-            value=", ".join(filter(None, players))[:1024],
+            name=f"__{label} ({len(players)})__",
+            value="\n".join(filter(None, players))[:1024],
             inline=False,
         )
     add_raid_signup_links_field(embed, (helper or {}).get("raid") or {})
