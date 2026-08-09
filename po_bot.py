@@ -1110,12 +1110,26 @@ def add_raid_signup_roster_fields(embed, helper):
         }
         and clean(row.get("role")).lower() not in {"multi", "multichar", "multi-char", "multi char"}
     ]
-    role_counts = {"tank": 0, "heal": 0, "dd": 0}
-    for row in active_rows:
+    role_counts = {"tank": 0, "heal": 0, "melee": 0, "ranged": 0}
+
+    def compact_signup_role(row):
         role = clean(row.get("role")).lower()
-        if role not in role_counts:
-            role = infer_signup_role(signup_spec_from_note(row.get("note"), role))
-        role_counts[role if role in role_counts else "dd"] += 1
+        spec = signup_spec_from_note(row.get("note"), role)
+        resolved_role = role if role in {"tank", "heal", "dd"} else infer_signup_role(spec)
+        if resolved_role in {"tank", "heal"}:
+            return resolved_role
+        cls = canonical_signup_class(row.get("className") or row.get("klasse"))
+        spec_key = clean(spec).lower()
+        if cls in {"Mage", "Warlock", "Hunter", "Priest"}:
+            return "ranged"
+        if cls == "Druid" and any(value in spec_key for value in ("balance", "eule", "moonkin")):
+            return "ranged"
+        if cls == "Shaman" and any(value in spec_key for value in ("elemental", " ele", "ele ")):
+            return "ranged"
+        return "melee"
+
+    for row in active_rows:
+        role_counts[compact_signup_role(row)] += 1
     tank_max = clean(raid.get("tankSlots"))
     heal_max = clean(raid.get("healSlots"))
     dd_max = clean(raid.get("ddSlots"))
@@ -1126,34 +1140,24 @@ def add_raid_signup_roster_fields(embed, helper):
     )
     tank_role_icon = signup_spec_icon("Tank", "tank", "Warrior")
     heal_role_icon = custom_emoji("heilung", SPEC_EMOJI_FALLBACKS["heal"])
-    dd_role_icon = custom_emoji("melee", "⚔️")
+    melee_role_icon = custom_emoji("melee", "⚔️")
+    ranged_role_icon = custom_emoji("range", "🏹")
     embed.add_field(
-        name="👥 Gesamt angemeldet",
-        value=f"**{total_signed}{('/' + max_players) if max_players else ''}**",
+        name=f"👥 Gesamt angemeldet: {total_signed}{('/' + max_players) if max_players else ''}",
+        value=(
+            f"{tank_role_icon} **Tanks {role_counts['tank']}{('/' + tank_max) if tank_max else ''}** · "
+            f"{melee_role_icon} **Melee {role_counts['melee']}**\n"
+            f"{ranged_role_icon} **Ranged {role_counts['ranged']}** · "
+            f"{heal_role_icon} **Heiler {role_counts['heal']}{('/' + heal_max) if heal_max else ''}**"
+        ),
         inline=False,
     )
-    embed.add_field(
-        name=f"{tank_role_icon} Tanks",
-        value=f"**{role_counts['tank']}{('/' + tank_max) if tank_max else ''}**",
-        inline=True,
-    )
-    embed.add_field(
-        name=f"{heal_role_icon} Heals",
-        value=f"**{role_counts['heal']}{('/' + heal_max) if heal_max else ''}**",
-        inline=True,
-    )
-    embed.add_field(
-        name=f"{dd_role_icon} DD",
-        value=f"**{role_counts['dd']}{('/' + dd_max) if dd_max else ''}**",
-        inline=True,
-    )
-    embed.add_field(name="\u200b", value="\u200b", inline=False)
 
     grouped = {}
     raid_key = normalize_raid(raid.get("raid") or "").lower()
     for row in active_rows:
         role = clean(row.get("role")).lower()
-        resolved_role = role if role in role_counts else infer_signup_role(signup_spec_from_note(row.get("note"), role))
+        resolved_role = role if role in {"tank", "heal", "dd"} else infer_signup_role(signup_spec_from_note(row.get("note"), role))
         group = "Tank" if resolved_role == "tank" else canonical_signup_class(row.get("className") or row.get("klasse"))
         grouped.setdefault(group, []).append(row)
     order = ["Tank", "Warrior", "Druid", "Paladin", "Rogue", "Hunter", "Priest", "Mage", "Warlock", "Shaman", "Ohne Klasse"]
@@ -1171,7 +1175,7 @@ def add_raid_signup_roster_fields(embed, helper):
         "Ohne Klasse": "Ohne Klasse",
     }
     sorted_classes = sorted(grouped, key=lambda value: order.index(value) if value in order else 99)
-    for class_index, cls in enumerate(sorted_classes):
+    for cls in sorted_classes:
         lines = []
         for row in grouped[cls][:8]:
             player = clean(row.get("player") or row.get("char")) or "-"
@@ -1196,8 +1200,6 @@ def add_raid_signup_roster_fields(embed, helper):
             value=("\n".join(lines) or "\u200b")[:1024],
             inline=True,
         )
-        if (class_index + 1) % 2 == 0 and class_index < len(sorted_classes) - 1:
-            embed.add_field(name="\u200b", value="\u200b", inline=False)
     status_groups = [
         ("🔄 Multi Char", {"__multi_role__"}),
         ("🪑 Bank", {"bench", "bank"}),
@@ -1210,8 +1212,6 @@ def add_raid_signup_roster_fields(embed, helper):
             return clean(row.get("role")).lower() in {"multi", "multichar", "multi-char", "multi char"}
         return clean(row.get("status")).lower() in statuses
 
-    if any(row_matches_status_group(row, statuses) for _, statuses in status_groups for row in rows):
-        embed.add_field(name="\u200b", value="\u200b\n\u200b", inline=False)
     for label, statuses in status_groups:
         status_rows = [row for row in rows if row_matches_status_group(row, statuses)]
         if not status_rows:
