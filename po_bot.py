@@ -1157,17 +1157,23 @@ def add_raid_signup_roster_fields(embed, helper):
     heal_max = clean(raid.get("healSlots"))
     dd_max = clean(raid.get("ddSlots"))
     max_players = clean(raid.get("maxPlayers"))
+    bank_statuses = {"bench", "bank"}
     total_signed = sum(
         1 for row in rows
-        if clean(row.get("status")).lower() not in {"absent", "abwesend"}
+        if clean(row.get("status")).lower() not in {"absent", "abwesend", *bank_statuses}
     )
+    bank_count = sum(
+        1 for row in rows
+        if clean(row.get("status")).lower() in bank_statuses
+    )
+    bank_suffix = f" (+{bank_count})" if bank_count else ""
     tank_role_icon = signup_spec_icon("Tank", "tank", "Warrior")
     heal_role_icon = custom_emoji("heilung", SPEC_EMOJI_FALLBACKS["heal"])
     melee_role_icon = custom_emoji("melee", "⚔️")
     ranged_role_icon = custom_emoji("range", "🏹")
     embed.add_field(
         name="👥 Gesamt angemeldet",
-        value=f"**{total_signed}{('/' + max_players) if max_players else ''}**\n\u200b",
+        value=f"**{total_signed}{bank_suffix}{('/' + max_players) if max_players else ''}**\n\u200b",
         inline=False,
     )
     embed.add_field(
@@ -1513,7 +1519,23 @@ async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id
         helper = fallback_helper
     if not helper or not helper.get("success"):
         raise RuntimeError("Raid-Anmelder-Refresh: Raid wurde nicht gefunden.")
-    raid = helper.get("raid") or (payload or {}).get("raidSnapshot") or {}
+    raid = dict(helper.get("raid") or {})
+    payload_data = payload or {}
+    payload_raid = payload_data.get("raidSnapshot") if isinstance(payload_data.get("raidSnapshot"), dict) else {}
+    # Die beim Speichern vorgemerkten Werte sind der neueste Stand. Sie müssen
+    # einen eventuell noch zwischengespeicherten API-Snapshot überschreiben.
+    for key in (
+        "raid", "raidName", "raidDate", "raidTime", "description", "createdBy",
+        "maxPlayers", "tankSlots", "healSlots", "ddSlots", "signupDeadline",
+        "raidImageUrl", "discordChannelId", "discordMessageId"
+    ):
+        value = payload_data.get(key)
+        if value in (None, ""):
+            value = payload_raid.get(key)
+        if value not in (None, ""):
+            raid[key] = value
+    helper = dict(helper)
+    helper["raid"] = raid
     channel_id = clean(channel_id or raid.get("discordChannelId") or raid.get("discord_channel_id"))
     message_id = clean(message_id or raid.get("discordMessageId") or raid.get("discord_message_id"))
     if not channel_id or not message_id:
