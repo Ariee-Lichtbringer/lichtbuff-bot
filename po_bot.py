@@ -1211,7 +1211,10 @@ def add_raid_signup_roster_fields(embed, helper):
                 f"{tank_role_icon if cls == 'Tank' else class_icon(cls)} "
                 f"__{german_class_names.get(cls, cls)} ({len(grouped[cls])})__"
             ),
-            value=("\n".join(lines) or "\u200b")[:1024],
+            # Discord stapelt Inline-Felder auf schmalen Handybildschirmen.
+            # Die unsichtbare Schlusszeile erzeugt dort einen sauberen Abstand
+            # zwischen den Klassen, ohne die Dreispaltenansicht am PC aufzulösen.
+            value=(("\n".join(lines) or "\u200b") + "\n\u200b")[:1024],
             inline=True,
         )
         # Discord ordnet Inline-Felder in Dreierreihen an. Eine leere, volle
@@ -1245,7 +1248,7 @@ def add_raid_signup_roster_fields(embed, helper):
         ]
         embed.add_field(
             name=f"__{label} ({len(players)})__",
-            value="\n".join(filter(None, players))[:1024],
+            value=("\n".join(filter(None, players)) + "\n\u200b")[:1024],
             inline=True,
         )
     add_raid_signup_links_field(embed, (helper or {}).get("raid") or {})
