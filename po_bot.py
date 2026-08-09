@@ -676,8 +676,8 @@ RAID_APPLICATION_EMOJI_ICONS = {
     "survival": "ability_hunter_camouflage", "marksman": "ability_marksmanship",
     "beastmaster": "ability_hunter_beasttaming", "elemental": "spell_nature_lightningshield",
     "enhancement": "ability_shaman_stormstrike",
-    "Kofferlila": "inv_misc_bag_10", "kofferorange": "inv_misc_bag_19",
-    "koffergrun": "inv_misc_bag_11",
+    "beutelilia": "inv_misc_bag_10", "beuteorange": "inv_misc_bag_19",
+    "Beutegrun": "inv_misc_bag_11",
 }
 
 
@@ -760,7 +760,7 @@ def custom_emoji(name, fallback):
         return str(emoji)
     # refresh_emoji_cache lädt zusätzlich die Application Emojis aus dem
     # Discord Developer Portal. Dadurch funktionieren dort gespeicherte
-    # Koffer-, Rollen-, Klassen- und Skillungsbilder genauso wie Server-Emojis.
+    # Lootbag-, Rollen-, Klassen- und Skillungsbilder genauso wie Server-Emojis.
     app_emoji = item_emoji_cache.get(normalize_emoji_name(name))
     return app_emoji or fallback
 
@@ -836,9 +836,9 @@ def build_raid_announcement_embed(raid):
     embed.add_field(
         name="Prios auf LichtLoot",
         value=(
-            f"{custom_emoji('Kofferlila', '🟪🧰')} **P1–P3**  ·  "
-            f"{custom_emoji('kofferorange', '🟧🧰')} **PO offen**  ·  "
-            f"{custom_emoji('koffergrun', '🟩🧰')} **PO freigegeben**"
+            f"{custom_emoji('beutelilia', '🟣')} **P1–P3 Lootbag**  ·  "
+            f"{custom_emoji('beuteorange', '🟠')} **PO eingetragen**  ·  "
+            f"{custom_emoji('Beutegrun', '🟢')} **PO freigegeben**"
         ),
         inline=False,
     )
@@ -1187,11 +1187,11 @@ def add_raid_signup_roster_fields(embed, helper):
             position = signup_positions.get(id(row), 0)
             po_status = clean(row.get("poApprovalStatus") or row.get("po_approval_status")).lower()
             if po_status in {"approved", "freigegeben"}:
-                prio_icon = f" {custom_emoji('koffergrun', '🟩🧰')}"
+                prio_icon = f" {custom_emoji('Beutegrun', '🟢')}"
             elif po_status in {"pending", "offen", "wartet"}:
-                prio_icon = f" {custom_emoji('kofferorange', '🟧🧰')}"
+                prio_icon = f" {custom_emoji('beuteorange', '🟠')}"
             elif row.get("hasPrio") is True or clean(row.get("hasPrio")).lower() in {"1", "true", "yes", "ja"}:
-                prio_icon = f" {custom_emoji('Kofferlila', '🟪🧰')}"
+                prio_icon = f" {custom_emoji('beutelilia', '🟣')}"
             else:
                 prio_icon = ""
             spec = signup_spec_from_note(row.get("note"), row.get("role")) or "Flex"
@@ -2355,10 +2355,10 @@ def build_fixed_po_header(payload):
         lines.append(f"ID: `{lichtloot_id}`")
     lines.append("PO wird mit LichtLoot synchronisiert.")
     lines.append(
-        f"{custom_emoji('kofferorange', '🟧🧰')} **PO eingetragen:** wartet noch auf Freigabe."
+        f"{custom_emoji('beuteorange', '🟠')} **PO eingetragen:** wartet noch auf Freigabe."
     )
     lines.append(
-        f"{custom_emoji('koffergrun', '🟩🧰')} **PO freigegeben:** wurde durch die Gildenleitung freigegeben."
+        f"{custom_emoji('Beutegrun', '🟢')} **PO freigegeben:** wurde durch die Gildenleitung freigegeben."
     )
     lines.append("")
     return lines
@@ -4162,11 +4162,11 @@ def make_embed(payload, entries, p0plus_labels=None):
             icon = class_icon(class_name)
             approval_status = clean(row.get("approvalStatus")).lower()
             status_icon = (
-                f" {custom_emoji('koffergrun', '🟩🧰')}"
+                f" {custom_emoji('Beutegrun', '🟢')}"
                 if row.get("approved") or approval_status == "approved"
                 else " ❌"
                 if approval_status == "rejected"
-                else f" {custom_emoji('kofferorange', '🟧🧰')}"
+                else f" {custom_emoji('beuteorange', '🟠')}"
             )
             players.append(f"{icon} {clean(row.get('player'))}{status_icon}")
         lines.append(", ".join(players) or "-")
@@ -5917,7 +5917,7 @@ async def sync_raid_application_emojis():
     return {"created": created, "skipped": skipped, "failed": failed}
 
 
-@client.tree.command(name="raid_emojis_sync", description="Lädt Klassen-, Skillungs-, Rollen- und Koffer-Emojis in die Discord-App.")
+@client.tree.command(name="raid_emojis_sync", description="Lädt Klassen-, Skillungs-, Rollen- und Lootbag-Emojis in die Discord-App.")
 async def raid_emojis_sync(interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
     if not await can_sync_item_emojis(interaction.user):
