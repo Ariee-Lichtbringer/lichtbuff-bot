@@ -3050,6 +3050,9 @@ async def load_entries(payload):
         "sourceChannelId": "" if is_repost else payload_source_channel_id(payload),
         "targetChannelId": "" if is_repost else payload_target_channel_id(payload),
         "includeArchived": "true" if is_repost else "false",
+        # Nach einem neuen Eintrag niemals eine zuvor zwischengespeicherte
+        # leere Antwort verwenden.
+        "t": int(time.time() * 1000),
     })
     entries = [
         entry for entry in (result.get("entries") or [])
@@ -4360,7 +4363,6 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
         "slot": item_slot,
         "boss": item_boss,
     })
-    asyncio.create_task(refresh_po_message_safely(interaction.client, payload))
     prio_result = None
     try:
         prio_result = await asyncio.to_thread(save_po_signup_prio, {**payload, "server": server}, saved_player, class_name, saved_item, player_login, item_id)
@@ -4373,6 +4375,11 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
             ephemeral=True,
         )
         return
+    # Erst nachdem sowohl der PO-Post-Eintrag als auch die zugehörige
+    # LichtLoot-Prio dauerhaft gespeichert wurden, den Discord-Post neu
+    # aufbauen. Zuvor konnten zwei fast gleichzeitige Aktualisierungen eine
+    # ältere Momentaufnahme anzeigen und den neuen Eintrag wieder verdrängen.
+    asyncio.create_task(refresh_po_message_safely(interaction.client, payload))
     await interaction.followup.send(
         f"✅ Deine PO wurde gespeichert: **{saved_player}** → **{saved_item}**.\n"
         "Der PO-Post wird gleich aktualisiert.",
