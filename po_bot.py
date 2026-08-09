@@ -606,6 +606,7 @@ RAID_SIGNUP_SPECS = {
 SPEC_EMOJI_FALLBACKS = {
     "tank": "🛡️",
     "heal": "➕",
+    "druid_heal": "➕",
     "holy": "➕",
     "paladin_holy": "✨",
     "priest_holy": "➕",
@@ -635,6 +636,7 @@ SPEC_EMOJI_FALLBACKS = {
 SPEC_EMOJI_NAME_ALIASES = {
     "tank": ["tank", "prot", "schutz"],
     "heal": ["heilung", "heal", "heiler", "resto", "restoration"],
+    "druid_heal": ["HeilungDuDu", "heilung_dudu", "druid_heal", "druid_restoration"],
     "holy": ["holy", "heilig"],
     "paladin_holy": ["holy_pala", "paladin_holy", "pala_holy", "palaholy", "holy_paladin", "heilig_paladin"],
     "priest_holy": ["holy_priester", "priest_holy", "priester_holy", "holy_priest", "heilig_priester"],
@@ -1010,12 +1012,12 @@ def infer_signup_role(spec_text):
 
 def signup_spec_icon_key(spec_text, role="", class_name=""):
     text = clean(spec_text or role).lower()
+    canonical_class = canonical_signup_class(class_name).lower()
     if any(word in text for word in ["tank", "prot", "schutz", "def"]):
         return "tank"
     if any(word in text for word in ["disziplin", "discipline", "disc"]):
         return "discipline"
     if any(word in text for word in ["holy", "heilig"]):
-        canonical_class = canonical_signup_class(class_name).lower()
         if canonical_class == "paladin":
             return "paladin_holy"
         if canonical_class == "priest":
@@ -1024,6 +1026,8 @@ def signup_spec_icon_key(spec_text, role="", class_name=""):
     if any(word in text for word in ["schatten", "shadow"]):
         return "shadow"
     if any(word in text for word in ["heal", "heiler", "heilung", "resto", "restoration", "wiederherstellung"]):
+        if canonical_class == "druid":
+            return "druid_heal"
         return "heal"
     checks = [
         ("arms", ["arms", "waffen"]),
