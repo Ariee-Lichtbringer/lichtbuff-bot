@@ -1180,7 +1180,7 @@ def add_raid_signup_roster_fields(embed, helper):
         "Ohne Klasse": "Ohne Klasse",
     }
     sorted_classes = sorted(grouped, key=lambda value: order.index(value) if value in order else 99)
-    for cls in sorted_classes:
+    for class_index, cls in enumerate(sorted_classes):
         lines = []
         for row in grouped[cls][:8]:
             player = clean(row.get("player") or row.get("char")) or "-"
@@ -1211,6 +1211,10 @@ def add_raid_signup_roster_fields(embed, helper):
             value=("\n".join(lines) or "\u200b")[:1024],
             inline=True,
         )
+        # Discord ordnet Inline-Felder in Dreierreihen an. Eine leere, volle
+        # Zeile trennt die nächste Dreiergruppe optisch von der vorherigen.
+        if (class_index + 1) % 3 == 0 and class_index + 1 < len(sorted_classes):
+            embed.add_field(name="\u200b", value="\u200b", inline=False)
     status_groups = [
         ("🔄 Multi Char", {"__multi_role__"}),
         ("🪑 Bank", {"bench", "bank"}),
@@ -5659,6 +5663,114 @@ async def on_ready():
     if restored:
         save_state(state)
         print(f"PO Views aus LichtLoot wiederhergestellt: {restored}")
+
+
+async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
+    """Aktualisiert vorhandene Raid-/PO-Anmelder im aktuellen Discord-Channel."""
+    await refresh_guild_registry()
+    guild_slug = guild_slug_for_discord_server(getattr(interaction, "guild", None), GUILD_SLUG)
+    channel_id = clean(getattr(interaction, "channel_id", ""))
+    kind = clean(refresh_kind).lower() or "alle"
+    raid_refreshed = 0
+    po_refreshed = 0
+    skipped = 0
+    errors = []
+
+    token = CURRENT_GUILD_SLUG.set(guild_slug)
+    try:
+        if kind in {"alle", "raid"}:
+            try:
+                result = await asyncio.to_thread(api_get, {
+                    "action": "getActiveRaids",
+                    "guild": guild_slug,
+                    "guildSlug": guild_slug,
+                    "t": int(time.time()),
+                })
+                for raid in result.get("allRaids") or result.get("raids") or []:
+                    raid_channel_id = clean(raid.get("discordChannelId") or raid.get("discord_channel_id"))
+                    message_id = clean(raid.get("discordMessageId") or raid.get("discord_message_id"))
+                    if raid_channel_id != channel_id or not message_id:
+                        continue
+                    try:
+                        refreshed = await refresh_raid_signup_message_by_id(
+                            clean(raid.get("raidId") or raid.get("id")),
+                            raid_channel_id,
+                            message_id,
+                            raid,
+                        )
+                        if refreshed is True:
+                            raid_refreshed += 1
+                        else:
+                            skipped += 1
+                    except Exception as error:
+                        errors.append(f"Raid {clean(raid.get('raidName') or raid.get('raid') or raid.get('raidId'))}: {error}")
+            except Exception as error:
+                errors.append(f"Raidanmelder konnten nicht geladen werden: {error}")
+
+        if kind in {"alle", "po"}:
+            state = load_state()
+            payloads = []
+            payloads.extend(payload for payload in state.values() if isinstance(payload, dict))
+            try:
+                payloads.extend(await load_payloads_from_api_entries())
+            except Exception as error:
+                errors.append(f"PO-Anmelder konnten nicht vollständig geladen werden: {error}")
+
+            seen_messages = set()
+            for raw_payload in payloads:
+                payload = dict(raw_payload or {})
+                payload_channel_id = clean(
+                    payload.get("targetChannelId")
+                    or payload.get("channelId")
+                    or payload.get("sourceChannelId")
+                )
+                message_id = clean(payload.get("messageId") or payload.get("discordMessageId"))
+                if payload_channel_id != channel_id or not message_id or message_id in seen_messages:
+                    continue
+                if payload_guild_slug(payload) != guild_slug:
+                    continue
+                seen_messages.add(message_id)
+                try:
+                    await refresh_po_message(client, payload)
+                    po_refreshed += 1
+                except Exception as error:
+                    errors.append(f"PO {clean(payload.get('title') or payload.get('postKey'))}: {error}")
+
+        return {
+            "raid": raid_refreshed,
+            "po": po_refreshed,
+            "skipped": skipped,
+            "errors": errors,
+        }
+    finally:
+        CURRENT_GUILD_SLUG.reset(token)
+
+
+@client.tree.command(name="anmelder_refresh", description="Aktualisiert Raid- und PO-Anmelder im aktuellen Channel.")
+@app_commands.describe(was="Welche Anmelder sollen aktualisiert werden?")
+@app_commands.choices(was=[
+    app_commands.Choice(name="Alle Anmelder", value="alle"),
+    app_commands.Choice(name="Nur Raidanmelder", value="raid"),
+    app_commands.Choice(name="Nur PO-Anmelder", value="po"),
+])
+async def anmelder_refresh(interaction, was: str = "alle"):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    result = await refresh_signup_posts_in_channel(interaction, was)
+    raid_count = int(result.get("raid") or 0)
+    po_count = int(result.get("po") or 0)
+    skipped = int(result.get("skipped") or 0)
+    errors = result.get("errors") or []
+    total = raid_count + po_count
+    if total:
+        text = f"✅ Aktualisiert: **{raid_count} Raidanmelder** und **{po_count} PO-Anmelder**."
+    else:
+        text = "ℹ️ In diesem Channel wurden keine passenden Anmelder gefunden."
+    if skipped:
+        text += f" Übersprungen: {skipped}."
+    if errors:
+        preview = "\n".join(f"• {clean(error)[:220]}" for error in errors[:3])
+        text += f"\n⚠️ {len(errors)} Fehler:\n{preview}"
+    await interaction.followup.send(text, ephemeral=True)
 
 
 @client.tree.command(name="po_anmelder", description="Erstellt einen PO-Anmelder im aktuellen Channel.")
