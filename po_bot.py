@@ -1185,7 +1185,17 @@ def add_raid_signup_roster_fields(embed, helper):
     sorted_classes = sorted(grouped, key=lambda value: order.index(value) if value in order else 99)
     for class_index, cls in enumerate(sorted_classes):
         lines = []
-        for row in grouped[cls][:8]:
+        # Innerhalb jeder Klasse gilt die globale Anmeldereihenfolge. Dadurch
+        # stehen die eingeblendeten Anmeldenummern auch tatsächlich von klein
+        # nach groß und nicht in der zufälligen Reihenfolge der API-Antwort.
+        class_rows = sorted(
+            grouped[cls],
+            key=lambda row: (
+                signup_positions.get(id(row), 10**9),
+                clean(row.get("player") or row.get("char")).casefold(),
+            ),
+        )
+        for row in class_rows[:8]:
             player = clean(row.get("player") or row.get("char")) or "-"
             position = signup_positions.get(id(row), 0)
             po_status = clean(row.get("poApprovalStatus") or row.get("po_approval_status")).lower()
