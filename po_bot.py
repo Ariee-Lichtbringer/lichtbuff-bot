@@ -363,7 +363,10 @@ def clean(value):
 
 
 def normalize_raid(value):
-    text = clean(value).upper().replace(" ", "").replace("-", "")
+    # Discord-Titel enthalten je nach Vorlage Leerzeichen, Bindestriche oder
+    # Apostrophe (z. B. AHN'QIRAJ 20). Für die Raid-Zuordnung werden nur
+    # Buchstaben und Zahlen berücksichtigt.
+    text = re.sub(r"[^A-Z0-9]+", "", clean(value).upper())
     if text in {"ZGMITTWOCH", "ZULGURUBMITTWOCH"}:
         return "ZG-MITTWOCH"
     if text in {"ZGPRIME", "ZULGURUBPRIME"}:
@@ -376,7 +379,7 @@ def normalize_raid(value):
         return "BWL"
     if text in {"AQ", "AHNQIRAJ", "AHNQIRAJ40"}:
         return "AQ40"
-    if text in {"AQ20", "RUINSOFAHNQIRAJ"}:
+    if text in {"AQ20", "AHNQIRAJ20", "RUINSOFAHNQIRAJ"}:
         return "AQ20"
     if text in {"ZULGURUB", "ZG20"}:
         return "ZG"
@@ -1460,7 +1463,13 @@ async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id
     if not channel_id or not message_id:
         return "missing_message"
     channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
-    message = await channel.fetch_message(int(message_id))
+    try:
+        message = await channel.fetch_message(int(message_id))
+    except discord.NotFound:
+        # Die gespeicherte ID kann auf einen inzwischen gelöschten alten
+        # Raid-Helper-/Bot-Post zeigen. Der Channel-Refresh sucht danach den
+        # aktuellen eigenen Anmelder und verknüpft ihn neu.
+        return "missing_message"
     # Discord erlaubt nur dem ursprünglichen Autor, eine Nachricht zu ändern.
     # Alte Raidanmelder können noch auf eine Nachricht des früheren Hauptbots
     # zeigen. Solche Queue-Aufträge dürfen nicht endlos erneut versucht werden,
@@ -5734,7 +5743,7 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                         )
                         if refreshed is True:
                             raid_refreshed += 1
-                        elif refreshed == "foreign_message":
+                        elif refreshed in {"foreign_message", "missing_message"}:
                             old_message = None
                             try:
                                 channel = client.get_channel(int(raid_channel_id)) or await client.fetch_channel(int(raid_channel_id))
@@ -5777,6 +5786,13 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                                 if refreshed is True:
                                     raid_refreshed += 1
                                     continue
+                            # Fehlt nur eine alte Nachricht, aber es gibt in
+                            # diesem Channel keinen passenden eigenen Post,
+                            # wird hier kein fremder Raid (z. B. NAXX im
+                            # AQ20-Channel) neu gepostet.
+                            if refreshed == "missing_message":
+                                skipped += 1
+                                continue
                             posted = await post_raid_announcement_by_id(
                                 clean(raid.get("raidId") or raid.get("id")),
                                 raid_channel_id,
@@ -5827,6 +5843,9 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                 try:
                     await refresh_po_message(client, payload)
                     po_refreshed += 1
+                except discord.NotFound:
+                    # Gelöschte historische PO-Posts sind kein Refresh-Fehler.
+                    skipped += 1
                 except Exception as error:
                     errors.append(f"PO {clean(payload.get('title') or payload.get('postKey'))}: {error}")
 
