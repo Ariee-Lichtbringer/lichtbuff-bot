@@ -1562,7 +1562,7 @@ async def edit_raid_signup_message_from_helper(raid, helper, origin_channel_id=N
     print(f"Raidanmelder direkt aktualisiert: {clean(fresh_raid.get('raidId') or fresh_raid.get('id'))} mit {raid_signup_row_count(helper)} Anmeldung(en).")
 
 
-async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None):
+async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None, force_new=False):
     payload = payload or {}
     helper = await get_raid_helper_for_refresh(payload or clean(raid_id))
     fallback_helper = raid_helper_snapshot_from_payload(payload) if payload else {}
@@ -1587,7 +1587,7 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None):
     if not channel_id:
         raise RuntimeError("Raid-Ankuendigung: Kein Channel hinterlegt.")
     channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
-    existing_message_id = clean(
+    existing_message_id = "" if force_new else clean(
         payload.get("messageId")
         or payload.get("discordMessageId")
         or raid.get("discordMessageId")
@@ -5672,6 +5672,7 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
     channel_id = clean(getattr(interaction, "channel_id", ""))
     kind = clean(refresh_kind).lower() or "alle"
     raid_refreshed = 0
+    raid_replaced = 0
     po_refreshed = 0
     skipped = 0
     errors = []
@@ -5700,6 +5701,30 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                         )
                         if refreshed is True:
                             raid_refreshed += 1
+                        elif refreshed == "foreign_message":
+                            old_message = None
+                            try:
+                                channel = client.get_channel(int(raid_channel_id)) or await client.fetch_channel(int(raid_channel_id))
+                                old_message = await channel.fetch_message(int(message_id))
+                            except Exception:
+                                old_message = None
+                            posted = await post_raid_announcement_by_id(
+                                clean(raid.get("raidId") or raid.get("id")),
+                                raid_channel_id,
+                                raid,
+                                force_new=True,
+                            )
+                            if posted is True:
+                                raid_replaced += 1
+                                if old_message is not None:
+                                    try:
+                                        await old_message.delete()
+                                    except (discord.Forbidden, discord.NotFound):
+                                        errors.append(
+                                            f"Alter Post für {clean(raid.get('raidName') or raid.get('raid'))} konnte nicht entfernt werden."
+                                        )
+                            else:
+                                skipped += 1
                         else:
                             skipped += 1
                     except Exception as error:
@@ -5738,6 +5763,7 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
 
         return {
             "raid": raid_refreshed,
+            "replaced": raid_replaced,
             "po": po_refreshed,
             "skipped": skipped,
             "errors": errors,
@@ -5757,12 +5783,15 @@ async def anmelder_refresh(interaction, was: str = "alle"):
     await interaction.response.defer(ephemeral=True, thinking=True)
     result = await refresh_signup_posts_in_channel(interaction, was)
     raid_count = int(result.get("raid") or 0)
+    replaced = int(result.get("replaced") or 0)
     po_count = int(result.get("po") or 0)
     skipped = int(result.get("skipped") or 0)
     errors = result.get("errors") or []
-    total = raid_count + po_count
+    total = raid_count + replaced + po_count
     if total:
         text = f"✅ Aktualisiert: **{raid_count} Raidanmelder** und **{po_count} PO-Anmelder**."
+        if replaced:
+            text += f" **{replaced} alter Raidanmelder** wurde durch die aktuelle Bot-Version ersetzt."
     else:
         text = "ℹ️ In diesem Channel wurden keine passenden Anmelder gefunden."
     if skipped:
