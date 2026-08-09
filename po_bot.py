@@ -1493,6 +1493,24 @@ async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None,
             getattr(interaction, "guild", None),
             payload_guild_slug(raid or {})
         )
+        # Der tatsächlich benutzte PO-Bot-Anmelder ist ab jetzt die einzige
+        # aktive Discord-Quelle dieses Raids. Damit werden alte Raid-Helper-
+        # Nachrichten nicht mehr mit dem neuen Anmelder vermischt.
+        active_channel_id = clean(origin_channel_id or interaction.channel_id)
+        active_message_id = clean(origin_message_id or getattr(interaction.message, "id", ""))
+        if raid_lookup_id and active_channel_id and active_message_id:
+            await asyncio.to_thread(api_post, {
+                "action": "lichtbotSetRaidDiscordMessage",
+                "queueToken": QUEUE_TOKEN,
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
+                "raidId": raid_lookup_id,
+                "discordChannelId": active_channel_id,
+                "discordMessageId": active_message_id,
+            })
+            raid = dict(raid or {})
+            raid["discordChannelId"] = active_channel_id
+            raid["discordMessageId"] = active_message_id
         helper_queries = []
         if raid_lookup_id:
             helper_queries.append({"action": "getRaidHelper", "guild": guild_slug, "guildSlug": guild_slug, "raidId": raid_lookup_id, "playerPin": raid_lookup_id, "t": int(time.time())})
@@ -1634,6 +1652,17 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None, f
             "discordChannelId": channel_id,
             "discordMessageId": str(message.id)
         })
+        # Nach der Umstellung auf die neue Message-ID erneut laden: Der erste
+        # Snapshot kann noch alte Raid-Helper-Zeilen enthalten haben. Der
+        # zweite Snapshot wird bereits strikt auf den neuen PO-Bot-Post gefiltert.
+        fresh_helper = await get_raid_helper_for_refresh({
+            **raid,
+            "raidId": clean(raid.get("raidId") or raid.get("id") or raid_id),
+            "discordChannelId": channel_id,
+            "discordMessageId": str(message.id),
+        })
+        if fresh_helper and fresh_helper.get("success"):
+            await edit_raid_message_preserving_po(message, fresh_helper.get("raid") or raid, fresh_helper)
     return True
 
 
@@ -5712,6 +5741,42 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                                 old_message = await channel.fetch_message(int(message_id))
                             except Exception:
                                 old_message = None
+                            own_message = None
+                            try:
+                                wanted_raid = normalize_raid(raid.get("raid") or raid.get("raidName") or "").lower()
+                                wanted_date = clean(raid.get("raidDate") or raid.get("date"))
+                                channel = client.get_channel(int(raid_channel_id)) or await client.fetch_channel(int(raid_channel_id))
+                                async for candidate in channel.history(limit=100):
+                                    if not client.user or candidate.author.id != client.user.id or not candidate.embeds:
+                                        continue
+                                    embed = candidate.embeds[0]
+                                    title_key = normalize_raid(clean(embed.title)).lower()
+                                    field_text = " ".join(clean(field.value) for field in embed.fields)
+                                    date_matches = not wanted_date or wanted_date in field_text or format_raid_announcement_date(wanted_date) in field_text
+                                    if wanted_raid and wanted_raid in title_key and date_matches:
+                                        own_message = candidate
+                                        break
+                            except Exception as error:
+                                print(f"Eigener bestehender Raidanmelder konnte nicht gesucht werden: {error}")
+                            if own_message is not None:
+                                await asyncio.to_thread(api_post, {
+                                    "action": "lichtbotSetRaidDiscordMessage",
+                                    "queueToken": QUEUE_TOKEN,
+                                    "guild": guild_slug,
+                                    "guildSlug": guild_slug,
+                                    "raidId": clean(raid.get("raidId") or raid.get("id")),
+                                    "discordChannelId": raid_channel_id,
+                                    "discordMessageId": str(own_message.id),
+                                })
+                                refreshed = await refresh_raid_signup_message_by_id(
+                                    clean(raid.get("raidId") or raid.get("id")),
+                                    raid_channel_id,
+                                    str(own_message.id),
+                                    {**raid, "discordMessageId": str(own_message.id)},
+                                )
+                                if refreshed is True:
+                                    raid_refreshed += 1
+                                    continue
                             posted = await post_raid_announcement_by_id(
                                 clean(raid.get("raidId") or raid.get("id")),
                                 raid_channel_id,
