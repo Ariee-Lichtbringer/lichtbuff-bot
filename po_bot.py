@@ -5612,7 +5612,6 @@ class PoBot(discord.Client):
     async def setup_hook(self):
         self.add_view(NachtlootHelpView())
         self.bg_task = asyncio.create_task(po_queue_loop())
-        self.po_channel_signup_sync_task = asyncio.create_task(po_channel_signup_sync_loop())
         if TEST_GUILD_ID:
             guild = discord.Object(id=int(TEST_GUILD_ID))
             self.tree.copy_global_to(guild=guild)
@@ -5729,7 +5728,47 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                     "guildSlug": guild_slug,
                     "t": int(time.time()),
                 })
-                for raid in result.get("allRaids") or result.get("raids") or []:
+                active_raids = list(result.get("allRaids") or result.get("raids") or [])
+                # Zuerst die real vorhandenen eigenen Raidposts dieses
+                # Channels über Raidtyp + Datum zuordnen. Das repariert auch
+                # historisch falsche gespeicherte Channel-/Message-IDs.
+                discovered_messages = {}
+                try:
+                    channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+                    async for candidate in channel.history(limit=100):
+                        if not client.user or candidate.author.id != client.user.id or not candidate.embeds:
+                            continue
+                        embed = candidate.embeds[0]
+                        field_names = {clean(field.name).lower() for field in embed.fields}
+                        if not ({"slots", "gesamt angemeldet", "rollenverteilung"} & field_names):
+                            continue
+                        candidate_raid = normalize_raid(clean(embed.title)).lower()
+                        field_text = " ".join(clean(field.value) for field in embed.fields)
+                        for raid in active_raids:
+                            raid_key = normalize_raid(raid.get("raid") or raid.get("raidName") or "").lower()
+                            raid_date = clean(raid.get("raidDate") or raid.get("date"))
+                            if raid_key != candidate_raid:
+                                continue
+                            if raid_date and raid_date not in field_text and format_raid_announcement_date(raid_date) not in field_text:
+                                continue
+                            raid_id = clean(raid.get("raidId") or raid.get("id"))
+                            discovered_messages[raid_id] = candidate
+                            raid["discordChannelId"] = channel_id
+                            raid["discordMessageId"] = str(candidate.id)
+                            await asyncio.to_thread(api_post, {
+                                "action": "lichtbotSetRaidDiscordMessage",
+                                "queueToken": QUEUE_TOKEN,
+                                "guild": guild_slug,
+                                "guildSlug": guild_slug,
+                                "raidId": raid_id,
+                                "discordChannelId": channel_id,
+                                "discordMessageId": str(candidate.id),
+                            })
+                            break
+                except Exception as error:
+                    print(f"Raidanmelder im aktuellen Channel konnten nicht vorab zugeordnet werden: {error}")
+
+                for raid in active_raids:
                     raid_channel_id = clean(raid.get("discordChannelId") or raid.get("discord_channel_id"))
                     message_id = clean(raid.get("discordMessageId") or raid.get("discord_message_id"))
                     if raid_channel_id != channel_id or not message_id:
@@ -6506,15 +6545,8 @@ async def po_channel_signup_sync_loop():
 
 
 @client.event
-async def on_message_edit(before, after):
-    if getattr(getattr(after, "author", None), "bot", False):
-        await sync_foreign_raid_helper_message(after)
-
-
-@client.event
 async def on_message(message):
     if message.author.bot:
-        await sync_foreign_raid_helper_message(message)
         return
     text = clean(getattr(message, "content", ""))
     lower = text.lower()
