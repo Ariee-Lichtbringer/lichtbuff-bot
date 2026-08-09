@@ -351,6 +351,10 @@ user_classes = {}
 class_emoji_cache = {}
 spec_emoji_cache = {}
 item_emoji_cache = {}
+# Ein Refresh darf Anmelder erst rendern, nachdem Discord die Application-
+# Emojis geliefert hat. Sonst werden kurzzeitig Unicode-Ersatzsymbole in die
+# Nachricht geschrieben und bleiben dort bis zum nächsten Refresh stehen.
+emoji_cache_ready = asyncio.Event()
 RAID_SIGNUP_DM_CACHE = {}
 p0plus_cache = {}
 P0PLUS_CACHE_SECONDS = int(os.getenv("PO_BOT_P0PLUS_CACHE_SECONDS", "60") or "60")
@@ -981,13 +985,25 @@ def signup_spec_from_note(note, role=""):
     return raw or clean(role)
 
 
+def signup_spec_for_row(row):
+    """Liest die Skillung aus allen von Website und Bot verwendeten Feldern."""
+    row = row or {}
+    explicit = clean(
+        row.get("specialization")
+        or row.get("specialisation")
+        or row.get("spec")
+        or row.get("skillung")
+    )
+    return explicit or signup_spec_from_note(row.get("note"), row.get("role"))
+
+
 def infer_signup_role(spec_text):
     text = clean(spec_text).lower()
     if any(word in text for word in ["multi char", "multi-char", "multichar", "mehrere chars"]):
         return "multi"
     if any(word in text for word in ["tank", "prot", "schutz", "def"]):
         return "tank"
-    if any(word in text for word in ["heal", "heiler", "holy", "heilig", "resto", "diszi", "discipline"]):
+    if any(word in text for word in ["heal", "heiler", "heilung", "holy", "heilig", "resto", "wiederherstellung", "diszi", "discipline"]):
         return "heal"
     return "dd"
 
@@ -1007,7 +1023,7 @@ def signup_spec_icon_key(spec_text, role="", class_name=""):
         return "holy"
     if any(word in text for word in ["schatten", "shadow"]):
         return "shadow"
-    if any(word in text for word in ["heal", "heiler", "resto", "restoration"]):
+    if any(word in text for word in ["heal", "heiler", "heilung", "resto", "restoration", "wiederherstellung"]):
         return "heal"
     checks = [
         ("arms", ["arms", "waffen"]),
@@ -1025,8 +1041,8 @@ def signup_spec_icon_key(spec_text, role="", class_name=""):
         ("survival", ["survival"]),
         ("marksman", ["marksman", "marksmanship"]),
         ("beastmaster", ["beastmaster", "beast mastery", "bm"]),
-        ("feral", ["feral"]),
-        ("balance", ["balance", "eule", "moonkin"]),
+        ("feral", ["feral", "wildheit"]),
+        ("balance", ["balance", "eule", "moonkin", "gleichgewicht"]),
         ("elemental", ["elemental", "ele"]),
         ("enhancement", ["enhancement", "enh"]),
     ]
@@ -1045,7 +1061,7 @@ def signup_spec_icon(spec_text, role="", class_name=""):
         return SPEC_EMOJI_FALLBACKS[icon_key]
     if any(word in text for word in ["tank", "prot", "schutz", "def"]):
         return SPEC_EMOJI_FALLBACKS["tank"]
-    if any(word in text for word in ["heal", "heiler", "holy", "resto", "restoration", "diszi"]):
+    if any(word in text for word in ["heal", "heiler", "heilung", "holy", "resto", "restoration", "wiederherstellung", "diszi"]):
         return SPEC_EMOJI_FALLBACKS["heal"]
     if any(word in text for word in ["fire", "feuer", "flamme"]):
         return "🔥"
@@ -1117,7 +1133,7 @@ def add_raid_signup_roster_fields(embed, helper):
 
     def compact_signup_role(row):
         role = clean(row.get("role")).lower()
-        spec = signup_spec_from_note(row.get("note"), role)
+        spec = signup_spec_for_row(row)
         resolved_role = role if role in {"tank", "heal", "dd"} else infer_signup_role(spec)
         if resolved_role in {"tank", "heal"}:
             return resolved_role
@@ -1125,7 +1141,7 @@ def add_raid_signup_roster_fields(embed, helper):
         spec_key = clean(spec).lower()
         if cls in {"Mage", "Warlock", "Hunter", "Priest"}:
             return "ranged"
-        if cls == "Druid" and any(value in spec_key for value in ("balance", "eule", "moonkin")):
+        if cls == "Druid" and any(value in spec_key for value in ("balance", "eule", "moonkin", "gleichgewicht")):
             return "ranged"
         if cls == "Shaman" and any(value in spec_key for value in ("elemental", " ele", "ele ")):
             return "ranged"
@@ -1165,7 +1181,7 @@ def add_raid_signup_roster_fields(embed, helper):
     raid_key = normalize_raid(raid.get("raid") or "").lower()
     for row in active_rows:
         role = clean(row.get("role")).lower()
-        resolved_role = role if role in {"tank", "heal", "dd"} else infer_signup_role(signup_spec_from_note(row.get("note"), role))
+        resolved_role = role if role in {"tank", "heal", "dd"} else infer_signup_role(signup_spec_for_row(row))
         group = "Tank" if resolved_role == "tank" else canonical_signup_class(row.get("className") or row.get("klasse"))
         grouped.setdefault(group, []).append(row)
     order = ["Tank", "Warrior", "Druid", "Paladin", "Rogue", "Hunter", "Priest", "Mage", "Warlock", "Shaman", "Ohne Klasse"]
@@ -1207,7 +1223,7 @@ def add_raid_signup_roster_fields(embed, helper):
                 prio_icon = f" {custom_emoji('beutelilia', '🟣')}"
             else:
                 prio_icon = ""
-            spec = signup_spec_from_note(row.get("note"), row.get("role")) or "Flex"
+            spec = signup_spec_for_row(row) or "Flex"
             star = " ★" if any(
                 row.get(key) is True or clean(row.get(key)).lower() in {"1", "true", "yes", "ja", "freigegeben"}
                 for key in ("p0Released", "poReleased", "p0PlusReleased", "poPlusReleased")
@@ -5335,6 +5351,9 @@ async def po_queue_loop():
     print(f"PO-Bot Queue aktiv: guild={GUILD_SLUG}, api={API_URL}, pruefe alle {QUEUE_CHECK_SECONDS} Sekunden.")
     while not client.is_closed():
         try:
+            # on_ready lädt zuerst die App-Emojis. Ohne diese Sperre kann ein
+            # Queue-Refresh die Nachricht vorher mit Ersatzsymbolen ersetzen.
+            await emoji_cache_ready.wait()
             await refresh_guild_registry()
             result = await asyncio.to_thread(api_get, {
                 "action": "lichtbotGetQueueAllGuilds",
@@ -5700,21 +5719,28 @@ async def on_ready():
     if not hasattr(client, "discord_channel_sync_started"):
         client.discord_channel_sync_started = True
         client.loop.create_task(discord_channel_sync_loop())
-    found_classes, found_specs, found_items = await refresh_emoji_cache()
+    emoji_cache_ready.clear()
+    found_classes, found_specs, found_items = {}, {}, {}
+    try:
+        found_classes, found_specs, found_items = await refresh_emoji_cache()
     # Der PO-Anmelder und der Raidanmelder verwenden denselben Emoji-Cache.
     # Fehlen in der PO-Bot-App noch Klassen-/Skillungsbilder, werden sie beim
     # Start einmalig wie die Itemicons ergänzt und anschließend neu geladen.
-    if len(found_classes) < len(CLASS_EMOJI_NAME_ALIASES) or len(found_specs) < len(SPEC_EMOJI_NAME_ALIASES):
-        try:
-            emoji_sync = await sync_raid_application_emojis()
-            found_classes, found_specs, found_items = await refresh_emoji_cache()
-            print(
-                "PO Raid-Emojis automatisch synchronisiert: "
-                f"{len(emoji_sync['created'])} neu, {len(emoji_sync['skipped'])} vorhanden, "
-                f"{len(emoji_sync['failed'])} Fehler."
-            )
-        except Exception as error:
-            print(f"PO Raid-Emoji-Autosync übersprungen: {error}")
+        if len(found_classes) < len(CLASS_EMOJI_NAME_ALIASES) or len(found_specs) < len(SPEC_EMOJI_NAME_ALIASES):
+            try:
+                emoji_sync = await sync_raid_application_emojis()
+                found_classes, found_specs, found_items = await refresh_emoji_cache()
+                print(
+                    "PO Raid-Emojis automatisch synchronisiert: "
+                    f"{len(emoji_sync['created'])} neu, {len(emoji_sync['skipped'])} vorhanden, "
+                    f"{len(emoji_sync['failed'])} Fehler."
+                )
+            except Exception as error:
+                print(f"PO Raid-Emoji-Autosync übersprungen: {error}")
+    finally:
+        # Auch bei einem vorübergehenden Discord-Fehler darf der Bot nicht
+        # blockieren; dann greifen weiterhin die vorhandenen Ersatzsymbole.
+        emoji_cache_ready.set()
     print(f"PO Klassenemojis gefunden: {', '.join(sorted(found_classes.keys())) or 'keine'}")
     print(f"PO Skill-Emojis gefunden: {', '.join(sorted(found_specs.keys())) or 'keine'}")
     print(f"PO Item-Emojis gefunden: {len(found_items)}")
@@ -5961,6 +5987,7 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
 ])
 async def anmelder_refresh(interaction, was: str = "alle"):
     await interaction.response.defer(ephemeral=True, thinking=True)
+    await emoji_cache_ready.wait()
     result = await refresh_signup_posts_in_channel(interaction, was)
     raid_count = int(result.get("raid") or 0)
     replaced = int(result.get("replaced") or 0)
