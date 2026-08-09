@@ -1861,6 +1861,39 @@ class RaidSignupCharacterView(discord.ui.View):
     def __init__(self, raid, class_name, spec_label, spec_key, player_pin, characters, origin_channel_id=None, origin_message_id=None):
         super().__init__(timeout=180)
         self.add_item(RaidSignupCharacterSelect(raid, class_name, spec_label, spec_key, player_pin, characters, origin_channel_id, origin_message_id))
+        self.add_item(RaidSignupAccountSwitchButton(
+            raid,
+            class_name,
+            spec_label,
+            spec_key,
+            origin_channel_id,
+            origin_message_id,
+        ))
+
+
+class RaidSignupAccountSwitchButton(discord.ui.Button):
+    def __init__(self, raid, class_name, spec_label, spec_key, origin_channel_id=None, origin_message_id=None):
+        super().__init__(
+            label="Anderen LichtLoot-Account verwenden",
+            style=discord.ButtonStyle.secondary,
+            emoji="🔄",
+        )
+        self.raid = raid
+        self.class_name = class_name
+        self.spec_label = spec_label
+        self.spec_key = spec_key
+        self.origin_channel_id = origin_channel_id
+        self.origin_message_id = origin_message_id
+
+    async def callback(self, interaction):
+        await interaction.response.send_modal(RaidSignupPinModal(
+            self.raid,
+            self.class_name,
+            self.spec_label,
+            self.spec_key,
+            self.origin_channel_id,
+            self.origin_message_id,
+        ))
 
 
 class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
