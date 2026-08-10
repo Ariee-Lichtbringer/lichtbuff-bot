@@ -633,6 +633,33 @@ def meeting_embed_set_status(embed, character_name, class_name, status):
     meeting_embed_append(embed, label, line)
 
 
+def normalize_meeting_signup_fields(embed):
+    """Merge legacy signups and keep the three meeting states in a stable order."""
+    field_order = ["✅ Teilnehmen", "❔ Vielleicht", "❌ Nicht teilnehmen"]
+    collected = {name: [] for name in field_order}
+    remove_indexes = []
+    seen_names = set()
+    # Read from newest fields first so an explicit modern status wins over legacy "Anmeldungen".
+    for index in range(len(embed.fields) - 1, -1, -1):
+        field = embed.fields[index]
+        target = "✅ Teilnehmen" if field.name == "Anmeldungen" else field.name
+        if target not in collected:
+            continue
+        remove_indexes.append(index)
+        for line in field.value.splitlines():
+            match = re.search(r"\*\*([^*]+)\*\*", line)
+            key = clean(match.group(1) if match else line).lower()
+            if not key or key in seen_names:
+                continue
+            seen_names.add(key)
+            collected[target].append(line)
+    for index in sorted(remove_indexes, reverse=True):
+        embed.remove_field(index)
+    for name in field_order:
+        if collected[name]:
+            embed.add_field(name=name, value="\n".join(reversed(collected[name]))[:1024], inline=False)
+
+
 def meeting_message_has_signup(message):
     return any(
         getattr(item, "custom_id", "") == "lichtloot:meeting:signup"
@@ -704,6 +731,7 @@ class FreeMeetingSignupModal(discord.ui.Modal, title="Zum Offi-Meeting anmelden"
         name = clean(character.get("name"))
         class_name = clean(character.get("className"))
         meeting_embed_set_status(embed, name, class_name, self.status)
+        normalize_meeting_signup_fields(embed)
         await target_message.edit(embed=embed, view=FreeMeetingView())
         status_label = {"yes":"nimmt teil", "maybe":"ist vielleicht dabei", "no":"nimmt nicht teil"}.get(self.status, "nimmt teil")
         await interaction.followup.send(f"✅ Gespeichert: **{name}** {status_label}.", ephemeral=True)
@@ -954,12 +982,15 @@ async def post_free_discord_embed_from_queue(payload):
             for field in old_embed.fields:
                 if field.name in preserved_names:
                     kept_lines = [line for line in field.value.splitlines() if not any(marker in line.lower() for marker in preset_markers)]
+                    target_field = "✅ Teilnehmen" if field.name == "Anmeldungen" else field.name
                     for line in kept_lines:
-                        meeting_embed_append(embed, field.name, line)
+                        meeting_embed_append(embed, target_field, line)
+            normalize_meeting_signup_fields(embed)
             await message.edit(embed=embed, view=meeting_view)
         if message is None:
             raise RuntimeError("Kein bestehender Offi-Meeting-Post mit dieser Überschrift im gewählten Channel gefunden.")
     else:
+        normalize_meeting_signup_fields(embed)
         message = await send_silent(channel, embed=embed, view=meeting_view)
     try:
         await asyncio.to_thread(api_post, {
