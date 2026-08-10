@@ -782,6 +782,71 @@ async def post_free_discord_embed_from_queue(payload):
     if channel is None:
         channel = await client.fetch_channel(int(channel_id))
 
+    discover_existing = payload.get("discoverExisting") is True or clean(payload.get("discoverExisting")).lower() == "true"
+    if discover_existing:
+        found = None
+        async for candidate in channel.history(limit=100):
+            if not candidate.embeds or not client.user or candidate.author.id != client.user.id:
+                continue
+            current_embed = candidate.embeds[0]
+            component_ids = {
+                clean(getattr(item, "custom_id", ""))
+                for row in (candidate.components or [])
+                for item in (getattr(row, "children", None) or [])
+            }
+            if "lichtloot:meeting:topic" in component_ids or "meeting" in clean(current_embed.title).lower():
+                found = candidate
+                break
+        if found is None:
+            raise RuntimeError("Im ausgewählten Channel wurde kein Offi-Meeting-Post des Bots gefunden.")
+        current_embed = found.embeds[0]
+        imported = {
+            "embedType": "meeting",
+            "title": clean(current_embed.title),
+            "description": clean(current_embed.description),
+            "sectionTitle": "Tagesordnung",
+            "points": [],
+            "meetingDate": "",
+            "meetingTime": "",
+            "meetingLocation": "",
+            "meetingTopicPrompt": "Du möchtest ein weiteres Thema besprechen?",
+            "meetingExtra": "",
+            "meetingSignup": True,
+            "meetingNotifyTargets": [],
+            "meetingPresetSignups": [],
+            "footer": clean(getattr(current_embed.footer, "text", "")),
+            "color": "gold",
+            "channelId": str(channel.id),
+        }
+        for field in current_embed.fields:
+            if field.name == "Termin":
+                date_match = re.search(r"Datum:\*?\*?\s*([^\n]+)", field.value)
+                time_match = re.search(r"Uhrzeit:\*?\*?\s*([^\n]+)", field.value)
+                location_match = re.search(r"Ort:\*?\*?\s*([^\n]+)", field.value)
+                imported["meetingDate"] = clean(date_match.group(1)) if date_match else ""
+                imported["meetingTime"] = clean(time_match.group(1)).removesuffix(" Uhr") if time_match else ""
+                imported["meetingLocation"] = clean(location_match.group(1)) if location_match else ""
+            elif field.name == "Weitere Informationen":
+                imported["meetingExtra"] = clean(field.value)
+            elif field.name == "Themen hinzufügen":
+                imported["meetingTopicPrompt"] = clean(field.value)
+            elif field.name not in {"Zusätzliche Themen", "Anmeldungen", "✅ Teilnehmen", "❔ Vielleicht", "❌ Nicht teilnehmen", "\u200b"}:
+                imported["sectionTitle"] = clean(field.name) or "Tagesordnung"
+                imported["points"].extend([re.sub(r"^\s*(?:\d+[.)]|•)\s*", "", line).strip() for line in field.value.splitlines() if clean(line)])
+        await asyncio.to_thread(api_post, {
+            "action": "lichtbotSetFreeDiscordEmbedMessage",
+            "queueToken": QUEUE_TOKEN,
+            "embedType": "meeting",
+            "title": imported["title"],
+            "channelId": str(channel.id),
+            "messageId": str(found.id),
+            "jumpUrl": found.jump_url,
+            "meetingDate": imported["meetingDate"],
+            "meetingTime": imported["meetingTime"],
+            "postPayload": json.dumps(imported, ensure_ascii=False),
+        })
+        return True
+
     embed_type = clean(payload.get("embedType")).lower() or "custom"
     raw_points = payload.get("points") or []
     if isinstance(raw_points, str):
@@ -839,37 +904,68 @@ async def post_free_discord_embed_from_queue(payload):
     if embed_type == "meeting":
         topic_prompt = clean(payload.get("meetingTopicPrompt")) or "Du möchtest ein weiteres Thema besprechen?"
         embed.add_field(name="Themen hinzufügen", value=topic_prompt[:1024], inline=False)
+        preset_signups = list(payload.get("meetingPresetSignups") or [])
+        for entry in preset_signups:
+            if clean(entry.get("name")):
+                meeting_embed_set_status(embed, clean(entry.get("name")), clean(entry.get("className")), clean(entry.get("status")) or "yes")
     meeting_view = FreeMeetingView(signup=meeting_signup) if embed_type == "meeting" else None
     update_existing = payload.get("updateExisting") is True or clean(payload.get("updateExisting")).lower() == "true"
     message = None
     if update_existing:
+        requested_message_id = clean(payload.get("messageId") or payload.get("discordMessageId"))
+        if requested_message_id.isdigit():
+            try:
+                requested_message = await channel.fetch_message(int(requested_message_id))
+                if requested_message.author.id == client.user.id and requested_message.embeds:
+                    message = requested_message
+            except Exception as error:
+                print(f"Ausgewählter Offi-Meeting-Post nicht erreichbar ({requested_message_id}): {error}")
         latest_meeting = None
-        async for candidate in channel.history(limit=75):
-            if not candidate.embeds or not client.user or candidate.author.id != client.user.id:
-                continue
-            component_ids = {
-                clean(getattr(item, "custom_id", ""))
-                for row in (candidate.components or [])
-                for item in (getattr(row, "children", None) or [])
-            }
-            if "lichtloot:meeting:topic" not in component_ids:
-                continue
-            latest_meeting = latest_meeting or candidate
-            if clean(candidate.embeds[0].title) == clean(embed.title):
-                message = candidate
-                break
+        if message is None:
+            async for candidate in channel.history(limit=75):
+                if not candidate.embeds or not client.user or candidate.author.id != client.user.id:
+                    continue
+                component_ids = {
+                    clean(getattr(item, "custom_id", ""))
+                    for row in (candidate.components or [])
+                    for item in (getattr(row, "children", None) or [])
+                }
+                if "lichtloot:meeting:topic" not in component_ids:
+                    continue
+                latest_meeting = latest_meeting or candidate
+                if clean(candidate.embeds[0].title) == clean(embed.title):
+                    message = candidate
+                    break
         message = message or latest_meeting
         if message is not None:
             old_embed = message.embeds[0]
             preserved_names = {"Zusätzliche Themen", "Anmeldungen", "✅ Teilnehmen", "❔ Vielleicht", "❌ Nicht teilnehmen"}
+            preset_markers = {f"**{clean(entry.get('name')).lower()}**" for entry in (payload.get("meetingPresetSignups") or []) if clean(entry.get("name"))}
             for field in old_embed.fields:
                 if field.name in preserved_names:
-                    embed.add_field(name=field.name, value=field.value, inline=False)
+                    kept_lines = [line for line in field.value.splitlines() if not any(marker in line.lower() for marker in preset_markers)]
+                    for line in kept_lines:
+                        meeting_embed_append(embed, field.name, line)
             await message.edit(embed=embed, view=meeting_view)
         if message is None:
             raise RuntimeError("Kein bestehender Offi-Meeting-Post mit dieser Überschrift im gewählten Channel gefunden.")
     else:
         message = await send_silent(channel, embed=embed, view=meeting_view)
+    try:
+        await asyncio.to_thread(api_post, {
+            "action": "lichtbotSetFreeDiscordEmbedMessage",
+            "queueToken": QUEUE_TOKEN,
+            "embedType": embed_type,
+            "title": clean(embed.title),
+            "channelId": str(channel.id),
+            "messageId": str(message.id),
+            "jumpUrl": message.jump_url,
+            "meetingDate": clean(payload.get("meetingDate")),
+            "meetingTime": clean(payload.get("meetingTime")),
+            "postPayload": json.dumps(payload, ensure_ascii=False),
+        })
+    except Exception as error:
+        print(f"Offi-Meeting Post konnte nicht in LichtLoot gespeichert werden: {error}")
     if embed_type == "meeting" and not update_existing:
         try:
             await send_free_meeting_dms(payload, message, embed, signup=meeting_signup)
