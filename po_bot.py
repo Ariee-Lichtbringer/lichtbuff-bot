@@ -2728,8 +2728,17 @@ def ensure_payload_lichtloot_raid(payload):
         "raidId": payload.get("postKey") or "",
     })
     raid_pin = clean(result.get("playerPin") or result.get("prioPin") or prio_pin)
+    canonical_raid_id = clean(
+        result.get("raidId")
+        or result.get("id")
+        or payload.get("raidId")
+        or payload.get("postKey")
+        or raid_pin
+    )
     return payload_with_lichtloot_id_from_sources({
         **payload,
+        "raidId": canonical_raid_id,
+        "lichtlootCanonicalRaidId": canonical_raid_id,
         "raidPin": raid_pin,
         "prioPin": raid_pin,
         "lichtlootRaidId": raid_pin,
@@ -5925,12 +5934,17 @@ async def sync_po_commands_for_connected_guilds():
     if slash_commands_synced_for_guilds:
         return
     slash_commands_synced_for_guilds = True
+    # In Produktion sind die Befehle global registriert. Alte, zusaetzlich auf
+    # einzelnen Servern registrierte Kopien werden entfernt, sonst zeigt
+    # Discord denselben Befehl doppelt an.
+    if TEST_GUILD_ID:
+        return
     for guild in getattr(client, "guilds", []) or []:
         try:
             guild_object = discord.Object(id=int(guild.id))
-            client.tree.copy_global_to(guild=guild_object)
+            client.tree.clear_commands(guild=guild_object)
             synced = await client.tree.sync(guild=guild_object)
-            print(f"PO Slash-Commands fuer Discord-Server {guild.name} ({guild.id}) synchronisiert: {len(synced)}")
+            print(f"Alte lokale PO Slash-Commands fuer {guild.name} ({guild.id}) entfernt: {len(synced)} verbleiben")
         except Exception as error:
             print(f"PO Slash-Commands fuer Discord-Server {getattr(guild, 'id', '?')} konnten nicht synchronisiert werden: {error}")
 
@@ -6233,6 +6247,106 @@ async def anmelder_refresh(interaction, was: str = "alle"):
     await interaction.followup.send(text, ephemeral=True)
 
 
+def slash_embed_points(value):
+    return [clean(entry) for entry in re.split(r"[\n|]+", clean(value)) if clean(entry)]
+
+
+@client.tree.command(name="raid_anmelder", description="Erstellt einen Raidanmelder und speichert ihn in LichtLoot.")
+@app_commands.describe(
+    raid="Raid, z. B. MC, BWL, AQ20, AQ40, ZG oder NAXX",
+    datum="Raid-Datum, z. B. 23.08.2026",
+    uhrzeit="Startzeit, z. B. 19:45",
+    titel="Optionaler eigener Titel",
+    gesamt="Maximale Spielerzahl",
+    tanks="Anzahl Tankplaetze",
+    heiler="Anzahl Heilerplaetze",
+    beschreibung="Optionaler Text im Anmelder",
+)
+async def raid_anmelder(
+    interaction: discord.Interaction,
+    raid: str,
+    datum: str,
+    uhrzeit: str,
+    titel: str = "",
+    gesamt: int = 20,
+    tanks: int = 2,
+    heiler: int = 4,
+    beschreibung: str = "",
+):
+    await refresh_guild_registry()
+    token = CURRENT_GUILD_SLUG.set(guild_slug_for_discord_server(interaction.guild, GUILD_SLUG))
+    try:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        raid_key = normalize_raid(raid)
+        post_key = f"{slug(raid_key)}-raid-{datetime.now().strftime('%Y%m%d-%H%M')}-{str(int(time.time()))[-4:]}"
+        guild_info = GUILD_REGISTRY.get(current_guild_slug()) or {}
+        total = max(1, int(gesamt))
+        tank_slots = max(0, int(tanks))
+        heal_slots = max(0, int(heiler))
+        payload = {
+            "guildSlug": current_guild_slug(), "postKey": post_key, "raidId": post_key,
+            "raid": raid_key, "raidName": display_raid(raid_key),
+            "date": clean(datum), "raidDate": clean(datum),
+            "time": clean(uhrzeit), "raidTime": clean(uhrzeit),
+            "title": clean(titel) or display_raid(raid_key),
+            "description": clean(beschreibung),
+            "channelId": str(interaction.channel_id), "sourceChannelId": str(interaction.channel_id),
+            "targetChannelId": str(interaction.channel_id), "messageId": "",
+            "server": clean(guild_info.get("server")) or "Everlook",
+            "guildName": clean(guild_info.get("name")) or current_guild_slug(),
+            "createdBy": clean(getattr(interaction.user, "display_name", "")) or "Gildenleitung",
+            "status": "offen", "maxPlayers": total, "tankSlots": tank_slots,
+            "healSlots": heal_slots, "ddSlots": max(0, total - tank_slots - heal_slots),
+        }
+        payload = await asyncio.to_thread(ensure_payload_lichtloot_raid, payload)
+        raid_id = clean(payload.get("raidId") or payload.get("lichtlootCanonicalRaidId") or post_key)
+        posted = await post_raid_announcement_by_id(raid_id, interaction.channel_id, payload, force_new=True)
+        if not posted:
+            raise RuntimeError("Der Raidanmelder konnte nicht in Discord gepostet werden.")
+        await interaction.followup.send(
+            f"✅ Raidanmelder erstellt und in LichtLoot gespeichert.\n"
+            f"Prio-PIN: `{payload_lichtloot_raid_pin(payload)}` · Lead-PIN: `{clean(payload.get('leadPin'))}`",
+            ephemeral=True,
+        )
+    except Exception as error:
+        await interaction.followup.send(f"❌ Raidanmelder konnte nicht erstellt werden: {error}", ephemeral=True)
+    finally:
+        CURRENT_GUILD_SLUG.reset(token)
+
+
+async def post_slash_embed(interaction, payload, success_text):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        posted = await post_free_discord_embed_from_queue({**payload, "channelId": str(interaction.channel_id)})
+        await interaction.followup.send(success_text if posted else "❌ Das Embed konnte nicht gepostet werden.", ephemeral=True)
+    except Exception as error:
+        await interaction.followup.send(f"❌ Das Embed konnte nicht gepostet werden: {error}", ephemeral=True)
+
+
+@client.tree.command(name="abstimmung_erstellen", description="Erstellt eine Abstimmung mit anklickbaren Reaktionen.")
+async def abstimmung_erstellen(interaction: discord.Interaction, thema: str, antworten: str, beschreibung: str = "", farbe: str = "purple"):
+    points = slash_embed_points(antworten)
+    if len(points) < 2:
+        await interaction.response.send_message("Bitte mindestens zwei Antworten mit | trennen.", ephemeral=True)
+        return
+    await post_slash_embed(interaction, {"embedType": "poll", "title": thema, "description": beschreibung, "points": points, "color": farbe}, "✅ Abstimmung erstellt.")
+
+
+@client.tree.command(name="offimeeting_erstellen", description="Erstellt eine strukturierte Einladung zum Offimeeting.")
+async def offimeeting_erstellen(interaction: discord.Interaction, titel: str, datum: str, uhrzeit: str, tagesordnung: str, ort: str = "Discord", beschreibung: str = "", farbe: str = "gold"):
+    await post_slash_embed(interaction, {"embedType": "meeting", "title": titel, "description": beschreibung, "meetingDate": datum, "meetingTime": uhrzeit, "meetingLocation": ort, "points": slash_embed_points(tagesordnung), "color": farbe}, "✅ Offimeeting erstellt.")
+
+
+@client.tree.command(name="ankuendigung_erstellen", description="Erstellt eine gegliederte Ankündigung.")
+async def ankuendigung_erstellen(interaction: discord.Interaction, titel: str, text: str, punkte: str = "", farbe: str = "sky"):
+    await post_slash_embed(interaction, {"embedType": "custom", "title": titel, "description": text, "points": slash_embed_points(punkte), "color": farbe}, "✅ Ankündigung erstellt.")
+
+
+@client.tree.command(name="embed_erstellen", description="Erstellt ein frei gestaltbares Discord-Embed.")
+async def embed_erstellen(interaction: discord.Interaction, titel: str, text: str = "", felder: str = "", farbe: str = "sky", fusszeile: str = ""):
+    await post_slash_embed(interaction, {"embedType": "custom", "title": titel, "description": text, "points": slash_embed_points(felder), "color": farbe, "footer": fusszeile}, "✅ Freies Embed erstellt.")
+
+
 @client.tree.command(name="po_anmelder", description="Erstellt einen PO-Anmelder im aktuellen Channel.")
 @app_commands.describe(
     raid="Raid, z. B. MC, BWL, AQ20, AQ40, ZG, NAXX",
@@ -6254,8 +6368,9 @@ async def po_anmelder(interaction, raid: str, datum: str, uhrzeit: str, titel: s
             "guildSlug": current_guild_slug(),
             "postKey": post_key,
             "raid": raid_key,
-            "date": clean(datum),
-            "time": clean(uhrzeit),
+            "raidName": display_raid(raid_key),
+            "date": clean(datum), "raidDate": clean(datum),
+            "time": clean(uhrzeit), "raidTime": clean(uhrzeit),
             "title": clean(titel) or f"{display_raid(raid_key)} PO-Anmelder",
             "channelId": str(interaction.channel_id),
             "sourceChannelId": str(interaction.channel_id),
@@ -6263,7 +6378,7 @@ async def po_anmelder(interaction, raid: str, datum: str, uhrzeit: str, titel: s
             "messageId": "",
             "server": clean(guild_info.get("server")) or "Everlook",
             "guildName": clean(guild_info.get("name")) or current_guild_slug(),
-            "createdBy": "Gildenleitung",
+            "createdBy": clean(getattr(interaction.user, "display_name", "")) or "Gildenleitung",
         }
         payload = await asyncio.to_thread(ensure_payload_lichtloot_raid, payload)
         items = await items_for_payload(payload)
@@ -6276,7 +6391,11 @@ async def po_anmelder(interaction, raid: str, datum: str, uhrzeit: str, titel: s
         save_state(state)
         client.add_view(PoView(payload, items, []), message_id=message.id)
         await edit_po_message(message, make_embed(payload, []), PoView(payload, items, []))
-        await interaction.followup.send(f"✅ PO-Anmelder erstellt: `{post_key}`", ephemeral=True)
+        await interaction.followup.send(
+            f"✅ PO-Anmelder erstellt und in LichtLoot gespeichert.\n"
+            f"Prio-PIN: `{payload_lichtloot_raid_pin(payload)}` · Lead-PIN: `{clean(payload.get('leadPin'))}`",
+            ephemeral=True,
+        )
     finally:
         CURRENT_GUILD_SLUG.reset(token)
 

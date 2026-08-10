@@ -11241,10 +11241,56 @@ async def handle_ticker_update(message):
         )
 
 
+async def remove_stale_po_signup_commands():
+    """Entfernt den alten /po_anmelder dieses Lichtbuff-Bots aus Discord."""
+    if getattr(client, "stale_po_signup_commands_removed", False):
+        return
+
+    application_id = int(
+        getattr(client, "application_id", 0)
+        or getattr(getattr(client, "user", None), "id", 0)
+        or 0
+    )
+    if not application_id:
+        return
+
+    removed = 0
+    try:
+        commands = await client.http.get_global_commands(application_id)
+        for command in commands or []:
+            if str(command.get("name") or "").strip().lower() != "po_anmelder":
+                continue
+            await client.http.delete_global_command(application_id, int(command["id"]))
+            removed += 1
+    except Exception as error:
+        print(f"Alter globaler /po_anmelder konnte nicht entfernt werden: {error}")
+
+    for guild in client.guilds:
+        try:
+            commands = await client.http.get_guild_commands(application_id, int(guild.id))
+            for command in commands or []:
+                if str(command.get("name") or "").strip().lower() != "po_anmelder":
+                    continue
+                await client.http.delete_guild_command(
+                    application_id,
+                    int(guild.id),
+                    int(command["id"]),
+                )
+                removed += 1
+        except Exception as error:
+            print(
+                f"Alter /po_anmelder in Gilde {guild.id} konnte nicht entfernt werden: {error}"
+            )
+
+    client.stale_po_signup_commands_removed = True
+    print(f"Veraltete Lichtbuff-/po_anmelder-Befehle entfernt: {removed}")
+
+
 @client.event
 async def on_ready():
     print(f"Bot online als {client.user}")
     await refresh_guild_registry()
+    await remove_stale_po_signup_commands()
     await sync_discord_roles_to_lichtloot()
     print(f"Überwache Ticker-Channels: {sorted(TICKER_CHANNEL_IDS)}")
     print("Postet Worldbuff-Uebersichten in den gildenabhaengig gespeicherten Worldbuff-Channel.")
