@@ -8115,6 +8115,7 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
         "p0_post_refresh",
         "po_rejection_notice",
         "po_approval_notice",
+        "free_discord_embed",
     }
     if update_type in po_bot_owned_types:
         print(f"{update_type} uebersprungen: ausschliesslich der PO-Bot ist zustaendig.")
@@ -8397,6 +8398,7 @@ async def lichtloot_queue_loop():
                             "p0_post_refresh",
                             "po_rejection_notice",
                             "po_approval_notice",
+                            "free_discord_embed",
                         }:
                             print(f"{railway_type} in Railway-Queue uebersprungen: separater PO-Bot ist zustaendig.")
                             continue

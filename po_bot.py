@@ -591,6 +591,83 @@ async def send_silent(channel, *args, **kwargs):
         return await channel.send(*args, **kwargs)
 
 
+FREE_DISCORD_EMBED_COLORS = {
+    "sky": 0x38BDF8,
+    "purple": 0x8B5CF6,
+    "gold": 0xFACC15,
+    "green": 0x22C55E,
+    "red": 0xEF4444,
+}
+
+
+async def post_free_discord_embed_from_queue(payload):
+    channel_id = clean(payload.get("channelId") or payload.get("discordChannelId"))
+    if not channel_id:
+        raise RuntimeError("Discord-Channel fuer das freie Embed fehlt.")
+    channel = client.get_channel(int(channel_id))
+    if channel is None:
+        channel = await client.fetch_channel(int(channel_id))
+
+    embed_type = clean(payload.get("embedType")).lower() or "custom"
+    raw_points = payload.get("points") or []
+    if isinstance(raw_points, str):
+        try:
+            raw_points = json.loads(raw_points)
+        except Exception:
+            raw_points = raw_points.splitlines()
+    points = [clean(point) for point in raw_points if clean(point)]
+    number_icons = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+
+    embed = discord.Embed(
+        title=clean(payload.get("title")) or None,
+        description=clean(payload.get("description")) or None,
+        color=FREE_DISCORD_EMBED_COLORS.get(clean(payload.get("color")).lower(), 0x38BDF8),
+    )
+    if embed_type == "meeting":
+        meeting_bits = []
+        if clean(payload.get("meetingDate")):
+            meeting_bits.append(f"📅 **Datum:** {clean(payload.get('meetingDate'))}")
+        if clean(payload.get("meetingTime")):
+            meeting_bits.append(f"🕒 **Uhrzeit:** {clean(payload.get('meetingTime'))} Uhr")
+        if clean(payload.get("meetingLocation")):
+            meeting_bits.append(f"📍 **Ort:** {clean(payload.get('meetingLocation'))}")
+        if meeting_bits:
+            embed.add_field(name="Termin", value="\n".join(meeting_bits), inline=False)
+
+    if points:
+        point_lines = [
+            f"{number_icons[index] if embed_type == 'poll' and index < len(number_icons) else '•'} {point}"
+            for index, point in enumerate(points)
+        ]
+        chunks, current = [], ""
+        for line in point_lines:
+            candidate = f"{current}\n{line}".strip()
+            if current and len(candidate) > 1000:
+                chunks.append(current)
+                current = line
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+        section_title = clean(payload.get("sectionTitle")) or (
+            "Antwortmöglichkeiten" if embed_type == "poll" else "Tagesordnung" if embed_type == "meeting" else "Inhalte"
+        )
+        for index, chunk in enumerate(chunks):
+            embed.add_field(name=section_title if index == 0 else "\u200b", value=chunk, inline=False)
+
+    footer = clean(payload.get("footer"))
+    if footer:
+        embed.set_footer(text=footer[:2048])
+    message = await send_silent(channel, embed=embed)
+    reactions = number_icons[: min(len(points), 10)] if embed_type == "poll" else (["✅", "❔", "❌"] if embed_type == "meeting" else [])
+    for reaction in reactions:
+        try:
+            await message.add_reaction(reaction)
+        except Exception as error:
+            print(f"Reaktion fuer freies Embed konnte nicht gesetzt werden: {error}")
+    return bool(message)
+
+
 RAID_SIGNUP_SPECS = {
     "Warrior": [("Waffen", "arms"), ("Furor", "fury"), ("Tank", "tank")],
     "Druid": [("Heilung", "heal"), ("Tank", "tank"), ("FeralDD", "feral"), ("Eule", "balance")],
@@ -5493,7 +5570,7 @@ async def po_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": QUEUE_TOKEN,
                 "limit": "50",
-                "types": "player_login_approval_notice,player_login_granted_notice,po_post,p0_post_refresh,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,loot_master_leadpin_notice,po_release_request_notice,po_release_granted_notice,po_rejection_notice,po_approval_notice,po_post_delete",
+                "types": "player_login_approval_notice,player_login_granted_notice,po_post,p0_post_refresh,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,loot_master_leadpin_notice,po_release_request_notice,po_release_granted_notice,po_rejection_notice,po_approval_notice,po_post_delete,free_discord_embed",
                 "t": int(time.time()),
             })
             if result.get("success"):
@@ -5511,6 +5588,7 @@ async def po_queue_loop():
                         "po_release_granted_notice",
                         "po_rejection_notice",
                         "po_approval_notice",
+                        "free_discord_embed",
                     }
                 ]
                 stale_delete_items = [item for item in items if clean(item.get("type")) == "po_post_delete"]
@@ -5550,6 +5628,15 @@ async def po_queue_loop():
                         if item_type == "player_login_granted_notice":
                             await send_player_login_granted_notice_from_queue(payload)
                             await resolve_queue_item(item.get("rowNumber"))
+                            continue
+                        if item_type == "free_discord_embed":
+                            sent = await post_free_discord_embed_from_queue(payload)
+                            await resolve_queue_item(item.get("rowNumber"))
+                            print(
+                                "Freies Discord-Embed "
+                                + ("gesendet" if sent else "konnte nicht gesendet werden")
+                                + f": {current_guild_slug()}:{payload.get('title') or payload.get('embedType') or '?'}"
+                            )
                             continue
                         if (
                             item_type == "raid_announcement_role_notice"
