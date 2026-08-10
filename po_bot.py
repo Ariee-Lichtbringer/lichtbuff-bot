@@ -600,6 +600,144 @@ FREE_DISCORD_EMBED_COLORS = {
 }
 
 
+def meeting_embed_append(embed, field_name, line):
+    """Append one entry to a meeting field while keeping Discord's field limit."""
+    current_index = next((index for index, field in enumerate(embed.fields) if field.name == field_name), None)
+    old_value = embed.fields[current_index].value if current_index is not None else ""
+    lines = [value for value in old_value.splitlines() if clean(value)]
+    normalized = clean(line).lower()
+    if any(clean(value).lower() == normalized for value in lines):
+        return False
+    new_value = "\n".join([*lines, line])[-1024:]
+    if current_index is None:
+        embed.add_field(name=field_name, value=new_value, inline=False)
+    else:
+        embed.set_field_at(current_index, name=field_name, value=new_value, inline=False)
+    return True
+
+
+def meeting_message_has_signup(message):
+    return any(
+        getattr(item, "custom_id", "") == "lichtloot:meeting:signup"
+        for row in (getattr(message, "components", None) or [])
+        for item in (getattr(row, "children", None) or [])
+    )
+
+
+class FreeMeetingTopicModal(discord.ui.Modal, title="Thema zum Offi-Meeting hinzufügen"):
+    topic = discord.ui.TextInput(label="Thema", placeholder="Was soll besprochen werden?", max_length=150)
+    details = discord.ui.TextInput(label="Freies Feld / Details", placeholder="Optional: Hintergrund oder gewünschtes Ergebnis", style=discord.TextStyle.paragraph, required=False, max_length=500)
+
+    async def on_submit(self, interaction):
+        if not interaction.message or not interaction.message.embeds:
+            await interaction.response.send_message("Das Meeting-Embed konnte nicht gefunden werden.", ephemeral=True)
+            return
+        embed = discord.Embed.from_dict(interaction.message.embeds[0].to_dict())
+        author = clean(getattr(interaction.user, "display_name", "")) or clean(interaction.user.name)
+        detail = clean(self.details.value)
+        line = f"• **{clean(self.topic.value)}** — {detail} _({author})_" if detail else f"• **{clean(self.topic.value)}** _({author})_"
+        if not meeting_embed_append(embed, "Zusätzliche Themen", line):
+            await interaction.response.send_message("Dieses Thema ist bereits eingetragen.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        await interaction.message.edit(embed=embed, view=FreeMeetingView(signup=meeting_message_has_signup(interaction.message)))
+        await interaction.followup.send("✅ Dein Thema wurde zum Meeting hinzugefügt.", ephemeral=True)
+
+
+class FreeMeetingSignupModal(discord.ui.Modal, title="Zum Offi-Meeting anmelden"):
+    player_pin = discord.ui.TextInput(label="LichtLoot-SpielerLogin / PIN", placeholder="Dein persönlicher SpielerLogin", max_length=100)
+    character = discord.ui.TextInput(label="Charakter", placeholder="Leer lassen, wenn du nur einen Charakter hast", required=False, max_length=100)
+
+    def __init__(self, target_channel_id=None, target_message_id=None):
+        super().__init__()
+        self.target_channel_id = clean(target_channel_id)
+        self.target_message_id = clean(target_message_id)
+
+    async def target_message(self, interaction):
+        if not self.target_channel_id or not self.target_message_id:
+            return interaction.message
+        try:
+            channel = client.get_channel(int(self.target_channel_id)) or await client.fetch_channel(int(self.target_channel_id))
+            return await channel.fetch_message(int(self.target_message_id))
+        except Exception as error:
+            print(f"Offi-Meeting Nachricht aus DM nicht erreichbar: {error}")
+            return None
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        characters, error = await load_po_characters_by_pin(clean(self.player_pin.value))
+        if not characters:
+            await interaction.followup.send(f"❌ {error or 'SpielerLogin/PIN wurde nicht gefunden.'}", ephemeral=True)
+            return
+        requested = clean(self.character.value).lower()
+        character = next((entry for entry in characters if clean(entry.get("name")).lower() == requested), None) if requested else None
+        if requested and character is None:
+            available = ", ".join(clean(entry.get("name")) for entry in characters)
+            await interaction.followup.send(f"❌ Dieser Charakter gehört nicht zu dem SpielerLogin. Verfügbar: **{available}**", ephemeral=True)
+            return
+        character = character or characters[0]
+        target_message = await self.target_message(interaction)
+        if not target_message or not target_message.embeds:
+            await interaction.followup.send("Das Meeting-Embed konnte nicht gefunden werden.", ephemeral=True)
+            return
+        embed = discord.Embed.from_dict(target_message.embeds[0].to_dict())
+        name = clean(character.get("name"))
+        class_name = clean(character.get("className"))
+        line = f"• **{name}** ({class_name})" if class_name else f"• **{name}**"
+        if not meeting_embed_append(embed, "Anmeldungen", line):
+            await interaction.followup.send(f"ℹ️ **{name}** ist bereits angemeldet.", ephemeral=True)
+            return
+        await target_message.edit(embed=embed, view=FreeMeetingView())
+        await interaction.followup.send(f"✅ **{name}** ist zum Offi-Meeting angemeldet.", ephemeral=True)
+
+
+class FreeMeetingView(discord.ui.View):
+    def __init__(self, signup=True):
+        super().__init__(timeout=None)
+        if not signup:
+            self.remove_item(self.signup_button)
+
+    @discord.ui.button(label="Thema hinzufügen", emoji="💬", style=discord.ButtonStyle.secondary, custom_id="lichtloot:meeting:topic")
+    async def topic_button(self, interaction, button):
+        await interaction.response.send_modal(FreeMeetingTopicModal())
+
+    @discord.ui.button(label="Mit Charakter anmelden", emoji="✅", style=discord.ButtonStyle.success, custom_id="lichtloot:meeting:signup")
+    async def signup_button(self, interaction, button):
+        await interaction.response.send_modal(FreeMeetingSignupModal())
+
+
+class FreeMeetingDmView(discord.ui.View):
+    def __init__(self, message):
+        super().__init__(timeout=86400 * 30)
+        self.target_channel_id = str(message.channel.id)
+        self.target_message_id = str(message.id)
+        self.add_item(discord.ui.Button(label="Meeting im Channel öffnen", emoji="🔗", style=discord.ButtonStyle.link, url=message.jump_url))
+
+    @discord.ui.button(label="Mit Charakter anmelden", emoji="✅", style=discord.ButtonStyle.success)
+    async def signup_button(self, interaction, button):
+        await interaction.response.send_modal(FreeMeetingSignupModal(self.target_channel_id, self.target_message_id))
+
+
+async def send_free_meeting_dms(payload, message, source_embed, signup=True):
+    targets = list(payload.get("meetingNotifyTargets") or [])
+    if not targets:
+        return 0
+    dm_embed = discord.Embed(
+        title="🗓️ Einladung zum Offi-Meeting",
+        description=clean(source_embed.description) or "Du wurdest zu einem Offi-Meeting eingeladen.",
+        color=source_embed.color,
+    )
+    dm_embed.add_field(name="📌 Meeting", value=clean(source_embed.title) or "Offi-Meeting", inline=False)
+    for field in source_embed.fields:
+        if field.name in {"Termin", "Tagesordnung", "Weitere Informationen"} or field.name == clean(payload.get("sectionTitle")):
+            icon = "📅" if field.name == "Termin" else "📋" if field.name in {"Tagesordnung", clean(payload.get("sectionTitle"))} else "ℹ️"
+            dm_embed.add_field(name=f"{icon} {field.name}", value=field.value, inline=False)
+    dm_embed.add_field(name="🔗 Direkt zum Channel", value=f"[Offi-Meeting öffnen]({message.jump_url})", inline=False)
+    dm_embed.set_footer(text="LichtLoot · Offi-Meeting")
+    # The common resolver already handles role membership, individual Discord names and duplicate recipients.
+    return await send_queue_targeted_embed(payload={**payload, "targets": targets}, embed=dm_embed, view=FreeMeetingDmView(message) if signup else None)
+
+
 async def post_free_discord_embed_from_queue(payload):
     channel_id = clean(payload.get("channelId") or payload.get("discordChannelId"))
     if not channel_id:
@@ -633,6 +771,9 @@ async def post_free_discord_embed_from_queue(payload):
             meeting_bits.append(f"📍 **Ort:** {clean(payload.get('meetingLocation'))}")
         if meeting_bits:
             embed.add_field(name="Termin", value="\n".join(meeting_bits), inline=False)
+        meeting_extra = clean(payload.get("meetingExtra"))
+        if meeting_extra:
+            embed.add_field(name="Weitere Informationen", value=meeting_extra[:1024], inline=False)
 
     if points:
         point_lines = [
@@ -658,8 +799,18 @@ async def post_free_discord_embed_from_queue(payload):
     footer = clean(payload.get("footer"))
     if footer:
         embed.set_footer(text=footer[:2048])
-    message = await send_silent(channel, embed=embed)
-    reactions = number_icons[: min(len(points), 10)] if embed_type == "poll" else (["✅", "❔", "❌"] if embed_type == "meeting" else [])
+    meeting_signup = payload.get("meetingSignup") is True or clean(payload.get("meetingSignup")).lower() == "true"
+    if embed_type == "meeting":
+        topic_prompt = clean(payload.get("meetingTopicPrompt")) or "Du möchtest ein weiteres Thema besprechen?"
+        embed.add_field(name="Themen hinzufügen", value=topic_prompt[:1024], inline=False)
+    meeting_view = FreeMeetingView(signup=meeting_signup) if embed_type == "meeting" else None
+    message = await send_silent(channel, embed=embed, view=meeting_view)
+    if embed_type == "meeting":
+        try:
+            await send_free_meeting_dms(payload, message, embed, signup=meeting_signup)
+        except Exception as error:
+            print(f"Offi-Meeting DMs konnten nicht vollständig gesendet werden: {error}")
+    reactions = number_icons[: min(len(points), 10)] if embed_type == "poll" else []
     for reaction in reactions:
         try:
             await message.add_reaction(reaction)
@@ -3925,7 +4076,7 @@ async def send_raid_staff_action_notice(interaction, raid, char_name, action, no
     return len(sent)
 
 
-async def send_queue_targeted_embed(payload, embed, image_path=None, show_recipients=False):
+async def send_queue_targeted_embed(payload, embed, image_path=None, show_recipients=False, view=None):
     targets = list(payload.get("targets") or payload.get("roleTargets") or [])
     wanted_names = {
         normalized_prio_player_name(target.get("value") or target.get("name"))
@@ -4005,9 +4156,9 @@ async def send_queue_targeted_embed(payload, embed, image_path=None, show_recipi
         try:
             if image_path and Path(image_path).is_file():
                 image_file = discord.File(str(image_path), filename=Path(image_path).name)
-                await member.send(embed=embed, file=image_file)
+                await member.send(embed=embed, file=image_file, view=view)
             else:
-                await member.send(embed=embed)
+                await member.send(embed=embed, view=view)
             sent.add(member.id)
         except Exception as error:
             print(f"Raid-DM an {member} fehlgeschlagen: {error}")
@@ -5916,6 +6067,7 @@ class PoBot(discord.Client):
 
     async def setup_hook(self):
         self.add_view(NachtlootHelpView())
+        self.add_view(FreeMeetingView())
         self.bg_task = asyncio.create_task(po_queue_loop())
         if TEST_GUILD_ID:
             guild = discord.Object(id=int(TEST_GUILD_ID))
