@@ -616,6 +616,23 @@ def meeting_embed_append(embed, field_name, line):
     return True
 
 
+def meeting_embed_set_status(embed, character_name, class_name, status):
+    status_fields = {"yes": "✅ Teilnehmen", "maybe": "❔ Vielleicht", "no": "❌ Nicht teilnehmen"}
+    name_marker = f"**{clean(character_name).lower()}**"
+    for index in range(len(embed.fields) - 1, -1, -1):
+        field = embed.fields[index]
+        if field.name not in status_fields.values() and field.name != "Anmeldungen":
+            continue
+        remaining = [line for line in field.value.splitlines() if name_marker not in line.lower()]
+        if remaining:
+            embed.set_field_at(index, name=field.name, value="\n".join(remaining), inline=False)
+        else:
+            embed.remove_field(index)
+    label = status_fields.get(status, status_fields["yes"])
+    line = f"• **{character_name}** ({class_name})" if class_name else f"• **{character_name}**"
+    meeting_embed_append(embed, label, line)
+
+
 def meeting_message_has_signup(message):
     return any(
         getattr(item, "custom_id", "") == "lichtloot:meeting:signup"
@@ -635,7 +652,9 @@ class FreeMeetingTopicModal(discord.ui.Modal, title="Thema zum Offi-Meeting hinz
         embed = discord.Embed.from_dict(interaction.message.embeds[0].to_dict())
         author = clean(getattr(interaction.user, "display_name", "")) or clean(interaction.user.name)
         detail = clean(self.details.value)
-        line = f"• **{clean(self.topic.value)}** — {detail} _({author})_" if detail else f"• **{clean(self.topic.value)}** _({author})_"
+        existing = next((field.value.splitlines() for field in embed.fields if field.name == "Zusätzliche Themen"), [])
+        number = len([line for line in existing if clean(line)]) + 1
+        line = f"{number}. **{clean(self.topic.value)}** — {detail} _({author})_" if detail else f"{number}. **{clean(self.topic.value)}** _({author})_"
         if not meeting_embed_append(embed, "Zusätzliche Themen", line):
             await interaction.response.send_message("Dieses Thema ist bereits eingetragen.", ephemeral=True)
             return
@@ -648,10 +667,11 @@ class FreeMeetingSignupModal(discord.ui.Modal, title="Zum Offi-Meeting anmelden"
     player_pin = discord.ui.TextInput(label="LichtLoot-SpielerLogin / PIN", placeholder="Dein persönlicher SpielerLogin", max_length=100)
     character = discord.ui.TextInput(label="Charakter", placeholder="Leer lassen, wenn du nur einen Charakter hast", required=False, max_length=100)
 
-    def __init__(self, target_channel_id=None, target_message_id=None):
+    def __init__(self, target_channel_id=None, target_message_id=None, status="yes"):
         super().__init__()
         self.target_channel_id = clean(target_channel_id)
         self.target_message_id = clean(target_message_id)
+        self.status = clean(status).lower() or "yes"
 
     async def target_message(self, interaction):
         if not self.target_channel_id or not self.target_message_id:
@@ -683,12 +703,10 @@ class FreeMeetingSignupModal(discord.ui.Modal, title="Zum Offi-Meeting anmelden"
         embed = discord.Embed.from_dict(target_message.embeds[0].to_dict())
         name = clean(character.get("name"))
         class_name = clean(character.get("className"))
-        line = f"• **{name}** ({class_name})" if class_name else f"• **{name}**"
-        if not meeting_embed_append(embed, "Anmeldungen", line):
-            await interaction.followup.send(f"ℹ️ **{name}** ist bereits angemeldet.", ephemeral=True)
-            return
+        meeting_embed_set_status(embed, name, class_name, self.status)
         await target_message.edit(embed=embed, view=FreeMeetingView())
-        await interaction.followup.send(f"✅ **{name}** ist zum Offi-Meeting angemeldet.", ephemeral=True)
+        status_label = {"yes":"nimmt teil", "maybe":"ist vielleicht dabei", "no":"nimmt nicht teil"}.get(self.status, "nimmt teil")
+        await interaction.followup.send(f"✅ Gespeichert: **{name}** {status_label}.", ephemeral=True)
 
 
 class FreeMeetingView(discord.ui.View):
@@ -696,14 +714,24 @@ class FreeMeetingView(discord.ui.View):
         super().__init__(timeout=None)
         if not signup:
             self.remove_item(self.signup_button)
+            self.remove_item(self.maybe_button)
+            self.remove_item(self.no_button)
 
     @discord.ui.button(label="Thema hinzufügen", emoji="💬", style=discord.ButtonStyle.secondary, custom_id="lichtloot:meeting:topic")
     async def topic_button(self, interaction, button):
         await interaction.response.send_modal(FreeMeetingTopicModal())
 
-    @discord.ui.button(label="Mit Charakter anmelden", emoji="✅", style=discord.ButtonStyle.success, custom_id="lichtloot:meeting:signup")
+    @discord.ui.button(label="Teilnehmen", emoji="✅", style=discord.ButtonStyle.success, custom_id="lichtloot:meeting:signup")
     async def signup_button(self, interaction, button):
-        await interaction.response.send_modal(FreeMeetingSignupModal())
+        await interaction.response.send_modal(FreeMeetingSignupModal(status="yes"))
+
+    @discord.ui.button(label="Vielleicht", emoji="❔", style=discord.ButtonStyle.primary, custom_id="lichtloot:meeting:maybe")
+    async def maybe_button(self, interaction, button):
+        await interaction.response.send_modal(FreeMeetingSignupModal(status="maybe"))
+
+    @discord.ui.button(label="Nicht teilnehmen", emoji="❌", style=discord.ButtonStyle.danger, custom_id="lichtloot:meeting:no")
+    async def no_button(self, interaction, button):
+        await interaction.response.send_modal(FreeMeetingSignupModal(status="no"))
 
 
 class FreeMeetingDmView(discord.ui.View):
@@ -713,9 +741,17 @@ class FreeMeetingDmView(discord.ui.View):
         self.target_message_id = str(message.id)
         self.add_item(discord.ui.Button(label="Meeting im Channel öffnen", emoji="🔗", style=discord.ButtonStyle.link, url=message.jump_url))
 
-    @discord.ui.button(label="Mit Charakter anmelden", emoji="✅", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Teilnehmen", emoji="✅", style=discord.ButtonStyle.success)
     async def signup_button(self, interaction, button):
-        await interaction.response.send_modal(FreeMeetingSignupModal(self.target_channel_id, self.target_message_id))
+        await interaction.response.send_modal(FreeMeetingSignupModal(self.target_channel_id, self.target_message_id, "yes"))
+
+    @discord.ui.button(label="Vielleicht", emoji="❔", style=discord.ButtonStyle.primary)
+    async def maybe_button(self, interaction, button):
+        await interaction.response.send_modal(FreeMeetingSignupModal(self.target_channel_id, self.target_message_id, "maybe"))
+
+    @discord.ui.button(label="Nicht teilnehmen", emoji="❌", style=discord.ButtonStyle.danger)
+    async def no_button(self, interaction, button):
+        await interaction.response.send_modal(FreeMeetingSignupModal(self.target_channel_id, self.target_message_id, "no"))
 
 
 async def send_free_meeting_dms(payload, message, source_embed, signup=True):
@@ -777,7 +813,7 @@ async def post_free_discord_embed_from_queue(payload):
 
     if points:
         point_lines = [
-            f"{number_icons[index] if embed_type == 'poll' and index < len(number_icons) else '•'} {point}"
+            f"{number_icons[index] if embed_type == 'poll' and index < len(number_icons) else f'{index + 1}.' if embed_type == 'meeting' else '•'} {point}"
             for index, point in enumerate(points)
         ]
         chunks, current = [], ""
@@ -804,8 +840,37 @@ async def post_free_discord_embed_from_queue(payload):
         topic_prompt = clean(payload.get("meetingTopicPrompt")) or "Du möchtest ein weiteres Thema besprechen?"
         embed.add_field(name="Themen hinzufügen", value=topic_prompt[:1024], inline=False)
     meeting_view = FreeMeetingView(signup=meeting_signup) if embed_type == "meeting" else None
-    message = await send_silent(channel, embed=embed, view=meeting_view)
-    if embed_type == "meeting":
+    update_existing = payload.get("updateExisting") is True or clean(payload.get("updateExisting")).lower() == "true"
+    message = None
+    if update_existing:
+        latest_meeting = None
+        async for candidate in channel.history(limit=75):
+            if not candidate.embeds or not client.user or candidate.author.id != client.user.id:
+                continue
+            component_ids = {
+                clean(getattr(item, "custom_id", ""))
+                for row in (candidate.components or [])
+                for item in (getattr(row, "children", None) or [])
+            }
+            if "lichtloot:meeting:topic" not in component_ids:
+                continue
+            latest_meeting = latest_meeting or candidate
+            if clean(candidate.embeds[0].title) == clean(embed.title):
+                message = candidate
+                break
+        message = message or latest_meeting
+        if message is not None:
+            old_embed = message.embeds[0]
+            preserved_names = {"Zusätzliche Themen", "Anmeldungen", "✅ Teilnehmen", "❔ Vielleicht", "❌ Nicht teilnehmen"}
+            for field in old_embed.fields:
+                if field.name in preserved_names:
+                    embed.add_field(name=field.name, value=field.value, inline=False)
+            await message.edit(embed=embed, view=meeting_view)
+        if message is None:
+            raise RuntimeError("Kein bestehender Offi-Meeting-Post mit dieser Überschrift im gewählten Channel gefunden.")
+    else:
+        message = await send_silent(channel, embed=embed, view=meeting_view)
+    if embed_type == "meeting" and not update_existing:
         try:
             await send_free_meeting_dms(payload, message, embed, signup=meeting_signup)
         except Exception as error:
