@@ -830,6 +830,16 @@ async def post_free_discord_embed_from_queue(payload):
                 imported["meetingExtra"] = clean(field.value)
             elif field.name == "Themen hinzufügen":
                 imported["meetingTopicPrompt"] = clean(field.value)
+            elif field.name in {"Anmeldungen", "✅ Teilnehmen", "❔ Vielleicht", "❌ Nicht teilnehmen"}:
+                status = "maybe" if field.name == "❔ Vielleicht" else "no" if field.name == "❌ Nicht teilnehmen" else "yes"
+                for line in field.value.splitlines():
+                    signup_match = re.search(r"\*\*([^*]+)\*\*(?:\s*\(([^)]+)\))?", line)
+                    if signup_match:
+                        imported["meetingPresetSignups"].append({
+                            "name": clean(signup_match.group(1)),
+                            "className": clean(signup_match.group(2) or ""),
+                            "status": status,
+                        })
             elif field.name not in {"Zusätzliche Themen", "Anmeldungen", "✅ Teilnehmen", "❔ Vielleicht", "❌ Nicht teilnehmen", "\u200b"}:
                 imported["sectionTitle"] = clean(field.name) or "Tagesordnung"
                 imported["points"].extend([re.sub(r"^\s*(?:\d+[.)]|•)\s*", "", line).strip() for line in field.value.splitlines() if clean(line)])
