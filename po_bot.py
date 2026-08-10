@@ -900,6 +900,13 @@ async def post_free_discord_embed_from_queue(payload):
         description=clean(payload.get("description")) or None,
         color=FREE_DISCORD_EMBED_COLORS.get(clean(payload.get("color")).lower(), 0x38BDF8),
     )
+    author = clean(payload.get("author"))
+    if author:
+        embed.set_author(name=author[:256], icon_url=clean(payload.get("authorIcon")) or None)
+    if clean(payload.get("thumbnailUrl")):
+        embed.set_thumbnail(url=clean(payload.get("thumbnailUrl")))
+    if clean(payload.get("imageUrl")):
+        embed.set_image(url=clean(payload.get("imageUrl")))
     if embed_type == "meeting":
         meeting_bits = []
         if clean(payload.get("meetingDate")):
@@ -934,6 +941,13 @@ async def post_free_discord_embed_from_queue(payload):
         )
         for index, chunk in enumerate(chunks):
             embed.add_field(name=section_title if index == 0 else "\u200b", value=chunk, inline=False)
+
+    for raw_field in clean(payload.get("customFields")).splitlines():
+        if "|" not in raw_field:
+            continue
+        field_name, field_value = [clean(value) for value in raw_field.split("|", 1)]
+        if field_name and field_value and len(embed.fields) < 25:
+            embed.add_field(name=field_name[:256], value=field_value[:1024], inline=False)
 
     footer = clean(payload.get("footer"))
     if footer:
@@ -986,12 +1000,12 @@ async def post_free_discord_embed_from_queue(payload):
                     for line in kept_lines:
                         meeting_embed_append(embed, target_field, line)
             normalize_meeting_signup_fields(embed)
-            await message.edit(embed=embed, view=meeting_view)
+            await message.edit(content=clean(payload.get("mentions")) or None, embed=embed, view=meeting_view)
         if message is None:
             raise RuntimeError("Kein bestehender Offi-Meeting-Post mit dieser Überschrift im gewählten Channel gefunden.")
     else:
         normalize_meeting_signup_fields(embed)
-        message = await send_silent(channel, embed=embed, view=meeting_view)
+        message = await send_silent(channel, content=clean(payload.get("mentions")) or None, embed=embed, view=meeting_view)
     try:
         await asyncio.to_thread(api_post, {
             "action": "lichtbotSetFreeDiscordEmbedMessage",
