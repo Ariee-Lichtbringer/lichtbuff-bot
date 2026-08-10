@@ -839,7 +839,10 @@ def build_raid_announcement_embed(raid):
         embed.add_field(name="Slots", value=" · ".join(slots), inline=False)
     embed.add_field(name="Prio-PIN", value=f"`{clean(raid.get('playerPin')) or '-'}`", inline=True)
     raid_guild_slug = normalize_guild_slug(raid.get("guildSlug") or current_guild_slug())
-    worldbuff_block = current_worldbuff_announcement_block(raid_guild_slug)
+    worldbuff_block = current_worldbuff_announcement_block(
+        raid_guild_slug,
+        raid_date=raid.get("raidDate") or raid.get("raid_date"),
+    )
     if worldbuff_block:
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
     embed.add_field(
@@ -899,7 +902,17 @@ def add_raid_signup_links_field(embed, raid):
     )
 
 
-def current_worldbuff_announcement_block(guild_slug=None, max_lines=8):
+def parse_raid_worldbuff_date(value):
+    raw = clean(value)
+    for date_format in ("%Y-%m-%d", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(raw[:10], date_format).date()
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def current_worldbuff_announcement_block(guild_slug=None, raid_date=None, max_lines=8):
     resolved_guild_slug = normalize_guild_slug(guild_slug or current_guild_slug())
     try:
         result = api_get({
@@ -915,16 +928,37 @@ def current_worldbuff_announcement_block(guild_slug=None, max_lines=8):
         print(f"Worldbuffs fuer Raidanmelder konnten nicht geladen werden: {error}")
         return ""
     rows = result.get("buffs") or result.get("entries") or []
-    today = datetime.now().date()
-    latest = today + timedelta(days=7)
+    selected_raid_date = parse_raid_worldbuff_date(raid_date)
+    # Im Raidanmelder sind ausschließlich die für die Vorbereitung relevanten
+    # Termine sichtbar: der Vortag und der eigentliche Raidtag.
+    allowed_dates = None
+    if selected_raid_date:
+        allowed_dates = {selected_raid_date - timedelta(days=1), selected_raid_date}
+    else:
+        today = datetime.now().date()
+        allowed_dates = {today, today + timedelta(days=1)}
     upcoming = []
+    deduplicated = {}
     for row in rows:
         try:
             row_date = datetime.strptime(clean(row.get("datum") or row.get("date")), "%d.%m.%Y").date()
         except Exception:
             continue
-        if today <= row_date <= latest:
-            upcoming.append((row_date, clean(row.get("uhrzeit") or row.get("time")), row))
+        if row_date not in allowed_dates:
+            continue
+        row_time = clean(row.get("uhrzeit") or row.get("time"))
+        buff = normalize_worldbuff_name(row.get("buff") or row.get("type"))
+        guild = clean(row.get("gilde") or row.get("guild"))
+        # Gleicher Buff, gleiche Gilde und gleiche Uhrzeit werden nur einmal
+        # gezeigt, auch wenn Railway und ein Import dieselben Daten liefern.
+        dedupe_key = (row_date, row_time, buff.lower(), guild.lower())
+        existing = deduplicated.get(dedupe_key)
+        existing_caster = clean((existing or {}).get("charakter") or (existing or {}).get("character"))
+        new_caster = clean(row.get("charakter") or row.get("character"))
+        if existing is None or (new_caster and not existing_caster):
+            deduplicated[dedupe_key] = row
+    for (row_date, row_time, _buff, _guild), row in deduplicated.items():
+        upcoming.append((row_date, row_time, row))
     upcoming.sort(key=lambda item: (item[0], item[1]))
     lines = []
     current_date = None
@@ -5566,6 +5600,9 @@ async def po_queue_loop():
                                     payload.get("raidId") or payload.get("id"),
                                     channel_id,
                                     payload,
+                                    force_new=clean(
+                                        payload.get("forceNewMessage") or payload.get("forceRepost")
+                                    ).lower() in {"1", "true", "yes", "ja"},
                                 )
                                 if posted or posted == "stale":
                                     await resolve_queue_item(item.get("rowNumber"))
