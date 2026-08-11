@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
@@ -4892,6 +4893,83 @@ async def send_po_message(channel, embed, view):
     return await channel.send(embed=embed, view=view, silent=True)
 
 
+async def publish_raid_calendar(payload):
+    channel_id = clean(payload.get("channelId") or payload.get("discordChannelId"))
+    if not channel_id:
+        raise RuntimeError("Terminkalender ohne Discord-Channel.")
+    channel = await fetch_accessible_channel(client, channel_id)
+    if channel is None:
+        raise RuntimeError("Discord-Channel für den Terminkalender ist nicht erreichbar.")
+    events = [event for event in (payload.get("events") or []) if isinstance(event, dict)]
+    events.sort(key=lambda event: (clean(event.get("date")), clean(event.get("time"))))
+    grouped = {}
+    for event in events:
+        grouped.setdefault(clean(event.get("date")), []).append(event)
+    guild_name = guild_display_name(payload=payload)
+    guild_slug = payload_guild_slug(payload)
+    embed = discord.Embed(
+        title=f"📅 Raidkalender · {guild_name}",
+        description=f"**{len(events)} kommende Raidtermine**\nAlle Zeiten werden automatisch in deiner Discord-Zeitzone angezeigt.",
+        color=0x14B8A6 if guild_slug == "nachtloot" else 0xD4AF37,
+    )
+    weekdays = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+    for date_text, rows in list(grouped.items())[:20]:
+        try:
+            day = datetime.strptime(date_text, "%Y-%m-%d")
+            field_name = f"📅 {weekdays[day.weekday()]}, {day.strftime('%d.%m.%Y')}"
+        except ValueError:
+            field_name = f"📅 {date_text}"
+        lines = []
+        for event in rows[:8]:
+            try:
+                raid_time = clean(event.get("time")) or "00:00"
+                unix = int(datetime.strptime(f"{date_text} {raid_time}", "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+                time_label = f"<t:{unix}:t>"
+                relative = f" <t:{unix}:R>"
+            except ValueError:
+                time_label = clean(event.get("time")) or "-"
+                relative = ""
+            name = clean(event.get("name") or event.get("raid") or "Raid")
+            raid_key = normalize_raid(event.get("raid") or name)
+            raid_icon = {
+                "mc": "🔥", "bwl": "🐉", "aq40": "🦂", "aq20": "🏜️",
+                "naxx": "💀", "zg": "🐯", "ony": "🐲",
+            }.get(raid_key, "⚔️")
+            count = max(0, int(event.get("signups") or 0))
+            max_players = max(0, int(event.get("maxPlayers") or 0))
+            count_text = f"{count}/{max_players}" if max_players else str(count)
+            raid_channel_id = clean(event.get("discordChannelId")) or channel_id
+            discord_link = f"https://discord.com/channels/{channel.guild.id}/{raid_channel_id}"
+            prio_url = clean(event.get("prioUrl"))
+            links = f"[💬 Raid-Channel]({discord_link})"
+            if prio_url:
+                links += f" · [🎯 Prios öffnen]({prio_url})"
+            lead = clean(event.get("lead"))
+            lead_text = f" · 👑 {lead}" if lead else ""
+            lines.append(f"{time_label} · 👥 `{count_text}` · {raid_icon} **{name}**{relative}\n└ {links}{lead_text}")
+        embed.add_field(name=field_name, value="\n".join(lines)[:1024] or "–", inline=False)
+    embed.set_footer(text="Europe/Berlin · Automatisch erstellt und aktualisiert durch LichtLoot")
+    state = load_state()
+    state_key = f"_raidCalendar:{payload_guild_slug(payload)}:{channel_id}"
+    previous = state.get(state_key) if isinstance(state.get(state_key), dict) else {}
+    message = None
+    previous_id = clean(previous.get("messageId"))
+    if previous_id:
+        try:
+            candidate = await channel.fetch_message(int(previous_id))
+            if client.user and candidate.author.id == client.user.id:
+                message = candidate
+        except (discord.NotFound, discord.Forbidden, ValueError):
+            message = None
+    if message:
+        await message.edit(embed=embed)
+    else:
+        message = await channel.send(embed=embed, silent=True)
+    state[state_key] = {"messageId": str(message.id), "channelId": str(channel.id), "guildSlug": payload_guild_slug(payload)}
+    save_state(state)
+    return message
+
+
 async def edit_po_message(message, embed, view):
     await message.edit(embed=embed, view=view)
 
@@ -5957,7 +6035,7 @@ async def po_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": QUEUE_TOKEN,
                 "limit": "50",
-                "types": "player_login_approval_notice,player_login_granted_notice,po_post,p0_post_refresh,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,loot_master_leadpin_notice,po_release_request_notice,po_release_granted_notice,po_rejection_notice,po_approval_notice,po_post_delete,free_discord_embed",
+                "types": "player_login_approval_notice,player_login_granted_notice,po_post,p0_post_refresh,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,loot_master_leadpin_notice,po_release_request_notice,po_release_granted_notice,po_rejection_notice,po_approval_notice,po_post_delete,free_discord_embed,raid_calendar",
                 "t": int(time.time()),
             })
             if result.get("success"):
@@ -5976,6 +6054,7 @@ async def po_queue_loop():
                         "po_rejection_notice",
                         "po_approval_notice",
                         "free_discord_embed",
+                        "raid_calendar",
                     }
                 ]
                 stale_delete_items = [item for item in items if clean(item.get("type")) == "po_post_delete"]
@@ -6024,6 +6103,11 @@ async def po_queue_loop():
                                 + ("gesendet" if sent else "konnte nicht gesendet werden")
                                 + f": {current_guild_slug()}:{payload.get('title') or payload.get('embedType') or '?'}"
                             )
+                            continue
+                        if item_type == "raid_calendar":
+                            message = await publish_raid_calendar(payload)
+                            await resolve_queue_item(item.get("rowNumber"))
+                            print(f"Raid-Terminkalender aktualisiert: {current_guild_slug()}:{message.id}")
                             continue
                         if (
                             item_type == "raid_announcement_role_notice"
