@@ -4893,6 +4893,41 @@ async def send_po_message(channel, embed, view):
     return await channel.send(embed=embed, view=view, silent=True)
 
 
+async def enrich_calendar_events_with_signups(events, guild_slug):
+    """Lädt die aktuellen LichtLoot-Anmeldungen für vorhandene Raidanmelder."""
+    enriched = []
+    for raw_event in events:
+        event = dict(raw_event or {})
+        lookup = {
+            **event,
+            "guild": guild_slug,
+            "guildSlug": guild_slug,
+            "raidId": clean(event.get("raidId") or event.get("id")),
+            "raid": clean(event.get("raid") or event.get("name")),
+            "raidDate": clean(event.get("date") or event.get("raidDate")),
+            "raidTime": clean(event.get("time") or event.get("raidTime")),
+        }
+        try:
+            helper = await get_raid_helper_for_refresh(lookup)
+            if helper and helper.get("success"):
+                event["signups"] = raid_signup_row_count(helper)
+                raid = helper.get("raid") if isinstance(helper.get("raid"), dict) else {}
+                helper_max = clean(raid.get("maxPlayers") or raid.get("max_players"))
+                if helper_max:
+                    event["maxPlayers"] = helper_max
+        except Exception as error:
+            # Raids ohne LichtLoot-Anmelder behalten den vom Kalender
+            # übergebenen Wert. Das betrifft derzeit vor allem andere Raids
+            # als ZG und AQ20.
+            print(
+                "Kalender-Anmeldungen konnten nicht geladen werden "
+                f"({clean(event.get('name') or event.get('raid'))}): {error}"
+            )
+        enriched.append(event)
+        await asyncio.sleep(0.1)
+    return enriched
+
+
 async def publish_raid_calendar(payload):
     channel_id = clean(payload.get("channelId") or payload.get("discordChannelId"))
     if not channel_id:
@@ -4901,12 +4936,13 @@ async def publish_raid_calendar(payload):
     if channel is None:
         raise RuntimeError("Discord-Channel für den Terminkalender ist nicht erreichbar.")
     events = [event for event in (payload.get("events") or []) if isinstance(event, dict)]
+    guild_slug = payload_guild_slug(payload)
+    events = await enrich_calendar_events_with_signups(events, guild_slug)
     events.sort(key=lambda event: (clean(event.get("date")), clean(event.get("time"))))
     grouped = {}
     for event in events:
         grouped.setdefault(clean(event.get("date")), []).append(event)
     guild_name = guild_display_name(payload=payload)
-    guild_slug = payload_guild_slug(payload)
     embed = discord.Embed(
         title=f"📅 Raidkalender · {guild_name}",
         description=f"**{len(events)} kommende Raidtermine**\nAlle Zeiten werden automatisch in deiner Discord-Zeitzone angezeigt.",
@@ -4930,11 +4966,13 @@ async def publish_raid_calendar(payload):
                 time_label = clean(event.get("time")) or "-"
                 relative = ""
             name = clean(event.get("name") or event.get("raid") or "Raid")
-            raid_key = normalize_raid(event.get("raid") or name)
-            raid_icon = {
+            raid_key = normalize_raid(event.get("raid") or name).lower()
+            raid_icon_key = "zg" if raid_key.startswith("zg") else raid_key
+            raid_icon_fallback = {
                 "mc": "🔥", "bwl": "🐉", "aq40": "🦂", "aq20": "🏜️",
                 "naxx": "💀", "zg": "🐯", "ony": "🐲",
-            }.get(raid_key, "⚔️")
+            }.get(raid_icon_key, "⚔️")
+            raid_icon = custom_emoji(raid_icon_key, raid_icon_fallback)
             count = max(0, int(event.get("signups") or 0))
             max_players = max(0, int(event.get("maxPlayers") or 0))
             count_text = f"{count}/{max_players}" if max_players else str(count)
@@ -4944,9 +4982,7 @@ async def publish_raid_calendar(payload):
             links = f"[💬 Raid-Channel]({discord_link})"
             if prio_url:
                 links += f" · [🎯 Prios öffnen]({prio_url})"
-            lead = clean(event.get("lead"))
-            lead_text = f" · 👑 {lead}" if lead else ""
-            lines.append(f"{time_label} · 👥 `{count_text}` · {raid_icon} **{name}**{relative}\n└ {links}{lead_text}")
+            lines.append(f"{time_label} · 👥 `{count_text}` · {raid_icon} **{name}**{relative}\n└ {links}")
         embed.add_field(name=field_name, value="\n".join(lines)[:1024] or "–", inline=False)
     embed.set_footer(text="Europe/Berlin · Automatisch erstellt und aktualisiert durch LichtLoot")
     state = load_state()
@@ -6702,6 +6738,182 @@ async def anmelder_refresh(interaction, was: str = "alle"):
             text += f" **{replaced} alter Raidanmelder** wurde durch die aktuelle Bot-Version ersetzt."
     else:
         text = "ℹ️ In diesem Channel wurden keine passenden Anmelder gefunden."
+    if skipped:
+        text += f" Übersprungen: {skipped}."
+    if errors:
+        preview = "\n".join(f"• {clean(error)[:220]}" for error in errors[:3])
+        text += f"\n⚠️ {len(errors)} Fehler:\n{preview}"
+    await interaction.followup.send(text, ephemeral=True)
+
+
+def may_manage_discord_channel(interaction):
+    permissions = getattr(getattr(interaction, "user", None), "guild_permissions", None)
+    return bool(
+        permissions
+        and (permissions.administrator or permissions.manage_messages)
+    )
+
+
+@client.tree.command(
+    name="channel_leeren",
+    description="Löscht alle nicht angehefteten Nachrichten im aktuellen Channel.",
+)
+@app_commands.guild_only()
+@app_commands.describe(bestaetigung="Zum endgültigen Löschen bitte ‚Ja, Channel leeren‘ auswählen.")
+@app_commands.choices(bestaetigung=[
+    app_commands.Choice(name="Nein, abbrechen", value="nein"),
+    app_commands.Choice(name="Ja, Channel leeren", value="ja"),
+])
+async def channel_leeren(interaction, bestaetigung: str):
+    if not may_manage_discord_channel(interaction):
+        await interaction.response.send_message(
+            "⚠️ Dafür benötigst du die Discord-Berechtigung **Nachrichten verwalten**.",
+            ephemeral=True,
+        )
+        return
+    if clean(bestaetigung).lower() != "ja":
+        await interaction.response.send_message("ℹ️ Löschen abgebrochen.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        deleted = await interaction.channel.purge(
+            limit=None,
+            check=lambda message: not message.pinned,
+            bulk=True,
+            reason=f"/channel_leeren von {interaction.user} ({interaction.user.id})",
+        )
+        await interaction.followup.send(
+            f"✅ Channel geleert: **{len(deleted)}** nicht angeheftete Nachrichten gelöscht. "
+            "Angeheftete Nachrichten wurden behalten.",
+            ephemeral=True,
+        )
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "⚠️ Der Bot benötigt in diesem Channel die Berechtigung **Nachrichten verwalten**.",
+            ephemeral=True,
+        )
+    except Exception as error:
+        await interaction.followup.send(
+            f"⚠️ Channel konnte nicht vollständig geleert werden: `{clean(error)[:300]}`",
+            ephemeral=True,
+        )
+
+
+async def restart_all_active_signup_posts():
+    """Registriert und aktualisiert bestehende Anmelder ohne neue Posts anzulegen."""
+    await refresh_guild_registry()
+    raid_views = 0
+    raid_refreshed = 0
+    po_views = 0
+    skipped = 0
+    errors = []
+    guild_slugs = list(GUILD_REGISTRY.keys()) or [current_guild_slug()]
+
+    for guild_slug in guild_slugs:
+        token = CURRENT_GUILD_SLUG.set(normalize_guild_slug(guild_slug))
+        try:
+            try:
+                result = await asyncio.to_thread(api_get, {
+                    "action": "getActiveRaids",
+                    "guild": guild_slug,
+                    "guildSlug": guild_slug,
+                    "t": int(time.time()),
+                })
+                for raid in result.get("allRaids") or result.get("raids") or []:
+                    channel_id = clean(raid.get("discordChannelId") or raid.get("discord_channel_id"))
+                    message_id = clean(raid.get("discordMessageId") or raid.get("discord_message_id"))
+                    if not channel_id or not message_id:
+                        skipped += 1
+                        continue
+                    try:
+                        client.add_view(RaidSignupView(raid), message_id=int(message_id))
+                        raid_views += 1
+                        refreshed = await refresh_raid_signup_message_by_id(
+                            clean(raid.get("raidId") or raid.get("id")),
+                            channel_id,
+                            message_id,
+                            raid,
+                        )
+                        if refreshed is True:
+                            raid_refreshed += 1
+                        else:
+                            skipped += 1
+                    except Exception as error:
+                        errors.append(
+                            f"Raid {clean(raid.get('raidName') or raid.get('raid') or raid.get('raidId'))}: {error}"
+                        )
+                    await asyncio.sleep(0.25)
+            except Exception as error:
+                errors.append(f"Raids für {guild_slug}: {error}")
+
+            payloads = []
+            try:
+                payloads.extend(await load_payloads_from_api_entries())
+            except Exception as error:
+                errors.append(f"PO-Anmelder für {guild_slug}: {error}")
+            if normalize_guild_slug(guild_slug) == current_guild_slug():
+                payloads.extend(
+                    payload for payload in load_state().values() if isinstance(payload, dict)
+                )
+
+            seen_po_posts = set()
+            for raw_payload in payloads:
+                payload = dict(raw_payload or {})
+                if payload_guild_slug(payload) != normalize_guild_slug(guild_slug):
+                    continue
+                post_identity = (
+                    clean(payload.get("postKey") or payload.get("poPostKey")),
+                    clean(payload.get("messageId") or payload.get("discordMessageId")),
+                )
+                if not any(post_identity) or post_identity in seen_po_posts:
+                    continue
+                seen_po_posts.add(post_identity)
+                try:
+                    await restore_po_view_fast(client, payload)
+                    po_views += 1
+                except discord.NotFound:
+                    skipped += 1
+                except Exception as error:
+                    errors.append(
+                        f"PO {clean(payload.get('title') or payload.get('postKey'))}: {error}"
+                    )
+        finally:
+            CURRENT_GUILD_SLUG.reset(token)
+
+    return {
+        "raidViews": raid_views,
+        "raidRefreshed": raid_refreshed,
+        "poViews": po_views,
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+
+@client.tree.command(
+    name="anmelder_neustart",
+    description="Stellt nach einem Bot-Absturz alle aktuellen Raid- und PO-Anmelder wieder her.",
+)
+@app_commands.guild_only()
+async def anmelder_neustart(interaction):
+    if not may_manage_discord_channel(interaction):
+        await interaction.response.send_message(
+            "⚠️ Dafür benötigst du die Discord-Berechtigung **Nachrichten verwalten**.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    await emoji_cache_ready.wait()
+    result = await restart_all_active_signup_posts()
+    text = (
+        "✅ Wiederherstellung abgeschlossen: "
+        f"**{int(result.get('raidViews') or 0)} Raid-Buttons** neu verbunden, "
+        f"**{int(result.get('raidRefreshed') or 0)} Raidanmelder** aktualisiert und "
+        f"**{int(result.get('poViews') or 0)} PO-Anmelder** neu verbunden."
+    )
+    skipped = int(result.get("skipped") or 0)
+    errors = result.get("errors") or []
     if skipped:
         text += f" Übersprungen: {skipped}."
     if errors:
