@@ -1872,6 +1872,48 @@ def raid_signup_row_count(helper):
     return len((helper or {}).get("signups") or []) + len((helper or {}).get("externalSignups") or [])
 
 
+def raid_signup_identity(row):
+    row = row or {}
+    user_id = clean(row.get("discordUserId") or row.get("discord_user_id"))
+    player = normalized_prio_player_name(row.get("player") or row.get("char") or row.get("spieler"))
+    return (user_id, player)
+
+
+def is_raidhelper_signup(row):
+    source = clean((row or {}).get("source")).lower().replace("_", "-")
+    return "raid-helper" in source or "raidhelper" in source
+
+
+def preserve_raidhelper_signups(helper, saved_payload):
+    """Verhindert, dass ein unvollständiger Refresh RaidHelper-Anmeldungen ausblendet."""
+    helper = dict(helper or {})
+    current_signups = list(helper.get("signups") or [])
+    current_external = list(helper.get("externalSignups") or [])
+    current_keys = {
+        raid_signup_identity(row)
+        for row in current_signups + current_external
+        if any(raid_signup_identity(row))
+    }
+    saved_rows = list((saved_payload or {}).get("combinedRaidSignups") or [])
+    saved_rows += list((saved_payload or {}).get("combinedRaidExternalSignups") or [])
+    preserved = 0
+    for row in saved_rows:
+        if not is_raidhelper_signup(row):
+            continue
+        identity = raid_signup_identity(row)
+        if any(identity) and identity in current_keys:
+            continue
+        current_external.append(dict(row))
+        if any(identity):
+            current_keys.add(identity)
+        preserved += 1
+    if preserved:
+        print(f"RaidHelper-Schutz: {preserved} bestehende Anmeldung(en) beim Refresh beibehalten.")
+    helper["signups"] = current_signups
+    helper["externalSignups"] = current_external
+    return helper
+
+
 def raid_helper_snapshot_from_payload(payload):
     payload = payload or {}
     raid = dict(payload.get("raidSnapshot") or {})
@@ -1977,6 +2019,7 @@ async def edit_raid_message_preserving_po(message, raid, helper):
             await message.edit(embed=embed, attachments=[], view=RaidSignupView(raid))
         return
 
+    helper = preserve_raidhelper_signups(helper, po_payload)
     po_payload["combinedRaidSnapshot"] = raid
     po_payload["combinedRaidSignups"] = list((helper or {}).get("signups") or [])
     po_payload["combinedRaidExternalSignups"] = list((helper or {}).get("externalSignups") or [])
@@ -5900,6 +5943,7 @@ async def refresh_po_message(client, payload):
     if combined_raid_snapshot(payload):
         helper = await get_raid_helper_for_refresh(payload)
         if helper and helper.get("success"):
+            helper = preserve_raidhelper_signups(helper, payload)
             payload = {
                 **payload,
                 "combinedRaidSnapshot": helper.get("raid") or combined_raid_snapshot(payload),
