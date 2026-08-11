@@ -3035,12 +3035,12 @@ def build_fixed_po_header(payload):
     if lichtloot_id:
         lines.append(f"ID: `{lichtloot_id}`")
     lines.append("PO wird mit LichtLoot synchronisiert.")
-    lines.append(
-        f"{custom_emoji('beuteorange', '🟠')} **PO eingetragen:** wartet noch auf Freigabe."
-    )
-    lines.append(
-        f"{custom_emoji('Beutegrun', '🟢')} **PO freigegeben:** wurde durch die Gildenleitung freigegeben."
-    )
+    if normalize_raid(payload.get("raid") or "") in {"zg", "aq20"}:
+        lines.append(f"{custom_emoji('beuteorange', '🟠')} **PO:** frei wählbar, sammelt keine PO+-Punkte.")
+        lines.append(f"{custom_emoji('Beutegrun', '🟢')} **PO+:** benötigt Freigabe und sammelt PO+-Punkte.")
+    else:
+        lines.append(f"{custom_emoji('beuteorange', '🟠')} **PO eingetragen:** wartet noch auf Freigabe.")
+        lines.append(f"{custom_emoji('Beutegrun', '🟢')} **PO freigegeben:** wurde durch die Gildenleitung freigegeben.")
     lines.append("")
     return lines
 
@@ -3126,24 +3126,9 @@ def save_po_signup_prio(payload, player, class_name, item, player_login="", item
     login = clean(player_login)
     class_name = class_display_name(class_name)
     post_key = clean((payload or {}).get("postKey") or (payload or {}).get("poPostKey") or (payload or {}).get("postId"))
-    if po_release_required_for_raid(payload.get("raid") or ""):
-        release_check = api_post({
-            "action": "lichtbotCheckPoRelease",
-            "queueToken": QUEUE_TOKEN,
-            "guild": payload_guild_slug(payload),
-            "guildSlug": payload_guild_slug(payload),
-            "postKey": post_key,
-            "raid": payload.get("raid") or "",
-            "player": player,
-            "playerPin": login,
-            "spielerLogin": login,
-            "server": clean(payload.get("server")),
-        })
-        if release_check and release_check.get("success") and release_check.get("allowed") is False:
-            return {
-                "success": False,
-                "error": release_check.get("message") or "du hast keine P0+ Freigabe wende dich an den Raidlead"
-            }
+    # Ob eine Freigabe nötig ist, entscheidet die API anhand des gewählten
+    # Items. Bei ZG/AQ20 sind normale PO-Items frei; nur markierte PO+-Items
+    # benötigen die raidbezogene PO+-Freigabe.
     return api_post({
         "action": "lichtbotSavePoSignupPrio",
         "queueToken": QUEUE_TOKEN,
@@ -3329,6 +3314,25 @@ async def load_raid_item_rows(raid):
     except Exception as error:
         print(f"Lootitems konnten nicht geladen werden ({raid}): {error}")
         return []
+    po_plus_by_id = {}
+    po_plus_by_name = {}
+    try:
+        settings = await asyncio.to_thread(api_get, {
+            "action": "getGuildPoItems",
+            "guild": current_guild_slug(),
+            "raid": loot_raid(raid),
+            "t": int(time.time()),
+        })
+        for setting in settings.get("items") or []:
+            flag = bool(setting.get("poPlusEnabled") or setting.get("po_plus_enabled"))
+            setting_id = clean(setting.get("itemId") or setting.get("ItemID") or setting.get("item_id"))
+            setting_name = slug(setting.get("name") or setting.get("item"))
+            if setting_id:
+                po_plus_by_id[setting_id] = flag
+            if setting_name:
+                po_plus_by_name[setting_name] = flag
+    except Exception as error:
+        print(f"PO+-Itemregeln konnten nicht geladen werden ({raid}): {error}")
     seen = set()
     rows = []
     for row in result.get("items") or []:
@@ -3346,6 +3350,7 @@ async def load_raid_item_rows(raid):
             "itemId": item_id,
             "slot": slot,
             "boss": boss,
+            "poPlusEnabled": po_plus_by_id.get(item_id, po_plus_by_name.get(slug(name), False)),
         })
     rows.sort(key=lambda value: (value["name"].lower(), value.get("slot", "").lower(), value.get("itemId", "")))
     return rows
@@ -3431,7 +3436,8 @@ def po_entry_item_display(entry):
 
 
 def po_item_option_label(item):
-    return po_item_name_value(item)[:100]
+    prefix = "PO+ · " if isinstance(item, dict) and (item.get("poPlusEnabled") or item.get("po_plus_enabled")) else "PO · "
+    return (prefix + po_item_name_value(item))[:100]
 
 
 def po_item_option_key(item, index=0):
@@ -4918,6 +4924,7 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
     char_name = clean(char_name)
     player_login = clean(player_login)
     item_id = po_item_id_value(item_name)
+    is_po_plus_item = isinstance(item_name, dict) and bool(item_name.get("poPlusEnabled") or item_name.get("po_plus_enabled"))
     item_slot = clean(item_name.get("slot") or item_name.get("Slot")) if isinstance(item_name, dict) else ""
     item_boss = clean(item_name.get("boss") or item_name.get("Boss")) if isinstance(item_name, dict) else ""
     item_name = po_item_name_value(item_name)
@@ -4988,7 +4995,7 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
     if prio_result and not prio_result.get("success"):
         detail = po_signup_error_message(prio_result.get("error") or "unbekannt", saved_player)
         await interaction.followup.send(
-            f"⚠️ Discord-Eintrag ist gespeichert, aber PO+ konnte nicht gespeichert werden: {detail}",
+            f"⚠️ Discord-Eintrag ist gespeichert, aber {'PO+' if is_po_plus_item else 'PO'} konnte nicht gespeichert werden: {detail}",
             ephemeral=True,
         )
         return
@@ -4998,7 +5005,7 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
     # ältere Momentaufnahme anzeigen und den neuen Eintrag wieder verdrängen.
     asyncio.create_task(refresh_po_message_safely(interaction.client, payload))
     await interaction.followup.send(
-        f"✅ Deine PO wurde gespeichert: **{saved_player}** → **{saved_item}**.\n"
+        f"✅ Deine {'PO+' if is_po_plus_item else 'PO'} wurde gespeichert: **{saved_player}** → **{saved_item}**.\n"
         "Der PO-Post wird gleich aktualisiert.",
         ephemeral=True,
     )
