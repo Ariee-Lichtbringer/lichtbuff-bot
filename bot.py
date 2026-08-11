@@ -8104,6 +8104,7 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
     # denselben Raidpost senden, bevor der Queue-Eintrag auf erledigt steht.
     po_bot_owned_types = {
         "player_login_approval_notice",
+        "player_login_granted_notice",
         "raid_announcement",
         "raid_announcement_refresh",
         "raid_announcement_role_notice",
@@ -8116,6 +8117,7 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
         "po_rejection_notice",
         "po_approval_notice",
         "free_discord_embed",
+        "raid_calendar",
     }
     if update_type in po_bot_owned_types:
         print(f"{update_type} uebersprungen: ausschliesslich der PO-Bot ist zustaendig.")
@@ -8386,6 +8388,7 @@ async def lichtloot_queue_loop():
                         railway_type = str(item.get("type") or "").strip()
                         if railway_type in {
                             "player_login_approval_notice",
+                            "player_login_granted_notice",
                             "raid_announcement",
                             "raid_announcement_refresh",
                             "raid_announcement_role_notice",
@@ -8399,6 +8402,7 @@ async def lichtloot_queue_loop():
                             "po_rejection_notice",
                             "po_approval_notice",
                             "free_discord_embed",
+                            "raid_calendar",
                         }:
                             print(f"{railway_type} in Railway-Queue uebersprungen: separater PO-Bot ist zustaendig.")
                             continue
