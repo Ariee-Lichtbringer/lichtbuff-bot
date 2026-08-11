@@ -1256,6 +1256,9 @@ def build_raid_announcement_embed(raid):
     raid = raid or {}
     raid_name = clean(raid.get("raidName") or display_raid(raid.get("raid")) or "Raid")
     description = clean(raid.get("description")) or "Raidanmeldung ist geöffnet."
+    announcement_message = clean(raid.get("announcementMessage") or raid.get("announcement_message"))
+    if announcement_message and announcement_message not in description:
+        description = f"{description}\n\n{announcement_message}"
     embed = discord.Embed(title=raid_name.upper(), description=description[:3900], color=0x7c3aed)
     embed.add_field(name="Raidlead", value=clean(raid.get("createdBy") or raid.get("erstelltVon") or "Gildenleitung"), inline=True)
     embed.add_field(
@@ -2005,7 +2008,7 @@ async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id
     for key in (
         "raid", "raidName", "raidDate", "raidTime", "description", "createdBy",
         "maxPlayers", "tankSlots", "healSlots", "ddSlots", "signupDeadline",
-        "raidImageUrl", "discordChannelId", "discordMessageId"
+        "announcementMessage", "raidImageUrl", "discordChannelId", "discordMessageId"
     ):
         value = payload_data.get(key)
         if value in (None, ""):
