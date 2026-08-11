@@ -3367,6 +3367,7 @@ def po_item_option_description(item):
     if not isinstance(item, dict):
         return ""
     parts = [
+        "PO+ · Freigabe und Punkte" if item.get("poPlusEnabled") or item.get("po_plus_enabled") else "PO · keine PO+-Punkte",
         clean(item.get("slot") or item.get("Slot")),
         clean(item.get("boss") or item.get("Boss")),
         f"ID {po_item_id_value(item)}" if po_item_id_value(item) else "",
