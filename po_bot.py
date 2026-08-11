@@ -4981,9 +4981,9 @@ async def publish_raid_calendar(payload):
             prio_url = clean(event.get("prioUrl"))
             links = f"[💬 Raid-Channel]({discord_link})"
             if prio_url:
-                links += f" · [🎯 Prios öffnen]({prio_url})"
+                links += f" · [{custom_emoji('beutelilia', '🟣')} Prios eintragen]({prio_url})"
             lines.append(f"{time_label} · 👥 `{count_text}` · {raid_icon} **{name}**{relative}\n└ {links}")
-        embed.add_field(name=field_name, value="\n".join(lines)[:1024] or "–", inline=False)
+        embed.add_field(name=field_name, value="\n\n".join(lines)[:1024] or "–", inline=False)
     embed.set_footer(text="Europe/Berlin · Automatisch erstellt und aktualisiert durch LichtLoot")
     state = load_state()
     state_key = f"_raidCalendar:{payload_guild_slug(payload)}:{channel_id}"
