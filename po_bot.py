@@ -4738,20 +4738,34 @@ async def send_po_release_granted_notice_from_queue(payload):
     character = clean(payload.get("character") or payload.get("player")) or "Unbekannt"
     server = clean(payload.get("server"))
     class_name = clean(payload.get("className") or payload.get("class"))
+    decision = clean(payload.get("decision") or payload.get("status")).lower()
+    revoked = decision == "revoked"
+    reason = clean(payload.get("reason"))
+    custom_message = clean(payload.get("customMessage") or payload.get("message"))
     embed = discord.Embed(
-        title="✅ PO-Freigabe erteilt",
-        description=f"Deine PO-Freigabe für **{raid_name}** wurde erfolgreich bestätigt.",
-        color=0x22C55E,
+        title="❌ PO-Freigabe entzogen" if revoked else "✅ PO-Freigabe erteilt",
+        description=(f"Deine PO-Freigabe für **{raid_name}** wurde entzogen." if revoked else f"Deine PO-Freigabe für **{raid_name}** wurde erfolgreich bestätigt."),
+        color=0xEF4444 if revoked else 0x22C55E,
     )
     embed.add_field(name="🏰 Gilde", value=guild_name, inline=True)
     embed.add_field(name="⚔️ Raid", value=raid_name, inline=True)
     embed.add_field(name="👤 Charakter", value=f"{character}{f'-{server}' if server else ''}", inline=True)
     if class_name:
         embed.add_field(name="🛡️ Klasse", value=f"{class_icon(class_name)} {class_display_name(class_name)}", inline=True)
-    embed.set_footer(text="Du kannst deine Prios jetzt auf der entsprechenden Lootseite eintragen.")
+    if reason:
+        embed.add_field(name="📋 Grund", value=reason, inline=False)
+    if custom_message:
+        embed.add_field(name="💬 Zusätzliche Nachricht", value=custom_message[:1024], inline=False)
+    embed.set_footer(text="Bitte wende dich bei Rückfragen an die Gildenleitung." if revoked else "Du kannst deine Prios jetzt auf der entsprechenden Lootseite eintragen.")
     try:
         user = client.get_user(int(user_id)) or await client.fetch_user(int(user_id))
         await user.send(embed=embed)
+        if payload.get("sendStaffCopy"):
+            copy_embed = embed.copy()
+            copy_embed.title = "ℹ️ Kopie: " + ("PO-Freigabe entzogen" if revoked else "PO-Freigabe erteilt")
+            copy_embed.description = f"Diese Nachricht wurde an **{character}{f'-{server}' if server else ''}** gesendet.\n\n{embed.description}"
+            copy_embed.set_footer(text="Informationskopie für Raidleitung und Offiziere.")
+            await send_queue_targeted_embed(payload, copy_embed)
         return 1
     except Exception as error:
         print(f"PO-Freigabe-DM an {character} konnte nicht gesendet werden: {error}")
