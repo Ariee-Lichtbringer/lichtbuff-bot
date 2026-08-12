@@ -8136,7 +8136,15 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             print(f"Worldbuff-Loeschung aus Queue verarbeitet, {removed} Cache-Eintraege entfernt.")
 
         if update_type == "raid_signup_notice":
-            await send_raid_signup_notice(payload)
+            # Raidanmeldungen werden weiterhin gespeichert und der öffentliche
+            # Discord-Anmelder wird aktualisiert. Der Lichtbuffs-Bot verschickt
+            # dazu jedoch keine privaten Statusnachrichten mehr. Auch bereits
+            # wartende Aufträge laufen anschließend in die normale Erledigt-
+            # Markierung und werden damit nicht später nachgesendet.
+            print(
+                "Raidanmeldungs-DM bewusst unterdrueckt: "
+                f"{queue_guild_slug}:{row_number or item.get('id') or '-'}"
+            )
         elif update_type == "log_analysis_post":
             await post_log_analysis_from_queue(payload)
         elif update_type in {"p0plus_transfer_export", "p0plus_backup_export"}:
