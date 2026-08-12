@@ -6161,10 +6161,6 @@ async def po_queue_loop():
                             await resolve_queue_item(item.get("rowNumber"))
                             continue
                         if item_type == "p0plus_points_update_dm":
-                            if queue_item_created_timestamp(item) < BOT_STARTED_AT:
-                                await resolve_queue_item(item.get("rowNumber"))
-                                print(f"Altes PO+-Punkte-Update beim Neustart verworfen: {queue_guild_slug}:{item.get('rowNumber')}")
-                                continue
                             await send_p0plus_points_update_from_queue(payload)
                             await resolve_queue_item(item.get("rowNumber"))
                             continue
