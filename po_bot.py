@@ -5787,7 +5787,10 @@ class PoDeleteEntrySelect(discord.ui.Select):
                 return
             action_payload = payload_for_interaction(self.payload, interaction)
             await delete_entry(action_payload, entry, interaction.user)
-            await refresh_po_message(interaction.client, action_payload)
+            # Die Datenbank ist nach der Löschung verbindlich. Der direkte
+            # Refresh aktualisiert den Post sofort; der zusätzlich von
+            # Railway erzeugte Queue-Auftrag dient als zuverlässige Sicherung.
+            await refresh_po_message_safely(interaction.client, action_payload)
             await interaction.followup.send(
                 f"🗑️ Gelöscht: **{entry.get('player')}** → **{entry.get('item') or entry.get('itemName')}**.",
                 ephemeral=True,
