@@ -867,13 +867,15 @@ def p0plus_update_target_matches(member, targets):
 
 async def send_p0plus_points_update_dms(payload):
     guild_slug = payload_guild_slug(payload)
-    if guild_slug != "nachtloot":
-        raise RuntimeError("PO+ Punkte Update ist nur für NachtLoot freigegeben.")
     registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
-    guild_id = clean(registry_entry.get("discordGuildId") or NACHTLOOT_DISCORD_GUILD_ID)
+    fallback_guild_ids = {
+        "lichtloot": LICHTLOOT_DISCORD_GUILD_ID,
+        "nachtloot": NACHTLOOT_DISCORD_GUILD_ID,
+    }
+    guild_id = clean(registry_entry.get("discordGuildId") or fallback_guild_ids.get(guild_slug) or "")
     guild = client.get_guild(int(guild_id)) if guild_id.isdigit() else None
     if guild is None:
-        raise RuntimeError("NachtLoot Discord-Server wurde nicht gefunden.")
+        raise RuntimeError(f"Discord-Server fuer {guild_slug or 'die Gilde'} wurde nicht gefunden.")
     sent = 0
     failed = []
     for account in payload.get("accounts") or []:
