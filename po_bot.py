@@ -4874,6 +4874,7 @@ async def delete_entry(payload, entry, user):
     result = await asyncio.to_thread(api_post, {
         "action": "lichtbotDeletePoPostEntry",
         "queueToken": QUEUE_TOKEN,
+        "entryId": entry.get("id") or entry.get("entryId") or "",
         "postKey": payload["postKey"],
         "sourceChannelId": payload_source_channel_id(payload),
         "targetChannelId": payload_target_channel_id(payload),
@@ -4888,6 +4889,8 @@ async def delete_entry(payload, entry, user):
     })
     if not result.get("success"):
         raise RuntimeError(result.get("error") or "PO-Eintrag konnte nicht gelöscht werden.")
+    if int(result.get("deleted") or 0) < 1:
+        raise RuntimeError("PO-Eintrag wurde in der Verwaltung nicht gefunden und deshalb nicht gelöscht.")
     return result
 
 
