@@ -789,7 +789,10 @@ class P0PlusPointsCorrectionButton(discord.ui.Button):
         prefix = "Erhalten" if action == "received" else "Punkte falsch"
         label = f"{prefix}: {item}"[:80]
         style = discord.ButtonStyle.success if action == "received" else discord.ButtonStyle.danger
-        super().__init__(label=label, style=style, row=row)
+        # Feste IDs machen die Buttons auch nach einem Bot-Neustart wieder
+        # ansprechbar. Die eigentlichen Angaben werden aus dem Embed gelesen.
+        custom_id = f"lichtloot:p0plus:{clean(guild_slug) or 'nachtloot'}:{action}:{row}"
+        super().__init__(label=label, style=style, row=row, custom_id=custom_id)
         self.entry = dict(entry or {})
         self.action = action
         self.guild_slug = clean(guild_slug) or "lichtloot"
@@ -797,6 +800,24 @@ class P0PlusPointsCorrectionButton(discord.ui.Button):
     async def callback(self, interaction):
         await interaction.response.defer(ephemeral=True)
         guild_slug = self.guild_slug
+        entry = dict(self.entry or {})
+        # Bei wiederhergestellten Views ist kein ursprüngliches Python-Objekt
+        # mehr vorhanden. Discord liefert aber das Embed der DM weiterhin mit.
+        try:
+            field = interaction.message.embeds[0].fields[self.row]
+            field_name = clean(field.name)
+            field_value = clean(field.value)
+            raid, _, item = field_name.partition(" · ")
+            player_match = re.search(r"Charakter:\s*\*\*(.+?)\*\*", field_value)
+            points_match = re.search(r"PO\+:\s*\*\*([\d.,-]+)", field_value)
+            entry.update({
+                "raid": raid or entry.get("raid"),
+                "item": item or entry.get("item"),
+                "player": player_match.group(1) if player_match else entry.get("player"),
+                "points": points_match.group(1) if points_match else entry.get("points"),
+            })
+        except Exception:
+            pass
         category = "item_received" if self.action == "received" else "points_incorrect"
         note = (
             "Spieler meldet: Item wurde bereits erhalten. Bitte PO+-Stand prüfen und gegebenenfalls entfernen."
@@ -810,11 +831,11 @@ class P0PlusPointsCorrectionButton(discord.ui.Button):
                 "type": "PO+ Punkte Update",
                 "source": "Discord DM",
                 "category": category,
-                "raid": clean(self.entry.get("raid")),
-                "item": clean(self.entry.get("item")),
-                "points": clean(self.entry.get("points")),
-                "player": clean(self.entry.get("player")),
-                "server": clean(self.entry.get("server")),
+                "raid": clean(entry.get("raid")),
+                "item": clean(entry.get("item")),
+                "points": clean(entry.get("points")),
+                "player": clean(entry.get("player")),
+                "server": clean(entry.get("server")),
                 "note": note,
                 "page": "PO-Bot DM",
                 "discordUserId": str(interaction.user.id),
@@ -822,9 +843,29 @@ class P0PlusPointsCorrectionButton(discord.ui.Button):
             })
             if not result.get("success"):
                 raise RuntimeError(result.get("error") or "Rückmeldung konnte nicht gespeichert werden.")
-            self.disabled = True
-            self.label = "Gemeldet ✓"
-            await interaction.message.edit(view=self.view)
+            # Die sichtbare DM-Ansicht frisch aus ihren Embed-Feldern aufbauen.
+            # So werden nach einem Neustart keine Platzhalter-Buttons angezeigt.
+            rebuilt_entries = []
+            try:
+                for embed_field in interaction.message.embeds[0].fields[:5]:
+                    field_raid, _, field_item = clean(embed_field.name).partition(" · ")
+                    field_value = clean(embed_field.value)
+                    field_player = re.search(r"Charakter:\s*\*\*(.+?)\*\*", field_value)
+                    field_points = re.search(r"PO\+:\s*\*\*([\d.,-]+)", field_value)
+                    rebuilt_entries.append({
+                        "raid": field_raid,
+                        "item": field_item,
+                        "player": field_player.group(1) if field_player else "",
+                        "points": field_points.group(1) if field_points else "",
+                    })
+            except Exception:
+                rebuilt_entries = []
+            rebuilt_view = P0PlusPointsCorrectionView(rebuilt_entries or [entry], guild_slug)
+            for child in rebuilt_view.children:
+                if getattr(child, "row", None) == self.row and getattr(child, "action", "") == self.action:
+                    child.disabled = True
+                    child.label = "Gemeldet ✓"
+            await interaction.message.edit(view=rebuilt_view)
             await interaction.followup.send("✅ Danke, deine Rückmeldung wurde an die Gildenleitung weitergegeben.", ephemeral=True)
         except Exception as error:
             await interaction.followup.send(f"⚠️ Rückmeldung konnte nicht gespeichert werden: `{error}`", ephemeral=True)
@@ -832,7 +873,7 @@ class P0PlusPointsCorrectionButton(discord.ui.Button):
 
 class P0PlusPointsCorrectionView(discord.ui.View):
     def __init__(self, entries, guild_slug):
-        super().__init__(timeout=86400 * 30)
+        super().__init__(timeout=None)
         # Discord erlaubt höchstens fünf Reihen. Jede Item-DM enthält deshalb
         # maximal fünf Einträge und pro Eintrag zwei eindeutige Aktionen.
         for row, entry in enumerate(list(entries or [])[:5]):
@@ -6707,6 +6748,8 @@ class PoBot(discord.Client):
     async def setup_hook(self):
         self.add_view(NachtlootHelpView())
         self.add_view(FreeMeetingView())
+        # Stateless wiederherstellbare PO+-DM-Buttons für bis zu fünf Items.
+        self.add_view(P0PlusPointsCorrectionView([{} for _ in range(5)], "nachtloot"))
         self.bg_task = asyncio.create_task(po_queue_loop())
         if TEST_GUILD_ID:
             guild = discord.Object(id=int(TEST_GUILD_ID))
