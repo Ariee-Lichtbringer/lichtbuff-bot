@@ -783,6 +783,132 @@ class FreeMeetingDmView(discord.ui.View):
         await interaction.response.send_modal(FreeMeetingSignupModal(self.target_channel_id, self.target_message_id, "no"))
 
 
+class P0PlusPointsCorrectionButton(discord.ui.Button):
+    def __init__(self, entry, action, row):
+        item = clean((entry or {}).get("item")) or "Item"
+        prefix = "Erhalten" if action == "received" else "Punkte falsch"
+        label = f"{prefix}: {item}"[:80]
+        style = discord.ButtonStyle.success if action == "received" else discord.ButtonStyle.danger
+        super().__init__(label=label, style=style, row=row)
+        self.entry = dict(entry or {})
+        self.action = action
+
+    async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild_slug = "nachtloot"
+        category = "item_received" if self.action == "received" else "points_incorrect"
+        note = (
+            "Spieler meldet: Item wurde bereits erhalten. Bitte PO+-Stand prüfen und gegebenenfalls entfernen."
+            if self.action == "received"
+            else "Spieler meldet: Der angezeigte PO+-Punktestand stimmt nicht. Bitte prüfen und korrigieren."
+        )
+        try:
+            result = await asyncio.to_thread(api_post, {
+                "action": "reportIssue",
+                "guildSlug": guild_slug,
+                "type": "PO+ Punkte Update",
+                "source": "Discord DM",
+                "category": category,
+                "raid": clean(self.entry.get("raid")),
+                "item": clean(self.entry.get("item")),
+                "points": clean(self.entry.get("points")),
+                "player": clean(self.entry.get("player")),
+                "server": clean(self.entry.get("server")),
+                "note": note,
+                "page": "PO-Bot DM",
+            })
+            if not result.get("success"):
+                raise RuntimeError(result.get("error") or "Rückmeldung konnte nicht gespeichert werden.")
+            self.disabled = True
+            self.label = "Gemeldet ✓"
+            await interaction.message.edit(view=self.view)
+            await interaction.followup.send("✅ Danke, deine Rückmeldung wurde an die Gildenleitung weitergegeben.", ephemeral=True)
+        except Exception as error:
+            await interaction.followup.send(f"⚠️ Rückmeldung konnte nicht gespeichert werden: `{error}`", ephemeral=True)
+
+
+class P0PlusPointsCorrectionView(discord.ui.View):
+    def __init__(self, entries):
+        super().__init__(timeout=86400 * 30)
+        # Discord erlaubt höchstens fünf Reihen. Jede Item-DM enthält deshalb
+        # maximal fünf Einträge und pro Eintrag zwei eindeutige Aktionen.
+        for row, entry in enumerate(list(entries or [])[:5]):
+            self.add_item(P0PlusPointsCorrectionButton(entry, "received", row))
+            self.add_item(P0PlusPointsCorrectionButton(entry, "incorrect", row))
+
+
+def p0plus_update_target_matches(member, targets):
+    targets = list(targets or [])
+    if not targets:
+        return True
+    wanted_roles = {
+        clean(target.get("value") or target.get("id"))
+        for target in targets
+        if clean(target.get("type")).lower() == "role"
+    }
+    wanted_names = {
+        normalized_prio_player_name(target.get("value") or target.get("name"))
+        for target in targets
+        if clean(target.get("type") or "name").lower() == "name"
+    }
+    member_roles = {str(role.id) for role in getattr(member, "roles", [])}
+    member_names = {
+        normalized_prio_player_name(getattr(member, "name", "")),
+        normalized_prio_player_name(getattr(member, "display_name", "")),
+        normalized_prio_player_name(getattr(member, "global_name", "")),
+    }
+    return bool(wanted_roles.intersection(member_roles) or configured_discord_name_matches(wanted_names, member_names))
+
+
+async def send_p0plus_points_update_dms(payload):
+    guild_slug = payload_guild_slug(payload)
+    if guild_slug != "nachtloot":
+        raise RuntimeError("PO+ Punkte Update ist nur für NachtLoot freigegeben.")
+    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
+    guild_id = clean(registry_entry.get("discordGuildId") or NACHTLOOT_DISCORD_GUILD_ID)
+    guild = client.get_guild(int(guild_id)) if guild_id.isdigit() else None
+    if guild is None:
+        raise RuntimeError("NachtLoot Discord-Server wurde nicht gefunden.")
+    sent = 0
+    failed = []
+    for account in payload.get("accounts") or []:
+        user_id = clean(account.get("discordUserId"))
+        if not user_id.isdigit():
+            continue
+        member = guild.get_member(int(user_id))
+        if member is None:
+            try:
+                member = await guild.fetch_member(int(user_id))
+            except Exception:
+                failed.append(clean(account.get("discordName")) or user_id)
+                continue
+        if not p0plus_update_target_matches(member, payload.get("targets")):
+            continue
+        entries = list(account.get("entries") or [])
+        for start in range(0, len(entries), 5):
+            chunk = entries[start:start + 5]
+            description = clean(payload.get("messageTemplate")) or "Bitte prüfe deinen aktuell gespeicherten PO+-Punktestand."
+            embed = discord.Embed(title="⭐ Dein aktueller PO+-Punktestand", description=description, color=0xFACC15)
+            for entry in chunk:
+                points = format_points(entry.get("points"))
+                embed.add_field(
+                    name=f"{clean(entry.get('raid')) or 'Raid'} · {clean(entry.get('item')) or 'Item'}",
+                    value=f"Charakter: **{clean(entry.get('player')) or '-'}**\nPO+: **{points} Punkte**",
+                    inline=False,
+                )
+            embed.set_footer(text="Die Meldung ändert keine Punkte automatisch. Die Gildenleitung prüft sie zuerst.")
+            try:
+                await member.send(embed=embed, view=P0PlusPointsCorrectionView(chunk))
+            except Exception as error:
+                failed.append(clean(getattr(member, "display_name", "")) or user_id)
+                print(f"PO+ Punkte Update DM an {member} fehlgeschlagen: {error}")
+                break
+        else:
+            sent += 1
+    print(f"PO+ Punkte Update: {sent} persönliche DMs gesendet; Fehler: {len(set(failed))}.")
+    return sent
+
+
 async def send_free_meeting_dms(payload, message, source_embed, signup=True):
     targets = list(payload.get("meetingNotifyTargets") or [])
     if not targets:
@@ -6333,6 +6459,10 @@ async def po_queue_loop():
                             continue
                         if item_type == "po_release_granted_notice":
                             await send_po_release_granted_notice_from_queue(payload)
+                            await resolve_queue_item(item.get("rowNumber"))
+                            continue
+                        if item_type == "p0plus_points_update_dm":
+                            await send_p0plus_points_update_dms(payload)
                             await resolve_queue_item(item.get("rowNumber"))
                             continue
                         if item_type == "raid_signup_notice":
