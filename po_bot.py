@@ -4264,7 +4264,13 @@ async def send_raid_staff_action_notice(interaction, raid, char_name, action, no
         for target in targets
         if clean(target.get("type")).lower() == "role"
     }
+    wanted_user_ids = {
+        clean(target.get("value") or target.get("id"))
+        for target in targets
+        if clean(target.get("type")).lower() == "user"
+    }
     wanted_roles.discard("")
+    wanted_user_ids.discard("")
     raid_name = clean((raid or {}).get("raidName") or (raid or {}).get("raid")) or "Raid"
     raid_date = format_raid_announcement_date((raid or {}).get("raidDate") or "")
     raid_time = format_raid_announcement_time((raid or {}).get("raidTime") or "")
@@ -4430,7 +4436,7 @@ async def send_p0plus_points_update_from_queue(payload):
             normalized_prio_player_name(account.get("discordName")),
         }
         member_roles = {str(role.id) for role in getattr(member, "roles", [])}
-        if targets and not (configured_discord_name_matches(wanted_names, member_names) or wanted_roles.intersection(member_roles)):
+        if targets and not (user_id in wanted_user_ids or configured_discord_name_matches(wanted_names, member_names) or wanted_roles.intersection(member_roles)):
             continue
         entries = list(account.get("entries") or [])
         lines = []
