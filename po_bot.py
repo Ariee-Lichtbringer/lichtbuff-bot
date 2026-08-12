@@ -5007,6 +5007,55 @@ async def send_loot_master_leadpin_notice_from_queue(payload):
     return count
 
 
+async def clear_selected_po_post(interaction, payload):
+    guild_slug = payload_guild_slug(payload)
+    result = await asyncio.to_thread(api_post, {
+        "action": "lichtbotDeletePoPost", "queueToken": QUEUE_TOKEN,
+        "guild": guild_slug, "guildSlug": guild_slug,
+        "postKey": clean(payload.get("postKey")),
+        "sourceChannelId": payload_source_channel_id(payload),
+        "targetChannelId": payload_target_channel_id(payload),
+    })
+    message_id = clean(payload.get("messageId") or payload.get("discordMessageId"))
+    if message_id:
+        try:
+            await (await interaction.channel.fetch_message(int(message_id))).delete()
+        except discord.NotFound:
+            pass
+    state = load_state()
+    state.pop(po_post_state_key(payload), None)
+    save_state(state)
+    return result
+
+
+class PoClearPostSelect(discord.ui.Select):
+    def __init__(self, payloads):
+        self.payloads = list(payloads)[:25]
+        options = []
+        for index, payload in enumerate(self.payloads):
+            title = clean(payload.get("title")) or display_raid(payload.get("raid")) or "PO-Anmelder"
+            detail = " · ".join(filter(None, [clean(payload.get("date") or payload.get("raidDate")), clean(payload.get("postKey"))]))
+            options.append(discord.SelectOption(label=title[:100], description=detail[:100] or None, value=str(index), emoji="🗑️"))
+        super().__init__(placeholder="PO-Anmelder zum Löschen auswählen", options=options)
+
+    async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        payload = self.payloads[int(self.values[0])]
+        try:
+            result = await clear_selected_po_post(interaction, payload)
+            await interaction.followup.send(
+                f"🗑️ **{clean(payload.get('title')) or payload.get('postKey')}** wurde gelöscht. "
+                f"Entfernte Wiederholungsaufträge: **{int(result.get('deletedQueueJobs') or 0)}**.", ephemeral=True)
+        except Exception as error:
+            await interaction.followup.send(f"⚠️ PO-Anmelder konnte nicht gelöscht werden: `{error}`", ephemeral=True)
+
+
+class PoClearPostView(discord.ui.View):
+    def __init__(self, payloads):
+        super().__init__(timeout=180)
+        self.add_item(PoClearPostSelect(payloads))
+
+
 async def delete_entry(payload, entry, user):
     raid_pin = payload_lichtloot_raid_pin(payload)
     guild_slug = payload_guild_slug(payload)
@@ -7263,6 +7312,37 @@ async def ankuendigung_erstellen(interaction: discord.Interaction, titel: str, t
 @client.tree.command(name="embed_erstellen", description="Erstellt ein frei gestaltbares Discord-Embed.")
 async def embed_erstellen(interaction: discord.Interaction, titel: str, text: str = "", felder: str = "", farbe: str = "sky", fusszeile: str = ""):
     await post_slash_embed(interaction, {"embedType": "custom", "title": titel, "description": text, "points": slash_embed_points(felder), "color": farbe, "footer": fusszeile}, "✅ Freies Embed erstellt.")
+
+
+@client.tree.command(name="clearauswahl", description="Löscht gezielt einen PO-Anmelder aus diesem Channel.")
+async def clearauswahl(interaction: discord.Interaction):
+    permissions = getattr(interaction.user, "guild_permissions", None)
+    if not permissions or not (permissions.administrator or permissions.manage_messages):
+        await interaction.response.send_message("⚠️ Dafür benötigst du die Berechtigung „Nachrichten verwalten“.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    await refresh_guild_registry()
+    guild_slug = guild_slug_for_discord_server(getattr(interaction, "guild", None), GUILD_SLUG)
+    token = CURRENT_GUILD_SLUG.set(guild_slug)
+    try:
+        channel_id = str(interaction.channel_id)
+        payloads = list(await load_payloads_from_api_entries())
+        payloads.extend(payload for payload in load_state().values() if isinstance(payload, dict))
+        found, seen = [], set()
+        for payload in payloads:
+            post_key = clean(payload.get("postKey"))
+            target_id = clean(payload.get("targetChannelId") or payload.get("channelId") or payload.get("sourceChannelId"))
+            identity = (post_key, clean(payload.get("messageId") or payload.get("discordMessageId")))
+            if target_id != channel_id or payload_guild_slug(payload) != guild_slug or not post_key or identity in seen:
+                continue
+            seen.add(identity)
+            found.append(payload)
+        if not found:
+            await interaction.followup.send("In diesem Channel wurden keine aktiven PO-Anmelder gefunden.", ephemeral=True)
+            return
+        await interaction.followup.send("Welchen PO-Anmelder möchtest du vollständig löschen?", view=PoClearPostView(found), ephemeral=True)
+    finally:
+        CURRENT_GUILD_SLUG.reset(token)
 
 
 @client.tree.command(name="po_anmelder", description="Erstellt einen PO-Anmelder im aktuellen Channel.")
