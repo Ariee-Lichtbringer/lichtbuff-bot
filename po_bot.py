@@ -4602,8 +4602,14 @@ async def send_p0plus_points_update_from_queue(payload):
         for target in targets
         if clean(target.get("type")).lower() == "role"
     }
+    wanted_user_ids = {
+        clean(target.get("value") or target.get("id"))
+        for target in targets
+        if clean(target.get("type")).lower() == "user"
+    }
     wanted_names.discard("")
     wanted_roles.discard("")
+    wanted_user_ids.discard("")
     guild_slug = payload_guild_slug(payload)
     registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
     discord_guild_id = clean(registry_entry.get("discordGuildId") or NACHTLOOT_DISCORD_GUILD_ID)
