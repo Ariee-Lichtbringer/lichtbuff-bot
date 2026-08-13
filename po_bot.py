@@ -4954,6 +4954,59 @@ class PoClearPostView(discord.ui.View):
         self.add_item(PoClearPostSelect(payloads))
 
 
+def bot_post_list_label(message):
+    embeds = list(getattr(message, "embeds", []) or [])
+    title = clean(getattr(embeds[0], "title", "")) if embeds else ""
+    if not title:
+        content = clean(getattr(message, "content", ""))
+        title = content.splitlines()[0] if content else "Bot-Nachricht"
+    return title[:100]
+
+
+class BotChannelPostDeleteSelect(discord.ui.Select):
+    def __init__(self, messages):
+        self.message_ids = [str(message.id) for message in messages[:25]]
+        options = []
+        for index, message in enumerate(messages[:25]):
+            created = getattr(message, "created_at", None)
+            timestamp = created.astimezone().strftime("%d.%m.%Y %H:%M") if created else ""
+            options.append(discord.SelectOption(
+                label=bot_post_list_label(message),
+                description=(f"{timestamp} · Nachricht {message.id}")[:100],
+                value=str(index),
+                emoji="🗑️",
+            ))
+        super().__init__(placeholder="Bot-Post auswählen und löschen", options=options)
+
+    async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        message_id = self.message_ids[int(self.values[0])]
+        try:
+            message = await interaction.channel.fetch_message(int(message_id))
+            if getattr(getattr(message, "author", None), "id", None) != getattr(interaction.client.user, "id", None):
+                raise RuntimeError("Diese Nachricht stammt nicht von diesem PO-Bot.")
+            payload = next((
+                dict(value) for value in load_state().values()
+                if isinstance(value, dict)
+                and clean(value.get("messageId") or value.get("discordMessageId")) == message_id
+            ), None)
+            label = bot_post_list_label(message)
+            await message.delete(reason=f"Bot-Post-Auswahl von {interaction.user} ({interaction.user.id})")
+            if payload:
+                await forget_deleted_po_message(payload)
+            await interaction.followup.send(f"🗑️ **{label}** wurde gelöscht.", ephemeral=True)
+        except discord.NotFound:
+            await interaction.followup.send("ℹ️ Der ausgewählte Post wurde bereits gelöscht.", ephemeral=True)
+        except Exception as error:
+            await interaction.followup.send(f"⚠️ Post konnte nicht gelöscht werden: `{clean(error)[:300]}`", ephemeral=True)
+
+
+class BotChannelPostDeleteView(discord.ui.View):
+    def __init__(self, messages):
+        super().__init__(timeout=180)
+        self.add_item(BotChannelPostDeleteSelect(messages))
+
+
 async def delete_entry(payload, entry, user):
     raid_pin = payload_lichtloot_raid_pin(payload)
     guild_slug = payload_guild_slug(payload)
@@ -7171,35 +7224,36 @@ async def embed_erstellen(interaction: discord.Interaction, titel: str, text: st
     await post_slash_embed(interaction, {"embedType": "custom", "title": titel, "description": text, "points": slash_embed_points(felder), "color": farbe, "footer": fusszeile}, "✅ Freies Embed erstellt.")
 
 
-@client.tree.command(name="clearauswahl", description="Löscht gezielt einen PO-Anmelder aus diesem Channel.")
+@client.tree.command(name="clearauswahl", description="Zeigt die Posts dieses PO-Bots im Channel und löscht einen ausgewählten Post.")
 async def clearauswahl(interaction: discord.Interaction):
     permissions = getattr(interaction.user, "guild_permissions", None)
     if not permissions or not (permissions.administrator or permissions.manage_messages):
         await interaction.response.send_message("⚠️ Dafür benötigst du die Berechtigung „Nachrichten verwalten“.", ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
-    await refresh_guild_registry()
-    guild_slug = guild_slug_for_discord_server(getattr(interaction, "guild", None), GUILD_SLUG)
-    token = CURRENT_GUILD_SLUG.set(guild_slug)
     try:
-        channel_id = str(interaction.channel_id)
-        payloads = list(await load_payloads_from_api_entries())
-        payloads.extend(payload for payload in load_state().values() if isinstance(payload, dict))
-        found, seen = [], set()
-        for payload in payloads:
-            post_key = clean(payload.get("postKey"))
-            target_id = clean(payload.get("targetChannelId") or payload.get("channelId") or payload.get("sourceChannelId"))
-            identity = (post_key, clean(payload.get("messageId") or payload.get("discordMessageId")))
-            if target_id != channel_id or payload_guild_slug(payload) != guild_slug or not post_key or identity in seen:
+        found = []
+        async for message in interaction.channel.history(limit=250):
+            if getattr(getattr(message, "author", None), "id", None) != getattr(client.user, "id", None):
                 continue
-            seen.add(identity)
-            found.append(payload)
+            found.append(message)
+            if len(found) >= 25:
+                break
         if not found:
-            await interaction.followup.send("In diesem Channel wurden keine aktiven PO-Anmelder gefunden.", ephemeral=True)
+            await interaction.followup.send("In diesem Channel wurden keine Posts dieses PO-Bots gefunden.", ephemeral=True)
             return
-        await interaction.followup.send("Welchen PO-Anmelder möchtest du vollständig löschen?", view=PoClearPostView(found), ephemeral=True)
-    finally:
-        CURRENT_GUILD_SLUG.reset(token)
+        await interaction.followup.send(
+            "Welchen Post dieses PO-Bots möchtest du löschen? Es werden höchstens die 25 neuesten Bot-Posts angezeigt.",
+            view=BotChannelPostDeleteView(found),
+            ephemeral=True,
+        )
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "⚠️ Der Bot darf den Nachrichtenverlauf in diesem Channel nicht lesen.",
+            ephemeral=True,
+        )
+    except Exception as error:
+        await interaction.followup.send(f"⚠️ Bot-Posts konnten nicht geladen werden: `{clean(error)[:300]}`", ephemeral=True)
 
 
 @client.tree.command(name="po_anmelder", description="Erstellt einen PO-Anmelder im aktuellen Channel.")
