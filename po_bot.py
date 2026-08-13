@@ -1956,11 +1956,43 @@ def combined_po_payload_for_message(message_id):
     return state, None, None
 
 
+def message_component_custom_ids(message):
+    return {
+        clean(getattr(component, "custom_id", ""))
+        for row in (getattr(message, "components", None) or [])
+        for component in (getattr(row, "children", None) or [])
+        if clean(getattr(component, "custom_id", ""))
+    }
+
+
+def is_plain_po_signup_message(message):
+    """A pure PO signup must never be edited as a raid signup."""
+    component_ids = message_component_custom_ids(message)
+    has_po_controls = any(
+        value.startswith(("po-", "po_", "po:"))
+        for value in component_ids
+    )
+    has_raid_controls = any(
+        value.startswith(("raid_", "combined_raid_"))
+        for value in component_ids
+    )
+    if has_po_controls and not has_raid_controls:
+        return True
+    for embed in getattr(message, "embeds", []) or []:
+        title = clean(getattr(embed, "title", "")).lower()
+        footer = clean(getattr(getattr(embed, "footer", None), "text", "")).lower()
+        if "po-anmelder" in title and "post-id:" in footer and not has_raid_controls:
+            return True
+    return False
+
+
 async def edit_raid_message_preserving_po(message, raid, helper):
     # The Discord server is the final authority for the guild when an existing
     # signup post is refreshed. This prevents incomplete queue snapshots from
     # ever applying another guild's banner or signup data to the message.
     raid = dict(raid or {})
+    if is_plain_po_signup_message(message):
+        raise RuntimeError("Sicherheitsstopp: Ein reiner PO-Anmelder darf nicht als Raidanmelder überschrieben werden.")
     message_guild_slug = guild_slug_for_discord_server(
         getattr(message, "guild", None),
         payload_guild_slug(raid),
@@ -2187,18 +2219,25 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None, f
     if existing_message_id:
         try:
             existing_message = await channel.fetch_message(int(existing_message_id))
-            await edit_raid_message_preserving_po(existing_message, raid, helper)
-            await asyncio.to_thread(api_post, {
-                "action": "lichtbotSetRaidDiscordMessage",
-                "queueToken": QUEUE_TOKEN,
-                "guild": payload_guild_slug(raid),
-                "guildSlug": payload_guild_slug(raid),
-                "raidId": clean(raid.get("raidId") or raid.get("id") or raid_id),
-                "discordChannelId": channel_id,
-                "discordMessageId": existing_message_id
-            })
-            print(f"Bestehender Raidanmelder aktualisiert: {raid_id} in {channel_id}/{existing_message_id}")
-            return True
+            if is_plain_po_signup_message(existing_message):
+                print(
+                    f"Gespeicherte Raid-Nachrichten-ID zeigt auf einen PO-Anmelder; "
+                    f"erstelle getrennten Raidpost: {raid_id} in {channel_id}/{existing_message_id}"
+                )
+                existing_message_id = ""
+            else:
+                await edit_raid_message_preserving_po(existing_message, raid, helper)
+                await asyncio.to_thread(api_post, {
+                    "action": "lichtbotSetRaidDiscordMessage",
+                    "queueToken": QUEUE_TOKEN,
+                    "guild": payload_guild_slug(raid),
+                    "guildSlug": payload_guild_slug(raid),
+                    "raidId": clean(raid.get("raidId") or raid.get("id") or raid_id),
+                    "discordChannelId": channel_id,
+                    "discordMessageId": existing_message_id
+                })
+                print(f"Bestehender Raidanmelder aktualisiert: {raid_id} in {channel_id}/{existing_message_id}")
+                return True
         except (discord.NotFound, discord.Forbidden):
             print(f"Bestehender Raidanmelder nicht erreichbar, erstelle neu: {raid_id} in {channel_id}/{existing_message_id}")
     embed = build_raid_announcement_embed(raid)
@@ -3761,6 +3800,18 @@ def message_matches_post_key(message, post_key):
     return False
 
 
+def message_po_prio_pin(message):
+    for embed in getattr(message, "embeds", []) or []:
+        text = "\n".join(filter(None, [
+            clean(getattr(embed, "title", "")),
+            clean(getattr(embed, "description", "")),
+        ]))
+        match = re.search(r"(?:Prio-PIN|LichtLoot\s*ID)\s*:\s*([A-Z0-9]+)", text, re.IGNORECASE)
+        if match:
+            return clean(match.group(1)).upper()
+    return ""
+
+
 async def find_existing_message_id(client, payload):
     try:
         entries = await load_entries(payload)
@@ -3789,8 +3840,9 @@ async def find_existing_message_id(client, payload):
 
 
 async def deduplicate_po_messages(client, channel, payload, preferred_message=None):
-    """Keep exactly one PO signup message for a post key, even after concurrent creates."""
+    """Keep one PO signup per Prio-PIN/channel, even when post keys differ."""
     post_key = clean((payload or {}).get("postKey") or (payload or {}).get("poPostKey"))
+    raid_pin = payload_lichtloot_raid_pin(payload).upper()
     if not post_key:
         return preferred_message
     await asyncio.sleep(1.0)
@@ -3799,14 +3851,25 @@ async def deduplicate_po_messages(client, channel, payload, preferred_message=No
         async for candidate in channel.history(limit=250):
             if getattr(getattr(candidate, "author", None), "id", None) != getattr(client.user, "id", None):
                 continue
-            if message_matches_post_key(candidate, post_key):
+            if message_matches_post_key(candidate, post_key) or (raid_pin and message_po_prio_pin(candidate) == raid_pin):
                 matches.append(candidate)
     except Exception as error:
         print(f"PO-Anmelder Dublettenprüfung fehlgeschlagen ({post_key}): {error}")
         return preferred_message
     if not matches:
         return preferred_message
-    keep = max(matches, key=lambda candidate: int(candidate.id))
+    preferred_id = int(preferred_message.id) if preferred_message else 0
+    keep = next((candidate for candidate in matches if int(candidate.id) == preferred_id), None)
+    if keep is None:
+        # Bei Altdubletten bleibt der in LichtLoot bekannte Post mit Einträgen
+        # erhalten; ansonsten der neueste sichtbare Post.
+        known_ids = {
+            clean(entry.get("discordMessageId") or entry.get("mainMessageId"))
+            for entry in (await load_entries(payload) or [])
+            if clean(entry.get("player") or entry.get("item") or entry.get("itemName"))
+        }
+        keep = next((candidate for candidate in matches if str(candidate.id) in known_ids), None)
+    keep = keep or max(matches, key=lambda candidate: int(candidate.id))
     for duplicate in matches:
         if duplicate.id == keep.id:
             continue
