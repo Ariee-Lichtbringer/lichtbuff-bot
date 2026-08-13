@@ -4528,10 +4528,10 @@ async def send_queue_targeted_embed(payload, embed, image_path=None, show_recipi
 class P0PlusPointsCorrectionButton(discord.ui.Button):
     def __init__(self, entry, action, row, guild_slug):
         item = clean((entry or {}).get("item")) or "Item"
-        prefix = "Erhalten" if action == "received" else "Punkte falsch"
+        prefix = "Erhalten" if action == "received" else ("Punkte stimmen" if action == "correct" else "Punkte falsch")
         super().__init__(
             label=f"{prefix}: {item}"[:80],
-            style=discord.ButtonStyle.success if action == "received" else discord.ButtonStyle.danger,
+            style=discord.ButtonStyle.success if action in {"received", "correct"} else discord.ButtonStyle.danger,
             row=row,
             custom_id=f"lichtloot:p0plus:{normalize_guild_slug(guild_slug)}:{action}:{row}",
         )
@@ -4550,8 +4550,12 @@ class P0PlusPointsCorrectionButton(discord.ui.Button):
             entry.update({"raid": raid, "item": item, "player": player_match.group(1) if player_match else "", "points": points_match.group(1) if points_match else ""})
         except Exception:
             pass
-        category = "item_received" if self.action == "received" else "points_incorrect"
-        note = "Spieler meldet: Item wurde bereits erhalten. Bitte PO+-Stand prüfen und gegebenenfalls entfernen." if self.action == "received" else "Spieler meldet: Der angezeigte PO+-Punktestand stimmt nicht. Bitte prüfen und korrigieren."
+        category = "item_received" if self.action == "received" else ("points_confirmed" if self.action == "correct" else "points_incorrect")
+        note = (
+            "Spieler meldet: Item wurde bereits erhalten. Bitte PO+-Stand prüfen und gegebenenfalls entfernen."
+            if self.action == "received"
+            else ("Spieler bestätigt: Der angezeigte PO+-Punktestand stimmt." if self.action == "correct" else "Spieler meldet: Der angezeigte PO+-Punktestand stimmt nicht. Bitte prüfen und korrigieren.")
+        )
         try:
             result = await asyncio.to_thread(api_post, {
                 "action": "reportIssue", "guildSlug": self.guild_slug, "type": "PO+ Punkte Update",
@@ -4571,11 +4575,12 @@ class P0PlusPointsCorrectionButton(discord.ui.Button):
                 rebuilt_entries.append({"raid": field_raid, "item": field_item, "player": field_player.group(1) if field_player else "", "points": field_points.group(1) if field_points else ""})
             rebuilt_view = P0PlusPointsCorrectionView(rebuilt_entries or [entry], self.guild_slug)
             for child in rebuilt_view.children:
-                if getattr(child, "row", None) == self.row and getattr(child, "action", "") == self.action:
+                if getattr(child, "row", None) == self.row:
                     child.disabled = True
-                    child.label = "Gemeldet ✓"
+                    child.label = "Bestätigt ✓" if self.action == "correct" else ("Gemeldet ✓" if getattr(child, "action", "") == self.action else child.label)
             await interaction.message.edit(view=rebuilt_view)
-            await interaction.followup.send("✅ Danke, deine Rückmeldung wurde an die Gildenleitung weitergegeben.", ephemeral=True)
+            confirmation = "✅ Danke, der PO+-Punktestand für dieses Item wurde als korrekt bestätigt." if self.action == "correct" else "✅ Danke, deine Rückmeldung wurde an die Gildenleitung weitergegeben."
+            await interaction.followup.send(confirmation, ephemeral=True)
         except Exception as error:
             await interaction.followup.send(f"⚠️ Rückmeldung konnte nicht gespeichert werden: `{error}`", ephemeral=True)
 
@@ -4586,6 +4591,47 @@ class P0PlusPointsCorrectionView(discord.ui.View):
         for row, entry in enumerate(list(entries or [])[:5]):
             self.add_item(P0PlusPointsCorrectionButton(entry, "received", row, guild_slug))
             self.add_item(P0PlusPointsCorrectionButton(entry, "incorrect", row, guild_slug))
+        # Discord erlaubt maximal fünf Button-Reihen. Der Sammelbutton sitzt
+        # deshalb neben den beiden Aktionen des ersten Items.
+        if entries:
+            self.add_item(P0PlusAllCorrectButton(entries, guild_slug))
+
+
+class P0PlusAllCorrectButton(discord.ui.Button):
+    def __init__(self, entries, guild_slug):
+        super().__init__(
+            label="Alle Punkte stimmen",
+            emoji="✅",
+            style=discord.ButtonStyle.success,
+            row=0,
+            custom_id=f"lichtloot:p0plus:{normalize_guild_slug(guild_slug)}:all_correct",
+        )
+        self.entries = list(entries or [])[:5]
+        self.guild_slug = normalize_guild_slug(guild_slug)
+
+    async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            lines = []
+            for field in interaction.message.embeds[0].fields[:5]:
+                lines.append(f"{clean(field.name)} – {clean(field.value).replace(chr(10), ' / ')}")
+            result = await asyncio.to_thread(api_post, {
+                "action": "reportIssue", "guildSlug": self.guild_slug,
+                "type": "PO+ Punkte Update", "source": "Discord DM",
+                "category": "all_points_confirmed", "item": "Alle angezeigten Items",
+                "note": "Spieler bestätigt: Alle angezeigten PO+-Punktestände stimmen.\n" + "\n".join(lines),
+                "page": "PO-Bot DM", "discordUserId": str(interaction.user.id),
+                "discordName": clean(getattr(interaction.user, "name", "")),
+            })
+            if not result.get("success"):
+                raise RuntimeError(result.get("error") or "Bestätigung konnte nicht gespeichert werden.")
+            for child in self.view.children:
+                child.disabled = True
+            self.label = "Alle bestätigt ✓"
+            await interaction.message.edit(view=self.view)
+            await interaction.followup.send("✅ Danke, alle angezeigten PO+-Punktestände wurden als korrekt bestätigt.", ephemeral=True)
+        except Exception as error:
+            await interaction.followup.send(f"⚠️ Bestätigung konnte nicht gespeichert werden: `{error}`", ephemeral=True)
 
 
 async def send_p0plus_points_update_from_queue(payload):
