@@ -4525,6 +4525,69 @@ async def send_queue_targeted_embed(payload, embed, image_path=None, show_recipi
     return len(sent)
 
 
+class P0PlusPointsCorrectionButton(discord.ui.Button):
+    def __init__(self, entry, action, row, guild_slug):
+        item = clean((entry or {}).get("item")) or "Item"
+        prefix = "Erhalten" if action == "received" else "Punkte falsch"
+        super().__init__(
+            label=f"{prefix}: {item}"[:80],
+            style=discord.ButtonStyle.success if action == "received" else discord.ButtonStyle.danger,
+            row=row,
+            custom_id=f"lichtloot:p0plus:{normalize_guild_slug(guild_slug)}:{action}:{row}",
+        )
+        self.entry = dict(entry or {})
+        self.action = action
+        self.guild_slug = normalize_guild_slug(guild_slug)
+
+    async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        entry = dict(self.entry or {})
+        try:
+            field = interaction.message.embeds[0].fields[self.row]
+            raid, _, item = clean(field.name).partition(" · ")
+            player_match = re.search(r"Charakter:\s*\*\*(.+?)\*\*", clean(field.value))
+            points_match = re.search(r"PO\+:\s*\*\*([\d.,-]+)", clean(field.value))
+            entry.update({"raid": raid, "item": item, "player": player_match.group(1) if player_match else "", "points": points_match.group(1) if points_match else ""})
+        except Exception:
+            pass
+        category = "item_received" if self.action == "received" else "points_incorrect"
+        note = "Spieler meldet: Item wurde bereits erhalten. Bitte PO+-Stand prüfen und gegebenenfalls entfernen." if self.action == "received" else "Spieler meldet: Der angezeigte PO+-Punktestand stimmt nicht. Bitte prüfen und korrigieren."
+        try:
+            result = await asyncio.to_thread(api_post, {
+                "action": "reportIssue", "guildSlug": self.guild_slug, "type": "PO+ Punkte Update",
+                "source": "Discord DM", "category": category, "raid": clean(entry.get("raid")),
+                "item": clean(entry.get("item")), "points": clean(entry.get("points")),
+                "player": clean(entry.get("player")), "server": clean(entry.get("server")),
+                "note": note, "page": "PO-Bot DM", "discordUserId": str(interaction.user.id),
+                "discordName": clean(getattr(interaction.user, "name", "")),
+            })
+            if not result.get("success"):
+                raise RuntimeError(result.get("error") or "Rückmeldung konnte nicht gespeichert werden.")
+            rebuilt_entries = []
+            for embed_field in interaction.message.embeds[0].fields[:5]:
+                field_raid, _, field_item = clean(embed_field.name).partition(" · ")
+                field_player = re.search(r"Charakter:\s*\*\*(.+?)\*\*", clean(embed_field.value))
+                field_points = re.search(r"PO\+:\s*\*\*([\d.,-]+)", clean(embed_field.value))
+                rebuilt_entries.append({"raid": field_raid, "item": field_item, "player": field_player.group(1) if field_player else "", "points": field_points.group(1) if field_points else ""})
+            rebuilt_view = P0PlusPointsCorrectionView(rebuilt_entries or [entry], self.guild_slug)
+            for child in rebuilt_view.children:
+                if getattr(child, "row", None) == self.row and getattr(child, "action", "") == self.action:
+                    child.disabled = True
+                    child.label = "Gemeldet ✓"
+            await interaction.message.edit(view=rebuilt_view)
+            await interaction.followup.send("✅ Danke, deine Rückmeldung wurde an die Gildenleitung weitergegeben.", ephemeral=True)
+        except Exception as error:
+            await interaction.followup.send(f"⚠️ Rückmeldung konnte nicht gespeichert werden: `{error}`", ephemeral=True)
+
+
+class P0PlusPointsCorrectionView(discord.ui.View):
+    def __init__(self, entries, guild_slug):
+        super().__init__(timeout=None)
+        for row, entry in enumerate(list(entries or [])[:5]):
+            self.add_item(P0PlusPointsCorrectionButton(entry, "received", row, guild_slug))
+            self.add_item(P0PlusPointsCorrectionButton(entry, "incorrect", row, guild_slug))
+
+
 async def send_p0plus_points_update_from_queue(payload):
     """Send each linked account only its own PO+ overview."""
     accounts = list(payload.get("accounts") or [])
@@ -4565,20 +4628,83 @@ async def send_p0plus_points_update_from_queue(payload):
         member_roles = {str(role.id) for role in getattr(member, "roles", [])}
         if targets and not (user_id in wanted_user_ids or configured_discord_name_matches(wanted_names, member_names) or wanted_roles.intersection(member_roles)):
             continue
-        entries = list(account.get("entries") or [])
-        lines = []
-        for entry in entries:
-            points = entry.get("points") or 0
-            lines.append(f"**{clean(entry.get('raid')) or 'Raid'} · {clean(entry.get('item')) or 'Item'}:** {points} Punkte")
-        description = intro[:1800]
-        if lines:
-            description += "\n\n" + "\n".join(lines)
-        embed = discord.Embed(title="⭐ PO+ Punkte Update", description=description[:4096], color=0xF1C40F)
+        raw_entries = list(account.get("entries") or [])
+        grouped_entries = {}
+        for raw_entry in raw_entries:
+            raid_name = clean(raw_entry.get("raid")) or "Raid"
+            item_name = clean(raw_entry.get("item")) or "Item"
+            group_key = (raid_name.lower(), item_name.lower())
+            if group_key not in grouped_entries:
+                grouped_entries[group_key] = {
+                    "raid": raid_name,
+                    "item": item_name,
+                    "points": 0,
+                    "players": [],
+                    "server": clean(raw_entry.get("server")),
+                }
+            grouped_entry = grouped_entries[group_key]
+            try:
+                grouped_entry["points"] += float(str(raw_entry.get("points") or 0).replace(",", "."))
+            except Exception:
+                pass
+            player_name = clean(raw_entry.get("player"))
+            if player_name and player_name not in grouped_entry["players"]:
+                grouped_entry["players"].append(player_name)
+        entries = []
+        for grouped_entry in grouped_entries.values():
+            grouped_entry["player"] = " / ".join(grouped_entry.pop("players", []))
+            entries.append(grouped_entry)
+        entries.sort(key=lambda entry: (clean(entry.get("raid")).lower(), clean(entry.get("item")).lower()))
+        existing_messages = []
         try:
-            await member.send(embed=embed)
-            sent += 1
+            dm_channel = member.dm_channel or await member.create_dm()
+            async for old_message in dm_channel.history(limit=60):
+                if old_message.author.id != client.user.id or not old_message.embeds:
+                    continue
+                old_title = clean(old_message.embeds[0].title)
+                if old_title in {"⭐ PO+ Punkte Update", "⭐ Dein aktueller PO+-Punktestand"}:
+                    existing_messages.append(old_message)
+            existing_messages.sort(key=lambda message: message.id)
         except Exception as error:
-            print(f"PO+-Punkte-DM an {member} fehlgeschlagen: {error}")
+            print(f"Vorhandene PO+-DM von {member} konnte nicht gesucht werden: {error}")
+        delivered = True
+        chunk_index = 0
+        for start in range(0, len(entries), 5):
+            chunk = entries[start:start + 5]
+            embed = discord.Embed(title="⭐ Dein aktueller PO+-Punktestand", description=intro[:1800], color=0xF1C40F)
+            for entry in chunk:
+                embed.add_field(
+                    name=f"{clean(entry.get('raid')) or 'Raid'} · {clean(entry.get('item')) or 'Item'}",
+                    value=f"Charakter: **{clean(entry.get('player')) or '-'}**\nPO+: **{format_points(entry.get('points'))} Punkte**",
+                    inline=False,
+                )
+            embed.set_footer(text="Die Meldung ändert keine Punkte automatisch. Die Gildenleitung prüft sie zuerst.")
+            try:
+                view = P0PlusPointsCorrectionView(chunk, guild_slug)
+                if chunk_index < len(existing_messages):
+                    await existing_messages[chunk_index].edit(embed=embed, view=view)
+                else:
+                    await member.send(embed=embed, view=view)
+            except Exception as error:
+                delivered = False
+                print(f"PO+-Punkte-DM an {member} fehlgeschlagen: {error}")
+                break
+            chunk_index += 1
+        for obsolete_message in existing_messages[chunk_index:]:
+            try:
+                await obsolete_message.edit(
+                    content="",
+                    embed=discord.Embed(
+                        title="⭐ PO+ Punkte Update",
+                        description="Diese ältere Übersicht wurde durch die aktuelle PO+-Liste ersetzt.",
+                        color=0x64748B,
+                    ),
+                    view=None,
+                )
+            except Exception:
+                pass
+        if delivered:
+            sent += 1
     print(f"PO+-Punkte-DMs gesendet: {guild_slug}:{sent}/{len(accounts)}")
     return sent
 
@@ -6685,6 +6811,8 @@ class PoBot(discord.Client):
     async def setup_hook(self):
         self.add_view(NachtlootHelpView())
         self.add_view(FreeMeetingView())
+        self.add_view(P0PlusPointsCorrectionView([{} for _ in range(5)], "lichtloot"))
+        self.add_view(P0PlusPointsCorrectionView([{} for _ in range(5)], "nachtloot"))
         self.bg_task = asyncio.create_task(po_queue_loop())
         if TEST_GUILD_ID:
             guild = discord.Object(id=int(TEST_GUILD_ID))
