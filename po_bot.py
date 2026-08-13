@@ -3077,6 +3077,42 @@ def ensure_payload_lichtloot_raid(payload):
     payload = payload_with_saved_lichtloot_id(payload)
     if payload_lichtloot_raid_pin(payload):
         return payload
+    # Ein PO-Anmelder zu einem bestehenden Raid darf niemals seinen postKey
+    # als neuen Raid anlegen. Zuerst wird deshalb ueber die eindeutige
+    # Kombination Gilde + Raidtyp + Datum + Uhrzeit nach dem echten Raid
+    # gesucht und dessen IDs uebernommen.
+    raid_date, raid_time = payload_raid_schedule(payload)
+    if clean(payload.get("raid")) and raid_date:
+        try:
+            helper = api_get({
+                "action": "getRaidHelper",
+                "guild": payload_guild_slug(payload),
+                "guildSlug": payload_guild_slug(payload),
+                "raid": payload.get("raid") or "",
+                "raidDate": raid_date,
+                "raidTime": raid_time,
+                "t": int(time.time()),
+            })
+            existing_raid = (helper or {}).get("raid") or {}
+            existing_pin = clean(existing_raid.get("playerPin") or existing_raid.get("prioPin") or existing_raid.get("raidPin"))
+            existing_raid_id = clean(existing_raid.get("raidId") or existing_raid.get("id"))
+            if (helper or {}).get("success") and existing_pin:
+                return payload_with_lichtloot_id_from_sources({
+                    **payload,
+                    "raidId": existing_raid_id,
+                    "lichtlootCanonicalRaidId": existing_raid_id,
+                }, existing_raid)
+        except Exception as error:
+            print(f"Bestehender LichtLoot-Raid fuer PO-Anmelder konnte nicht gesucht werden: {error}")
+
+    create_requested = clean(payload.get("createLichtlootRaid") or payload.get("createRaid")).lower() in {"1", "true", "yes", "ja"}
+    if not create_requested:
+        print(
+            "PO-Anmelder bleibt ohne Raid-Neuanlage: "
+            f"guild={payload_guild_slug(payload)} postKey={clean(payload.get('postKey'))} "
+            f"raid={clean(payload.get('raid'))} date={raid_date} time={raid_time}"
+        )
+        return payload
     prio_pin = generated_pin(payload.get("postKey") or payload.get("raid") or "po", 3)
     lead_pin = generated_pin((payload.get("postKey") or "") + "-lead", 4)
     result = api_post({
@@ -5676,8 +5712,15 @@ class PoReviewSelect(discord.ui.Select):
             saved = result.get("entry") or entry
             await refresh_po_message(interaction.client, action_payload)
             dm_sent = await send_po_approval_message(interaction.client, saved)
+            prio_sync = result.get("prioSync") or {}
+            sync_text = (
+                " Automatisch in die LichtLoot-Prioliste eingetragen."
+                if prio_sync.get("success")
+                else f" ⚠️ Prioliste nicht aktualisiert: {prio_sync.get('error') or 'unbekannter Fehler'}."
+            )
             await interaction.followup.send(
                 f"✅ Freigegeben: **{saved.get('player') or entry.get('player')}** → **{saved.get('item') or entry.get('item')}**."
+                + sync_text
                 + (" Nachricht wurde gesendet." if dm_sent else " Nachricht konnte nicht per DM gesendet werden."),
                 ephemeral=True,
             )
