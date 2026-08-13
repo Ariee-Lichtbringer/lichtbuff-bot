@@ -4670,7 +4670,10 @@ async def send_p0plus_points_update_from_queue(payload):
                 old_title = clean(old_message.embeds[0].title)
                 if old_title in {"⭐ PO+ Punkte Update", "⭐ Dein aktueller PO+-Punktestand"}:
                     existing_messages.append(old_message)
-            existing_messages.sort(key=lambda message: message.id)
+            # Immer die neueste sichtbare Übersicht wiederverwenden. Ältere
+            # Nachrichten werden nur dann als ersetzt markiert, wenn weniger
+            # Blöcke als zuvor benötigt werden.
+            existing_messages.sort(key=lambda message: message.id, reverse=True)
         except Exception as error:
             print(f"Vorhandene PO+-DM von {member} konnte nicht gesucht werden: {error}")
         delivered = True
