@@ -1048,6 +1048,7 @@ def get_open_worldbuff_signup_slots(limit=25):
     row_order = 0
 
     rows = get_gildenleitung_worldbuff_rows(days="all")
+    rows = filter_nachtloot_alternating_worldbuff_rows(rows)
 
     for row in rows:
         buff = normalize_buff(row.get("buff", ""))
@@ -1074,10 +1075,11 @@ def get_open_worldbuff_signup_slots(limit=25):
         # der beiden Buffs er wirft. Nach der Anmeldung wird der Termin in
         # Railway auf den gewählten Buff umgestellt und ist insgesamt belegt.
         choice_buffs = [buff]
-        if buff == "Ony":
-            choice_buffs.append("Nef")
-        elif buff == "Nef":
-            choice_buffs.append("Ony")
+        if current_guild_slug() != NACHTLOOT_GUILD_SLUG:
+            if buff == "Ony":
+                choice_buffs.append("Nef")
+            elif buff == "Nef":
+                choice_buffs.append("Ony")
 
         for choice_index, choice_buff in enumerate(choice_buffs):
             key = "|".join([
@@ -1658,6 +1660,49 @@ def filter_worldbuff_rows_for_current_guild(rows):
             )
         )
     ]
+
+
+NACHTLOOT_HAKKAR_ANCHOR_MONDAY = date(2026, 8, 10)
+
+
+def nachtloot_worldbuff_for_date(value):
+    """Nachtloot wirft wochenweise abwechselnd Hakkar und Ony."""
+    if isinstance(value, datetime):
+        slot_date = value.date()
+    elif isinstance(value, date):
+        slot_date = value
+    else:
+        slot_date = datetime.strptime(str(value or "").strip(), "%d.%m.%Y").date()
+
+    slot_monday = slot_date - timedelta(days=slot_date.weekday())
+    weeks_from_anchor = (slot_monday - NACHTLOOT_HAKKAR_ANCHOR_MONDAY).days // 7
+    return "Hakkar" if weeks_from_anchor % 2 == 0 else "Ony"
+
+
+def filter_nachtloot_alternating_worldbuff_rows(rows):
+    """Entfernt fuer Nachtloot die nicht vorgesehene Buff-Auswahl einer Woche."""
+    if current_guild_slug() != NACHTLOOT_GUILD_SLUG:
+        return list(rows or [])
+
+    filtered = []
+    for row in rows or []:
+        if not is_own_worldbuff_guild((row or {}).get("gilde", "")):
+            filtered.append(row)
+            continue
+
+        buff = normalize_buff((row or {}).get("buff", ""))
+        if buff not in ["Hakkar", "Ony", "Nef"]:
+            filtered.append(row)
+            continue
+
+        try:
+            scheduled_buff = nachtloot_worldbuff_for_date((row or {}).get("datum", ""))
+        except (TypeError, ValueError):
+            continue
+        if buff == scheduled_buff:
+            filtered.append(row)
+
+    return filtered
 
 
 def get_shared_wb_poster_rows():
@@ -2512,6 +2557,7 @@ def build_overview():
     if current_guild_slug() == NACHTLOOT_GUILD_SLUG:
         merge_shared_wb_poster_rows(data)
     data = filter_worldbuff_rows_for_current_guild(data)
+    data = filter_nachtloot_alternating_worldbuff_rows(data)
 
     werfer = import_werfer_aus_sheet()
 
@@ -2629,6 +2675,7 @@ def current_worldbuff_announcement_block(max_lines=8):
     if current_guild_slug() == NACHTLOOT_GUILD_SLUG:
         merge_shared_wb_poster_rows(data)
     data = filter_worldbuff_rows_for_current_guild(data)
+    data = filter_nachtloot_alternating_worldbuff_rows(data)
 
     if not data:
         return ""
@@ -2749,17 +2796,21 @@ def build_worldbuff_post_embed(overview_text, self_signup_enabled=True):
     if overview_lines and overview_lines[0].startswith("📢 **Worldbuff"):
         overview_lines = overview_lines[1:]
     overview = "\n".join(overview_lines).strip()
-    signup_section = (
-        f"**Termin eintragen**\n{signup_text}"
-        if self_signup_enabled
-        else "ℹ️ **Selbsteintragung kommt noch für diese Gilde.**"
-    )
+    if self_signup_enabled:
+        signup_section = f"**Termin eintragen**\n{signup_text}"
+    elif current_guild_slug() == NACHTLOOT_GUILD_SLUG:
+        signup_section = "ℹ️ **Hakkar und Ony wechseln sich bei den Nachtwächtern wochenweise ab.**"
+    else:
+        signup_section = "ℹ️ **Selbsteintragung kommt noch für diese Gilde.**"
     description = f"{overview}\n\n{signup_section}".strip()
     if len(description) > 4096:
         description = description[:4092].rstrip() + " …"
 
-    embed.title = "Worldbuffs & Anmeldung"
+    embed.title = "Worldbuffs & Anmeldung" if self_signup_enabled else "Worldbuffs"
     embed.description = description
+    if not self_signup_enabled:
+        embed.clear_fields()
+        embed.set_footer(text=None)
     return embed
 
 
