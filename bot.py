@@ -2994,7 +2994,9 @@ async def sync_recent_ticker_messages(limit=None):
         return await _sync_recent_ticker_messages_unlocked(limit=limit)
 
 
-async def update_worldbuff_post(sync_ticker=True, force_repost=False):
+async def update_worldbuff_post(sync_ticker=True, force_repost=False, refresh_registry=True):
+    if refresh_registry:
+        await refresh_guild_registry()
     channel_id = get_configured_worldbuff_channel_id()
     if not channel_id:
         print(f"Worldbuff-Uebersicht fuer {current_guild_slug()} uebersprungen: kein Zielchannel konfiguriert.")
@@ -3058,18 +3060,24 @@ async def sync_recent_ticker_messages_for_all_guilds(limit=None):
 
 
 async def update_worldbuff_overview_from_all_guilds(force_repost=False):
+    # Layout-Schalter koennen jederzeit in der Gildenleitung geaendert werden.
+    # Vor jedem Uebersichts-Update frisch laden, damit der Bot nicht bis zum
+    # naechsten Neustart mit einem alten Wert weiterarbeitet.
+    await refresh_guild_registry()
     updated_count = 0
     guild_slugs = dict.fromkeys([
         LICHTLOOT_GUILD_SLUG,
         NACHTLOOT_GUILD_SLUG,
-        PANEM_GUILD_SLUG
+        PANEM_GUILD_SLUG,
+        *configured_worldbuff_guild_slugs()
     ])
     for guild_slug in guild_slugs:
         token = CURRENT_GUILD_SLUG.set(guild_slug)
         try:
             updated_count += await update_worldbuff_post(
                 sync_ticker=guild_slug == LICHTLOOT_GUILD_SLUG,
-                force_repost=force_repost
+                force_repost=force_repost,
+                refresh_registry=False
             )
         except Exception as error:
             print(f"Worldbuff-Update fuer {guild_slug} fehlgeschlagen:", error)
