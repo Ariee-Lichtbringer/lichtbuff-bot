@@ -4586,14 +4586,14 @@ class P0PlusPointsCorrectionButton(discord.ui.Button):
 
 
 class P0PlusPointsCorrectionView(discord.ui.View):
-    def __init__(self, entries, guild_slug):
+    def __init__(self, entries, guild_slug, include_all_correct=True):
         super().__init__(timeout=None)
         for row, entry in enumerate(list(entries or [])[:5]):
             self.add_item(P0PlusPointsCorrectionButton(entry, "received", row, guild_slug))
             self.add_item(P0PlusPointsCorrectionButton(entry, "incorrect", row, guild_slug))
         # Discord erlaubt maximal fünf Button-Reihen. Der Sammelbutton sitzt
         # deshalb neben den beiden Aktionen des ersten Items.
-        if entries:
+        if entries and include_all_correct:
             self.add_item(P0PlusAllCorrectButton(entries, guild_slug))
 
 
@@ -4612,24 +4612,31 @@ class P0PlusAllCorrectButton(discord.ui.Button):
     async def callback(self, interaction):
         await interaction.response.defer(ephemeral=True)
         try:
-            lines = []
+            confirmed = 0
             for field in interaction.message.embeds[0].fields[:5]:
-                lines.append(f"{clean(field.name)} – {clean(field.value).replace(chr(10), ' / ')}")
-            result = await asyncio.to_thread(api_post, {
-                "action": "reportIssue", "guildSlug": self.guild_slug,
-                "type": "PO+ Punkte Update", "source": "Discord DM",
-                "category": "all_points_confirmed", "item": "Alle angezeigten Items",
-                "note": "Spieler bestätigt: Alle angezeigten PO+-Punktestände stimmen.\n" + "\n".join(lines),
-                "page": "PO-Bot DM", "discordUserId": str(interaction.user.id),
-                "discordName": clean(getattr(interaction.user, "name", "")),
-            })
-            if not result.get("success"):
-                raise RuntimeError(result.get("error") or "Bestätigung konnte nicht gespeichert werden.")
+                raid, _, item = clean(field.name).partition(" · ")
+                field_value = clean(field.value)
+                player_match = re.search(r"Charakter:\s*\*\*(.+?)\*\*", field_value)
+                points_match = re.search(r"PO\+:\s*\*\*([\d.,-]+)", field_value)
+                player = player_match.group(1) if player_match else ""
+                points = points_match.group(1) if points_match else ""
+                result = await asyncio.to_thread(api_post, {
+                    "action": "reportIssue", "guildSlug": self.guild_slug,
+                    "type": "PO+ Punkte Update", "source": "Discord DM",
+                    "category": "points_confirmed", "raid": raid, "item": item,
+                    "player": player, "points": points,
+                    "note": f"Spieler bestätigt: Der PO+-Punktestand für {item or 'dieses Item'} stimmt ({points or '0'} Punkte).",
+                    "page": "PO-Bot DM", "discordUserId": str(interaction.user.id),
+                    "discordName": clean(getattr(interaction.user, "name", "")),
+                })
+                if not result.get("success"):
+                    raise RuntimeError(result.get("error") or "Bestätigung konnte nicht gespeichert werden.")
+                confirmed += 1
             for child in self.view.children:
                 child.disabled = True
             self.label = "Alle bestätigt ✓"
             await interaction.message.edit(view=self.view)
-            await interaction.followup.send("✅ Danke, alle angezeigten PO+-Punktestände wurden als korrekt bestätigt.", ephemeral=True)
+            await interaction.followup.send(f"✅ Danke, {confirmed} angezeigte PO+-Punktestände wurden als korrekt bestätigt.", ephemeral=True)
         except Exception as error:
             await interaction.followup.send(f"⚠️ Bestätigung konnte nicht gespeichert werden: `{error}`", ephemeral=True)
 
@@ -6866,8 +6873,8 @@ class PoBot(discord.Client):
     async def setup_hook(self):
         self.add_view(NachtlootHelpView())
         self.add_view(FreeMeetingView())
-        self.add_view(P0PlusPointsCorrectionView([{} for _ in range(5)], "lichtloot"))
-        self.add_view(P0PlusPointsCorrectionView([{} for _ in range(5)], "nachtloot"))
+        self.add_view(P0PlusPointsCorrectionView([{} for _ in range(5)], "lichtloot", include_all_correct=False))
+        self.add_view(P0PlusPointsCorrectionView([{} for _ in range(5)], "nachtloot", include_all_correct=False))
         self.bg_task = asyncio.create_task(po_queue_loop())
         if TEST_GUILD_ID:
             guild = discord.Object(id=int(TEST_GUILD_ID))
