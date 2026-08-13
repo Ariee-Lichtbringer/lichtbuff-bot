@@ -320,7 +320,11 @@ NACHTLOOT_WORLDBUFF_BACKUP_CHANNEL_ID = "1531288515994718318"
 NACHTLOOT_P0PLUS_BACKUP_CHANNEL_ID = "1531288738326642828"
 WORLDBUFF_GUILD_SLUGS = [
     LICHTLOOT_GUILD_SLUG,
-    PANEM_GUILD_SLUG
+    PANEM_GUILD_SLUG,
+    # Nachtloot muss auch ohne erfolgreich geladenes Gildenregister aktiv
+    # bleiben. Andernfalls verschwinden seine Worldbuff-Auftraege nach einem
+    # voruebergehenden API-Fehler beim Botstart aus allen Hintergrundlaeufen.
+    NACHTLOOT_GUILD_SLUG,
 ]
 GUILD_REGISTRY = {}
 DISCORD_GUILD_SLUGS = {
@@ -1248,6 +1252,12 @@ class WorldbuffBuffButton(discord.ui.Button):
         )
         token = CURRENT_GUILD_SLUG.set(interaction_guild_slug)
         try:
+            if not lichtbuff_self_signup_buttons_enabled(interaction_guild_slug):
+                await interaction.response.send_message(
+                    "⚠️ Die Selbsteintragung ist für diese Gilde derzeit ausgeschaltet.",
+                    ephemeral=True
+                )
+                return
             buff = normalize_buff(self.buff)
             slots = await asyncio.to_thread(get_open_worldbuff_signup_slots, 75)
             slots = [slot for slot in slots if normalize_buff(slot.get("buff")) == buff]
@@ -1275,6 +1285,15 @@ class WorldbuffBuffPickerView(discord.ui.View):
         self.add_item(WorldbuffBuffButton("Hakkar", "Hakkar", discord.ButtonStyle.success, get_buff_emoji("Hakkar")))
         self.add_item(WorldbuffBuffButton("Ony", "Ony", discord.ButtonStyle.danger, get_buff_emoji("Ony")))
         self.add_item(WorldbuffBuffButton("Nef", "Nef", discord.ButtonStyle.danger, get_buff_emoji("Nef")))
+
+
+def lichtbuff_self_signup_buttons_enabled(guild_slug=None):
+    slug_value = normalize_guild_slug(guild_slug or current_guild_slug())
+    registry_entry = GUILD_REGISTRY.get(slug_value) or {}
+    layout = registry_entry.get("layout") if isinstance(registry_entry, dict) else {}
+    if not isinstance(layout, dict):
+        return True
+    return layout.get("lichtbuffSelfSignupButtons") is not False
 
 
 def clean_hordenbuff_name(value):
@@ -2720,7 +2739,7 @@ def build_worldbuff_guide_embed():
     return build_worldbuff_signup_embed()
 
 
-def build_worldbuff_post_embed(overview_text):
+def build_worldbuff_post_embed(overview_text, self_signup_enabled=True):
     embed = build_worldbuff_signup_embed()
     signup_text = str(embed.description or "").strip()
     overview_lines = str(overview_text or "").strip().splitlines()
@@ -2730,7 +2749,12 @@ def build_worldbuff_post_embed(overview_text):
     if overview_lines and overview_lines[0].startswith("📢 **Worldbuff"):
         overview_lines = overview_lines[1:]
     overview = "\n".join(overview_lines).strip()
-    description = f"{overview}\n\n**Termin eintragen**\n{signup_text}".strip()
+    signup_section = (
+        f"**Termin eintragen**\n{signup_text}"
+        if self_signup_enabled
+        else "ℹ️ **Selbsteintragung kommt noch für diese Gilde.**"
+    )
+    description = f"{overview}\n\n{signup_section}".strip()
     if len(description) > 4096:
         description = description[:4092].rstrip() + " …"
 
@@ -2985,8 +3009,9 @@ async def update_worldbuff_post(sync_ticker=True, force_repost=False):
     if sync_ticker:
         await sync_recent_ticker_messages()
     text = await asyncio.to_thread(build_overview)
-    guide_embed = await asyncio.to_thread(build_worldbuff_post_embed, text)
-    signup_view = WorldbuffBuffPickerView()
+    self_signup_enabled = lichtbuff_self_signup_buttons_enabled()
+    guide_embed = await asyncio.to_thread(build_worldbuff_post_embed, text, self_signup_enabled)
+    signup_view = WorldbuffBuffPickerView() if self_signup_enabled else None
     existing_messages = await fetch_worldbuff_post_messages(channel)
     known_message_ids = {message.id for message in existing_messages}
     recent_messages = await find_recent_own_messages(channel, is_worldbuff_overview_message, limit=100)
@@ -5711,12 +5736,15 @@ async def refresh_raid_signup_message(
         print("Raid-Anmelder-Message konnte nicht aktualisiert werden:", e)
 
 
-async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id=None):
+async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id=None, guild_slug=None):
     raid_id = str(raid_id or "").strip()
     if not raid_id:
         raise RuntimeError("Raid-Anmelder-Refresh: Raid-ID fehlt.")
+    resolved_guild_slug = normalize_guild_slug(guild_slug or current_guild_slug())
     helper = await asyncio.to_thread(lichtloot_get, {
         "action": "getRaidHelper",
+        "guild": resolved_guild_slug,
+        "guildSlug": resolved_guild_slug,
         "raidId": raid_id,
         "playerPin": raid_id,
         "t": int(time.time())
@@ -6391,28 +6419,34 @@ async def restore_active_raid_signup_views():
     restored = 0
     refreshed = 0
     try:
-        result = await asyncio.to_thread(lichtloot_get, {
-            "action": "getActiveRaids",
-            "t": int(time.time())
-        })
-        raids = result.get("allRaids") or result.get("raids") or []
-        for raid in raids:
-            raid_id = str(raid.get("raidId") or raid.get("id") or "").strip()
-            channel_id = str(raid.get("discordChannelId") or raid.get("discord_channel_id") or "").strip()
-            message_id = str(raid.get("discordMessageId") or raid.get("discord_message_id") or "").strip()
-            if not raid_id or not channel_id or not message_id:
-                continue
-            try:
-                client.add_view(RaidSignupView(raid), message_id=int(message_id))
-                restored += 1
-            except Exception as e:
-                print(f"Raid-Anmelder-View konnte nicht registriert werden ({raid_id}): {e}")
-            try:
-                if await refresh_raid_signup_message_by_id(raid_id, channel_id, message_id):
-                    refreshed += 1
-                await asyncio.sleep(1)
-            except Exception as e:
-                print(f"Raid-Anmelder-View konnte nicht aktualisiert werden ({raid_id}): {e}")
+        for guild_slug in configured_worldbuff_guild_slugs():
+            result = await asyncio.to_thread(lichtloot_get, {
+                "action": "getActiveRaids",
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
+                "t": int(time.time())
+            })
+            raids = result.get("allRaids") or result.get("raids") or []
+            for raid in raids:
+                raid = dict(raid)
+                raid["guildSlug"] = guild_slug
+                raid["guild"] = guild_slug
+                raid_id = str(raid.get("raidId") or raid.get("id") or "").strip()
+                channel_id = str(raid.get("discordChannelId") or raid.get("discord_channel_id") or "").strip()
+                message_id = str(raid.get("discordMessageId") or raid.get("discord_message_id") or "").strip()
+                if not raid_id or not channel_id or not message_id:
+                    continue
+                try:
+                    client.add_view(RaidSignupView(raid), message_id=int(message_id))
+                    restored += 1
+                except Exception as e:
+                    print(f"Raid-Anmelder-View konnte nicht registriert werden ({guild_slug}:{raid_id}): {e}")
+                try:
+                    if await refresh_raid_signup_message_by_id(raid_id, channel_id, message_id, guild_slug):
+                        refreshed += 1
+                    await asyncio.sleep(1)
+                except Exception as e:
+                    print(f"Raid-Anmelder-View konnte nicht aktualisiert werden ({guild_slug}:{raid_id}): {e}")
         print(f"Raid-Anmelder-Views wiederhergestellt: {restored}, aktualisiert: {refreshed}.")
     except Exception as e:
         print("Raid-Anmelder-Views konnten beim Start nicht wiederhergestellt werden:", e)
