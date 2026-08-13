@@ -372,6 +372,13 @@ def normalize_raid(value):
     # Apostrophe (z. B. AHN'QIRAJ 20). Für die Raid-Zuordnung werden nur
     # Buchstaben und Zahlen berücksichtigt.
     text = re.sub(r"[^A-Z0-9]+", "", clean(value).upper())
+    # Discord-Embeds tragen häufig beschreibende Titelzusätze wie
+    # "Blackwing Lair Anmeldung" oder "BWL Raidanmelder". Diese Zusätze
+    # gehören nicht zur Raid-ID und dürfen die Zuordnung nicht verhindern.
+    for suffix in ("RAIDANMELDER", "ANMELDUNG", "ANMELDER", "RAID"):
+        if text.endswith(suffix) and len(text) > len(suffix):
+            text = text[:-len(suffix)]
+            break
     if text in {"ZGMITTWOCH", "ZULGURUBMITTWOCH"}:
         return "ZG-MITTWOCH"
     if text in {"ZGPRIME", "ZULGURUBPRIME"}:
@@ -6819,7 +6826,11 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                             continue
                         embed = candidate.embeds[0]
                         field_names = {clean(field.name).lower() for field in embed.fields}
-                        if not ({"slots", "gesamt angemeldet", "rollenverteilung"} & field_names):
+                        if not any(
+                            marker in field_name
+                            for field_name in field_names
+                            for marker in ("slots", "gesamt angemeldet", "rollenverteilung")
+                        ):
                             continue
                         candidate_raid = normalize_raid(clean(embed.title)).lower()
                         field_text = " ".join(clean(field.value) for field in embed.fields)
