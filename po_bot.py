@@ -2522,6 +2522,20 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None, f
     return True
 
 
+async def clear_scheduled_raid_channel(channel_id):
+    channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+    if channel is None or not hasattr(channel, "purge"):
+        raise RuntimeError(f"Discord-Channel {channel_id} kann nicht geleert werden.")
+    deleted = await channel.purge(
+        limit=None,
+        check=lambda message: not message.pinned,
+        bulk=True,
+        reason="Wöchentlicher LichtLoot-Raidanmelder"
+    )
+    print(f"Raid-Channel {channel_id} vor Wochenpost geleert: {len(deleted)} Nachricht(en).")
+    return len(deleted)
+
+
 class RaidSignupPinModal(discord.ui.Modal, title="Mein SpielerLogin/PIN"):
     player_pin = discord.ui.TextInput(
         label="Mein SpielerLogin/PIN",
@@ -6551,6 +6565,11 @@ async def po_queue_loop():
                                 or payload.get("discordChannelId")
                                 or raid.get("discordChannelId")
                             )
+                            if (
+                                clean(payload.get("source")).lower() == "raid_helper_schedule"
+                                and clean(payload.get("clearChannelBeforePost")).lower() in {"1", "true", "yes", "ja"}
+                            ):
+                                await clear_scheduled_raid_channel(channel_id)
                             if not followup:
                                 posted = await post_raid_announcement_by_id(
                                     payload.get("raidId") or payload.get("id"),
