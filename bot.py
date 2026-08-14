@@ -1664,7 +1664,36 @@ def filter_worldbuff_rows_for_current_guild(rows):
 
 def filter_nachtloot_alternating_worldbuff_rows(rows):
     """Nachtloot übernimmt Buff und Termin exakt aus der Worldbuff-Seite."""
-    return list(rows or [])
+    entries = list(rows or [])
+    if current_guild_slug() != NACHTLOOT_GUILD_SLUG:
+        return entries
+
+    def slot_key(row):
+        buff = normalize_buff((row or {}).get("buff", ""))
+        buff_group = "Ony/Nef" if buff in ["Ony", "Nef"] else buff
+        return (str((row or {}).get("datum") or ""), buff_group)
+
+    # Eigene, auf der Leitungsseite gepflegte Termine sind fuer Nachtloot
+    # maßgeblich. WBPoster-Zeilen desselben Tages/Buff-Slots sind nur eine
+    # externe Kopie und duerfen alte Uhrzeiten nicht wieder hinzufuegen.
+    authoritative_slots = {
+        slot_key(row)
+        for row in entries
+        if (
+            isinstance(row, dict)
+            and is_own_worldbuff(row)
+            and str(row.get("source") or "").strip().casefold() != "wb_poster"
+        )
+    }
+    return [
+        row for row in entries
+        if not (
+            isinstance(row, dict)
+            and is_own_worldbuff(row)
+            and str(row.get("source") or "").strip().casefold() == "wb_poster"
+            and slot_key(row) in authoritative_slots
+        )
+    ]
 
 
 def get_shared_wb_poster_rows():
@@ -2299,13 +2328,15 @@ def import_buffs_aus_sheet():
 
     for row in rows:
         sheet_buffs.append({
+            "rowNumber": row.get("rowNumber") or row.get("eventId", ""),
             "buff": row.get("buff", ""),
             "datum": row.get("datum", ""),
             "tag": row.get("tag", ""),
             "uhrzeit": row.get("uhrzeit", ""),
             "gilde": row.get("gilde", ""),
             "charakter": row.get("charakter", ""),
-            "status": row.get("status", "")
+            "status": row.get("status", ""),
+            "source": row.get("source", "")
         })
 
     if not sheet_buffs:
@@ -2960,10 +2991,10 @@ async def _sync_recent_ticker_messages_unlocked(limit=None):
 
     if found_buffs:
         # Ungefilterter gemeinsamer Poster-Cache: enthaelt auch Lichtbringer
-        # und alle weiteren im WB-Poster genannten Gilden.
-        shared_poster_rows = await asyncio.to_thread(load_json, WB_POSTER_CACHE_FILE, [])
-        merge_buffs_into_data(shared_poster_rows, found_buffs)
-        await asyncio.to_thread(save_json, WB_POSTER_CACHE_FILE, shared_poster_rows)
+        # und alle weiteren im WB-Poster genannten Gilden. Der neueste Post
+        # ist ein vollstaendiger Snapshot und ersetzt deshalb den alten Cache.
+        # Ein Merge wuerde nach Zeitkorrekturen jede fruehere Uhrzeit behalten.
+        await asyncio.to_thread(save_json, WB_POSTER_CACHE_FILE, found_buffs)
 
     if not found_buffs and not cached_rows and not readable_ticker_channels:
         return 0
@@ -4841,6 +4872,11 @@ def build_raid_announcement_embed(raid):
     custom_link = configured_discord_link(raid)
     if custom_link:
         embed.add_field(name="Link", value=custom_link, inline=True)
+    embed.add_field(
+        name="Hilfe zur Lootseite",
+        value=f"🧰 [So registriere ich mich auf der Lootseite]({LICHTLOOT_URL.rstrip('/')}/spieler-anleitung.html)",
+        inline=False,
+    )
     worldbuff_block = current_worldbuff_announcement_block()
     if worldbuff_block:
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
@@ -11284,9 +11320,14 @@ async def handle_ticker_update(message):
     if not new_buffs:
         return
 
-    poster_rows = load_json(WB_POSTER_CACHE_FILE, [])
-    merge_buffs_into_data(poster_rows, new_buffs)
-    save_json(WB_POSTER_CACHE_FILE, poster_rows)
+    # Eine WBPoster-Nachricht enthaelt immer den vollstaendigen aktuellen
+    # Stand. Alte Zeitstaende duerfen nicht mit dem neuen Stand verschmelzen.
+    if is_wbposter_bot_message(message):
+        save_json(WB_POSTER_CACHE_FILE, new_buffs)
+    else:
+        poster_rows = load_json(WB_POSTER_CACHE_FILE, [])
+        merge_buffs_into_data(poster_rows, new_buffs)
+        save_json(WB_POSTER_CACHE_FILE, poster_rows)
 
     cached_rows = load_json(worldbuff_file(), [])
     railway_rows = await asyncio.to_thread(import_buffs_aus_sheet)
