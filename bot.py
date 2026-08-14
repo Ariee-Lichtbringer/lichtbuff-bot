@@ -4715,6 +4715,15 @@ def format_raid_announcement_time(value):
     return raw
 
 
+def configured_discord_link(data):
+    url = str((data or {}).get("linkUrl") or "").strip()
+    if not re.match(r"^https?://", url, re.I):
+        return ""
+    label = str((data or {}).get("linkIcon") or (data or {}).get("linkText") or "Link").strip()
+    label = label.replace("[", "").replace("]", "")[:80] or "Link"
+    return f"[{label}]({url})"
+
+
 def build_raid_announcement_text(raid):
     raid_short = normalize_raid_name(raid.get("raid") or raid.get("raidName") or "")
     raid_name = str(raid.get("raidName") or raid_short or "Raid").strip()
@@ -4769,6 +4778,9 @@ def build_raid_announcement_text(raid):
         "",
         "Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein."
     ])
+    custom_link = configured_discord_link(raid)
+    if custom_link:
+        lines.extend(["", f"🔗 **Link:** {custom_link}"])
 
     worldbuff_block = current_worldbuff_announcement_block()
     if worldbuff_block:
@@ -4826,6 +4838,9 @@ def build_raid_announcement_embed(raid):
         embed.add_field(name="Slots", value=" · ".join(slot_parts), inline=False)
 
     embed.add_field(name="Prio-PIN", value=f"`{player_pin}`", inline=True)
+    custom_link = configured_discord_link(raid)
+    if custom_link:
+        embed.add_field(name="Link", value=custom_link, inline=True)
     worldbuff_block = current_worldbuff_announcement_block()
     if worldbuff_block:
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
