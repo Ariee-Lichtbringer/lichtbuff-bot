@@ -2145,6 +2145,28 @@ def raid_announcement_is_stale(raid):
     return False
 
 
+async def delete_po_post_from_queue(payload):
+    payload = payload or {}
+    channel_id = clean(
+        payload.get("targetChannelId")
+        or payload.get("sourceChannelId")
+        or payload.get("channelId")
+    )
+    message_id = clean(payload.get("messageId") or payload.get("discordMessageId"))
+    if not channel_id or not message_id:
+        return False
+    try:
+        channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+        message = await channel.fetch_message(int(message_id))
+        await message.delete()
+        return True
+    except discord.NotFound:
+        return True
+    except (discord.Forbidden, discord.HTTPException, TypeError, ValueError) as error:
+        print(f"P0-Anmelder konnte nicht aus Discord gelöscht werden: {channel_id}/{message_id}: {error}")
+        return False
+
+
 def raid_signup_identity(row):
     row = row or {}
     user_id = clean(row.get("discordUserId") or row.get("discord_user_id"))
@@ -6472,7 +6494,7 @@ async def po_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": QUEUE_TOKEN,
                 "limit": "50",
-                "types": "player_login_approval_notice,player_login_granted_notice,po_post,p0_post_refresh,p0plus_points_update_dm,p0plus_resolution_notice,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,loot_master_leadpin_notice,po_release_request_notice,po_release_granted_notice,po_rejection_notice,po_approval_notice,po_post_delete,free_discord_embed,raid_calendar",
+                "types": "player_login_approval_notice,player_login_granted_notice,po_post,p0_post_refresh,p0plus_points_update_dm,p0plus_resolution_notice,raid_announcement,raid_announcement_refresh,raid_announcement_delete,raid_announcement_role_notice,raid_status_staff_notice,loot_master_leadpin_notice,po_release_request_notice,po_release_granted_notice,po_rejection_notice,po_approval_notice,po_post_delete,free_discord_embed,raid_calendar",
                 "t": int(time.time()),
             })
             if result.get("success"):
@@ -6486,6 +6508,8 @@ async def po_queue_loop():
                         "p0_post_refresh",
                         "raid_announcement",
                         "raid_announcement_refresh",
+                        "raid_announcement_delete",
+                        "po_post_delete",
                     }
                     or clean(item.get("type")) in {
                         "raid_announcement_role_notice",
@@ -6501,7 +6525,11 @@ async def po_queue_loop():
                         "raid_calendar",
                     }
                 ]
-                stale_delete_items = [item for item in items if clean(item.get("type")) == "po_post_delete"]
+                stale_delete_items = [
+                    item for item in items
+                    if clean(item.get("type")) == "po_post_delete"
+                    and queue_item_created_timestamp(item) < BOT_STARTED_AT
+                ]
                 for item in stale_delete_items:
                     queue_guild_slug = normalize_guild_slug(item.get("guild") or item.get("guildSlug"))
                     token = CURRENT_GUILD_SLUG.set(queue_guild_slug)
@@ -6511,6 +6539,7 @@ async def po_queue_loop():
                         CURRENT_GUILD_SLUG.reset(token)
                 if stale_delete_items:
                     print(f"PO-Bot Queue: {len(stale_delete_items)} alte po_post_delete-Auftraege erledigt markiert.")
+                    po_items = [item for item in po_items if item not in stale_delete_items]
                 if not po_items:
                     now = time.time()
                     if now - empty_queue_log_at >= 60:
@@ -6538,6 +6567,24 @@ async def po_queue_loop():
                         if item_type == "player_login_granted_notice":
                             await send_player_login_granted_notice_from_queue(payload)
                             await resolve_queue_item(item.get("rowNumber"))
+                            continue
+                        if item_type == "po_post_delete":
+                            deleted = await delete_po_post_from_queue(payload)
+                            if deleted:
+                                await resolve_queue_item(item.get("rowNumber"))
+                                print(
+                                    "P0-Anmelder aus Discord entfernt: "
+                                    f"{current_guild_slug()}:{payload.get('postKey') or payload.get('messageId') or '?'}"
+                                )
+                            continue
+                        if item_type == "raid_announcement_delete":
+                            deleted = await delete_po_post_from_queue(payload)
+                            if deleted:
+                                await resolve_queue_item(item.get("rowNumber"))
+                                print(
+                                    "Raidanmelder aus Discord entfernt: "
+                                    f"{current_guild_slug()}:{payload.get('raidId') or payload.get('messageId') or '?'}"
+                                )
                             continue
                         if item_type == "free_discord_embed":
                             sent = await post_free_discord_embed_from_queue(payload)
