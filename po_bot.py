@@ -1891,22 +1891,29 @@ def add_raid_signup_roster_fields(embed, helper):
     dd_max = clean(raid.get("ddSlots"))
     max_players = clean(raid.get("maxPlayers"))
     bank_statuses = {"bench", "bank"}
-    total_signed = sum(
-        1 for row in rows
-        if clean(row.get("status")).lower() not in {"absent", "abwesend", *bank_statuses}
-    )
+    total_signed = len(active_rows)
     bank_count = sum(
         1 for row in rows
         if clean(row.get("status")).lower() in bank_statuses
     )
-    bank_suffix = f" (+{bank_count})" if bank_count else ""
+    tentative_count = sum(
+        1 for row in rows
+        if clean(row.get("status")).lower() in {"tentative", "vorläufig", "vorlaeufig"}
+    )
+    late_count = sum(
+        1 for row in rows
+        if clean(row.get("status")).lower() in {"late", "spät", "spaet"}
+    )
+    status_counts = f"🪑 Bank **({bank_count})**  ·  ⚖️ Vorläufig **({tentative_count})**"
+    if late_count:
+        status_counts += f"  ·  🕒 Verspätet **({late_count})**"
     tank_role_icon = signup_spec_icon("Tank", "tank", "Warrior")
     heal_role_icon = custom_emoji("heilung", SPEC_EMOJI_FALLBACKS["heal"])
     melee_role_icon = custom_emoji("melee", "⚔️")
     ranged_role_icon = custom_emoji("range", "🏹")
     embed.add_field(
-        name="👥 Gesamt angemeldet",
-        value=f"**{total_signed}{bank_suffix}{('/' + max_players) if max_players else ''}**\n\u200b",
+        name="👥 Fest angemeldet",
+        value=f"**{total_signed}{('/' + max_players) if max_players else ''}**  ·  {status_counts}\n\u200b",
         inline=False,
     )
     embed.add_field(
