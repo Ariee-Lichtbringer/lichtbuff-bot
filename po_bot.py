@@ -378,17 +378,17 @@ def normalize_raid(value):
         return "ZG-PRIME"
     if text in {"ZGLATE", "ZULGURUBLATE"}:
         return "ZG-LATE"
-    if text in {"MOLTENCORE"}:
+    if text in {"MOLTENCORE"} or text.startswith("MOLTENCORE"):
         return "MC"
-    if text in {"BLACKWINGLAIR"}:
+    if text in {"BLACKWINGLAIR"} or text.startswith("BLACKWINGLAIR"):
         return "BWL"
     if text in {"AQ", "AHNQIRAJ", "AHNQIRAJ40"}:
         return "AQ40"
-    if text in {"AQ20", "AHNQIRAJ20", "RUINSOFAHNQIRAJ"}:
+    if text in {"AQ20", "AHNQIRAJ20", "RUINSOFAHNQIRAJ"} or text.startswith("AQ20") or text.startswith("AHNQIRAJ20"):
         return "AQ20"
-    if text in {"ZULGURUB", "ZG20"}:
+    if text in {"ZULGURUB", "ZG20"} or text.startswith("ZGRAID") or text.startswith("ZG20") or text.startswith("ZULGURUB"):
         return "ZG"
-    if text in {"NAXXRAMAS"}:
+    if text in {"NAXXRAMAS"} or text.startswith("NAXXRAMAS"):
         return "NAXX"
     return text or "RAID"
 
@@ -1511,13 +1511,6 @@ def build_raid_announcement_embed(raid):
     deadline = format_raid_announcement_time(raid.get("signupDeadline") or raid.get("signup_deadline"))
     if deadline != "noch offen":
         embed.add_field(name="Anmeldeschluss", value=deadline, inline=False)
-    slots = []
-    for label, key in [("Gesamt", "maxPlayers"), ("Tanks", "tankSlots"), ("Heals", "healSlots"), ("DD", "ddSlots")]:
-        value = clean(raid.get(key))
-        if value:
-            slots.append(f"{label} {value}")
-    if slots:
-        embed.add_field(name="Slots", value=" · ".join(slots), inline=False)
     prio_enabled = raid.get("prioEnabled") is not False and clean(raid.get("prioEnabled")).lower() != "false"
     if prio_enabled:
         embed.add_field(name="Prio-PIN", value=f"`{clean(raid.get('playerPin')) or '-'}`", inline=True)
@@ -1530,7 +1523,7 @@ def build_raid_announcement_embed(raid):
         raid_date=raid.get("raidDate") or raid.get("raid_date"),
     ) if raid.get("showWorldbuffs") is not False and clean(raid.get("showWorldbuffs")).lower() != "false" else ""
     if worldbuff_block:
-        embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
+        embed.add_field(name="\u200b", value=worldbuff_block[:1024], inline=False)
     if prio_enabled:
         embed.add_field(
             name="Hilfe zur Lootseite",
@@ -1538,7 +1531,7 @@ def build_raid_announcement_embed(raid):
             inline=False,
         )
         embed.add_field(
-            name="Prios auf LichtLoot",
+            name="\u200b",
             value=(
                 f"{custom_emoji('beutelilia', '🟣')} **P1–P3 Lootbag**  ·  "
                 f"{custom_emoji('beuteorange', '🟠')} **PO eingetragen**  ·  "
@@ -1553,11 +1546,6 @@ def build_raid_announcement_embed(raid):
         image_url = raid_announcement_image_url(raid)
         if image_url:
             embed.set_image(url=image_url)
-    embed.set_footer(text=(
-        "Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein."
-        if prio_enabled else
-        "Bitte meldet euch im Discord für den Raid an."
-    ))
     return embed
 
 
@@ -2013,10 +2001,6 @@ def add_raid_signup_roster_fields(embed, helper):
             value=(("\n".join(lines) or "\u200b") + "\n\u200b")[:1024],
             inline=True,
         )
-        # Discord ordnet Inline-Felder in Dreierreihen an. Eine leere, volle
-        # Zeile trennt die nächste Dreiergruppe optisch von der vorherigen.
-        if (class_index + 1) % 3 == 0 and class_index + 1 < len(sorted_classes):
-            embed.add_field(name="\u200b", value="\u200b", inline=False)
     status_groups = [
         ("🔄 Multi Char", {"__multi_role__"}),
         ("🪑 Bank", {"bench", "bank"}),
@@ -2034,8 +2018,21 @@ def add_raid_signup_roster_fields(embed, helper):
         for label, statuses in status_groups
     ]
     visible_status_groups = [(label, status_rows) for label, status_rows in visible_status_groups if status_rows]
-    if visible_status_groups:
-        embed.add_field(name="\u200b", value="\u200b", inline=False)
+    # Discord erlaubt höchstens 25 Embed-Felder. Die Statusgruppen bleiben
+    # bewusst einzeln; bei sehr vielen Klassen entfallen zuerst ergänzende
+    # Hilfsfelder, nicht Bank/Vorläufig/Verspätet/Abwesend.
+    optional_field_names = {
+        "hilfe zur lootseite", "prios auf lichtloot", "aktuelle worldbuffs", "link"
+    }
+    while len(embed.fields) + len(visible_status_groups) + 1 > 25:
+        removable_index = next(
+            (index for index, field in enumerate(embed.fields)
+             if clean(field.name).lower() in optional_field_names or field.name == "\u200b"),
+            None,
+        )
+        if removable_index is None:
+            break
+        embed.remove_field(removable_index)
     for label, status_rows in visible_status_groups:
         players = [
             f"{class_icon(canonical_signup_class(row.get('className') or row.get('klasse')))} "
@@ -6963,7 +6960,7 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                             continue
                         embed = candidate.embeds[0]
                         field_names = {clean(field.name).lower() for field in embed.fields}
-                        if not ({"slots", "gesamt angemeldet", "rollenverteilung"} & field_names):
+                        if not ({"slots", "gesamt angemeldet", "fest angemeldet", "rollenverteilung"} & field_names):
                             continue
                         candidate_raid = normalize_raid(clean(embed.title)).lower()
                         field_text = " ".join(clean(field.value) for field in embed.fields)
