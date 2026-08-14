@@ -3096,6 +3096,7 @@ async def sync_accessible_discord_channels():
             result = await asyncio.to_thread(api_post, {
                 "action": "lichtbotSaveDiscordChannels",
                 "queueToken": QUEUE_TOKEN,
+                "fullSync": "true",
                 "channels": channels
             })
             saved = int(result.get("saved", 0) or 0)
@@ -3895,6 +3896,11 @@ async def resolve_po_target_channel_id(client, payload):
 
     if configured_channel_id:
         print(f"PO-Anmelder Ziel-Channel nicht erreichbar ({payload.get('postKey')}): {configured_channel_id}")
+        # Ein in der Gildenleitung ausdrücklich ausgewählter Channel darf nie
+        # still durch einen ähnlich benannten PO-/Freigabe-Channel ersetzt
+        # werden. Der Auftrag bleibt dadurch offen und kann nach Korrektur der
+        # Channel-Auswahl erneut verarbeitet werden.
+        return configured_channel_id
 
     try:
         result = await asyncio.to_thread(api_get, {
