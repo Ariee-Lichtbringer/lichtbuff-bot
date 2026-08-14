@@ -2899,7 +2899,7 @@ def is_worldbuff_overview_message(message):
         return True
 
     return any(
-        embed.title in {"Worldbuff eintragen", "Worldbuffs & Anmeldung"}
+        embed.title in {"Worldbuff eintragen", "Worldbuffs & Anmeldung", "Worldbuffs"}
         for embed in getattr(message, "embeds", []) or []
     )
 
@@ -3091,14 +3091,18 @@ async def update_worldbuff_post(sync_ticker=True, force_repost=False, refresh_re
     signup_view = WorldbuffBuffPickerView() if self_signup_enabled else None
     existing_messages = await fetch_worldbuff_post_messages(channel)
     known_message_ids = {message.id for message in existing_messages}
-    recent_messages = await find_recent_own_messages(channel, is_worldbuff_overview_message, limit=100)
+    recent_messages = await find_recent_own_messages(
+        channel,
+        is_worldbuff_overview_message,
+        limit=500 if current_guild_slug() == NACHTLOOT_GUILD_SLUG else 100,
+    )
 
     if recent_messages:
         if not existing_messages:
             print(f"Worldbuff-Uebersicht im Channel wiedergefunden: {len(recent_messages)} Nachricht(en).")
         existing_messages.extend(message for message in recent_messages if message.id not in known_message_ids)
 
-    if force_repost and existing_messages:
+    if force_repost and existing_messages and current_guild_slug() != NACHTLOOT_GUILD_SLUG:
         for old_msg in existing_messages:
             try:
                 await old_msg.delete()
@@ -3114,6 +3118,12 @@ async def update_worldbuff_post(sync_ticker=True, force_repost=False, refresh_re
         await msg.edit(content="", embed=guide_embed, view=signup_view)
         await delete_extra_messages(existing_messages)
     else:
+        if current_guild_slug() == NACHTLOOT_GUILD_SLUG:
+            print(
+                "Worldbuff-Uebersicht fuer Nachtwaechter nicht neu erstellt: "
+                "gespeicherter eigener Post wurde nicht gefunden."
+            )
+            return 0
         msg = await send_silent(channel, embed=guide_embed, view=signup_view)
     save_json(worldbuff_post_file(), {"message_id": msg.id, "message_ids": [msg.id]})
     return 1
