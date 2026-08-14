@@ -52,23 +52,9 @@ TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
 LICHTBOT_QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
 
 TICKER_CHANNEL_ID = 1283706980103356448
-PANEM_TICKER_CHANNEL_ID = 1482656882857349277
 POST_CHANNEL_ID = 1281152286772695071
 HORDENBUFF_CHANNEL_ID = 1510764309062615220
-PANEM_HORDENBUFF_CHANNEL_ID = 1518153802983669810
-NACHTLOOT_HORDENBUFF_CHANNEL_ID = int(
-    os.getenv("NACHTLOOT_HORDENBUFF_CHANNEL_ID", "1370129713674064122") or 1370129713674064122
-)
-NACHTLOOT_WORLDBUFF_CHANNEL_ID = int(
-    os.getenv("NACHTLOOT_WORLDBUFF_CHANNEL_ID", "1327704903975440477") or 1327704903975440477
-)
 LOG_ANALYSIS_CHANNEL_ID = 1279032487628242995
-NACHTLOOT_LOG_ANALYSIS_CHANNEL_ID = int(
-    os.getenv("NACHTLOOT_LOG_ANALYSIS_CHANNEL_ID", "1533914926190428393") or 1533914926190428393
-)
-NACHTLOOT_WARCRAFT_LOG_SOURCE_CHANNEL_ID = int(
-    os.getenv("NACHTLOOT_WARCRAFT_LOG_SOURCE_CHANNEL_ID", "1327712129444221040") or 1327712129444221040
-)
 PLAYER_LOGIN_APPROVAL_CHANNEL_ID = int(os.getenv("PLAYER_LOGIN_APPROVAL_CHANNEL_ID", "0") or 0)
 WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_ID = int(os.getenv("WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_ID", "1118795108968574987") or 1118795108968574987)
 WORLDBUFF_REPLACEMENT_WORLDBUFF_CHANNEL_ID = int(os.getenv("WORLDBUFF_REPLACEMENT_WORLDBUFF_CHANNEL_ID", str(POST_CHANNEL_ID)) or POST_CHANNEL_ID)
@@ -88,20 +74,15 @@ WORLDBUFF_POSTER_MESSAGE_IDS = {
 
 TICKER_CHANNEL_IDS = {
     TICKER_CHANNEL_ID,
-    POST_CHANNEL_ID,
-    PANEM_TICKER_CHANNEL_ID
+    POST_CHANNEL_ID
 }
 
 HORDENBUFF_CHANNEL_IDS = {
-    HORDENBUFF_CHANNEL_ID,
-    PANEM_HORDENBUFF_CHANNEL_ID,
-    NACHTLOOT_HORDENBUFF_CHANNEL_ID
+    HORDENBUFF_CHANNEL_ID
 }
 
 LOG_ANALYSIS_CHANNEL_IDS = {
     LOG_ANALYSIS_CHANNEL_ID,
-    NACHTLOOT_LOG_ANALYSIS_CHANNEL_ID,
-    NACHTLOOT_WARCRAFT_LOG_SOURCE_CHANNEL_ID,
     1509236359141785600,  # BWL Log Channel
     1509236588410834965,  # MC Log Channel
     1509235847109804082,  # Naxx Log Channel
@@ -226,35 +207,14 @@ SPEC_EMOJI_NAME_ALIASES = {
     "enhancement": ["enhancement", "enh"],
 }
 LICHTLOOT_GUILD_SLUG = os.getenv("LICHTLOOT_GUILD_SLUG", "lichtloot")
-PANEM_GUILD_SLUG = os.getenv("PANEM_GUILD_SLUG", "panemloot")
 NACHTLOOT_GUILD_SLUG = os.getenv("NACHTLOOT_GUILD_SLUG", "nachtloot")
-NACHTLOOT_DISCORD_GUILD_ID = str(
-    os.getenv("NACHTLOOT_DISCORD_GUILD_ID", "1327701882138923099")
-).strip()
 WORLDBUFF_BACKUP_CHANNEL_ID = "1529393614247952434"
 P0PLUS_BACKUP_CHANNEL_ID = "1529393614247952434"
 NACHTLOOT_WORLDBUFF_BACKUP_CHANNEL_ID = "1531288515994718318"
-WORLDBUFF_GUILD_SLUGS = [
-    LICHTLOOT_GUILD_SLUG,
-    PANEM_GUILD_SLUG,
-    # Nachtloot muss auch ohne erfolgreich geladenes Gildenregister aktiv
-    # bleiben. Andernfalls verschwinden seine Worldbuff-Auftraege nach einem
-    # voruebergehenden API-Fehler beim Botstart aus allen Hintergrundlaeufen.
-    NACHTLOOT_GUILD_SLUG,
-]
+WORLDBUFF_GUILD_SLUGS = []
 GUILD_REGISTRY = {}
-DISCORD_GUILD_SLUGS = {
-    NACHTLOOT_DISCORD_GUILD_ID: NACHTLOOT_GUILD_SLUG
-} if NACHTLOOT_DISCORD_GUILD_ID else {}
-
-CHANNEL_GUILD_SLUGS = {
-    PANEM_TICKER_CHANNEL_ID: PANEM_GUILD_SLUG,
-    PANEM_HORDENBUFF_CHANNEL_ID: PANEM_GUILD_SLUG,
-    NACHTLOOT_HORDENBUFF_CHANNEL_ID: NACHTLOOT_GUILD_SLUG,
-    NACHTLOOT_WORLDBUFF_CHANNEL_ID: NACHTLOOT_GUILD_SLUG,
-    NACHTLOOT_LOG_ANALYSIS_CHANNEL_ID: NACHTLOOT_GUILD_SLUG,
-    NACHTLOOT_WARCRAFT_LOG_SOURCE_CHANNEL_ID: NACHTLOOT_GUILD_SLUG
-}
+DISCORD_GUILD_SLUGS = {}
+CHANNEL_GUILD_SLUGS = {}
 
 # Alter CSV-Export bleibt nur noch als expliziter Notfall-Fallback.
 # Die Wahrheit fuer Worldbuff-Termine ist Railway/Gildenleitung.
@@ -371,8 +331,6 @@ item_emoji_cache = {}
 
 def normalize_guild_slug(value):
     slug_value = str(value or "").strip().lower()
-    if slug_value == "lichtbringer":
-        return LICHTLOOT_GUILD_SLUG
     return slug_value or LICHTLOOT_GUILD_SLUG
 
 
@@ -448,6 +406,10 @@ async def refresh_guild_registry():
             if channel_id:
                 numeric_channel_id = int(channel_id)
                 configured_channel_slugs[numeric_channel_id] = slug_value
+                if configured_key in ("worldbuffChannelId", "worldbuffReplacementChannelId"):
+                    TICKER_CHANNEL_IDS.add(numeric_channel_id)
+                if configured_key == "hordenbuffChannelId":
+                    HORDENBUFF_CHANNEL_IDS.add(numeric_channel_id)
                 if configured_key in ("logSourceChannelId", "logAnalysisChannelId"):
                     LOG_ANALYSIS_CHANNEL_IDS.add(numeric_channel_id)
     CHANNEL_GUILD_SLUGS.update(configured_channel_slugs)
@@ -459,43 +421,24 @@ async def refresh_guild_registry():
 
 
 def guild_slug_for_channel(channel_id):
-    return CHANNEL_GUILD_SLUGS.get(int(channel_id), LICHTLOOT_GUILD_SLUG)
+    return CHANNEL_GUILD_SLUGS.get(int(channel_id), "")
 
 
 def guild_slug_for_message(message):
-    """Explizit konfigurierte Channel-Zuordnungen haben Vorrang vor der Server-Zuordnung."""
-    channel_id = int(getattr(getattr(message, "channel", None), "id", 0) or 0)
-    channel_slug = CHANNEL_GUILD_SLUGS.get(channel_id)
-    if channel_slug:
-        return normalize_guild_slug(channel_slug)
-    return guild_slug_for_discord_server(
-        getattr(message, "guild", None),
-        LICHTLOOT_GUILD_SLUG
-    )
+    """Eine Gilde wird ausschließlich über die registrierte Discord-Server-ID bestimmt."""
+    return guild_slug_for_discord_server(getattr(message, "guild", None), "")
 
 
 def guild_slug_for_discord_guild(discord_guild_id, fallback=""):
-    return normalize_guild_slug(DISCORD_GUILD_SLUGS.get(str(discord_guild_id or "").strip()) or fallback)
+    mapped = DISCORD_GUILD_SLUGS.get(str(discord_guild_id or "").strip())
+    return normalize_guild_slug(mapped) if mapped else ""
 
 
 def guild_slug_for_discord_server(guild, fallback=""):
     mapped = DISCORD_GUILD_SLUGS.get(str(getattr(guild, "id", "") or "").strip())
     if mapped:
         return normalize_guild_slug(mapped)
-    guild_name = str(getattr(guild, "name", "") or "").strip().lower()
-    if guild_name and GUILD_REGISTRY:
-        for slug_value, data in GUILD_REGISTRY.items():
-            candidates = [
-                slug_value,
-                data.get("name"),
-                data.get("guildName"),
-                data.get("guild_name"),
-                data.get("lootName"),
-                data.get("loot_name")
-            ]
-            if any(candidate and str(candidate).strip().lower() in guild_name for candidate in candidates):
-                return normalize_guild_slug(slug_value)
-    return normalize_guild_slug(fallback)
+    return ""
 
 
 async def sync_discord_roles_to_lichtloot():
@@ -1063,8 +1006,11 @@ class WorldbuffSignupModal(discord.ui.Modal):
     async def on_submit(self, interaction):
         interaction_guild_slug = guild_slug_for_discord_server(
             getattr(interaction, "guild", None),
-            guild_slug_for_channel(getattr(interaction, "channel_id", 0) or 0)
+            ""
         )
+        if not interaction_guild_slug:
+            await interaction.response.send_message("Dieser Discord-Server ist keiner freigeschalteten Gilde zugeordnet.", ephemeral=True)
+            return
         token = CURRENT_GUILD_SLUG.set(interaction_guild_slug)
         try:
             await interaction.response.defer(ephemeral=True)
@@ -1128,8 +1074,11 @@ class WorldbuffBuffButton(discord.ui.Button):
     async def callback(self, interaction):
         interaction_guild_slug = guild_slug_for_discord_server(
             getattr(interaction, "guild", None),
-            guild_slug_for_channel(getattr(interaction, "channel_id", 0) or 0)
+            ""
         )
+        if not interaction_guild_slug:
+            await interaction.response.send_message("Dieser Discord-Server ist keiner freigeschalteten Gilde zugeordnet.", ephemeral=True)
+            return
         token = CURRENT_GUILD_SLUG.set(interaction_guild_slug)
         try:
             if not lichtbuff_self_signup_buttons_enabled(interaction_guild_slug):
@@ -1362,8 +1311,11 @@ class RendActionModal(discord.ui.Modal):
     async def on_submit(self, interaction):
         interaction_guild_slug = guild_slug_for_discord_server(
             getattr(interaction, "guild", None),
-            guild_slug_for_channel(getattr(interaction, "channel_id", 0) or 0)
+            ""
         )
+        if not interaction_guild_slug:
+            await interaction.response.send_message("Dieser Discord-Server ist keiner freigeschalteten Gilde zugeordnet.", ephemeral=True)
+            return
         token = CURRENT_GUILD_SLUG.set(interaction_guild_slug)
         try:
             await interaction.response.defer(ephemeral=True)
@@ -3021,12 +2973,7 @@ async def update_worldbuff_overview_from_all_guilds(force_repost=False):
     # naechsten Neustart mit einem alten Wert weiterarbeitet.
     await refresh_guild_registry()
     updated_count = 0
-    guild_slugs = dict.fromkeys([
-        LICHTLOOT_GUILD_SLUG,
-        NACHTLOOT_GUILD_SLUG,
-        PANEM_GUILD_SLUG,
-        *configured_worldbuff_guild_slugs()
-    ])
+    guild_slugs = configured_worldbuff_guild_slugs()
     for guild_slug in guild_slugs:
         token = CURRENT_GUILD_SLUG.set(guild_slug)
         try:
@@ -3664,7 +3611,7 @@ async def update_hordenbuff_post(force=False):
 async def update_hordenbuff_posts_for_all_guilds(force=False):
     await asyncio.to_thread(sync_hordenbuff_schedule_to_nachtloot)
     updated_count = 0
-    for guild_slug in dict.fromkeys([LICHTLOOT_GUILD_SLUG, NACHTLOOT_GUILD_SLUG, PANEM_GUILD_SLUG]):
+    for guild_slug in configured_worldbuff_guild_slugs():
         token = CURRENT_GUILD_SLUG.set(guild_slug)
         try:
             updated_count += await update_hordenbuff_post(force=force)
@@ -4004,11 +3951,8 @@ async def sync_accessible_discord_channels():
     for guild in client.guilds:
         guild_slug = guild_slug_for_discord_server(guild, "")
         if not guild_slug:
-            if not DISCORD_GUILD_SLUGS:
-                guild_slug = LICHTLOOT_GUILD_SLUG
-            else:
-                print(f"Discord-Channel-Sync: Server {guild.name} ({guild.id}) ist keiner LichtLoot-Gilde zugeordnet, uebersprungen.")
-                continue
+            print(f"Discord-Channel-Sync: Server {guild.name} ({guild.id}) ist keiner LichtLoot-Gilde zugeordnet, uebersprungen.")
+            continue
 
         member = guild.me or guild.get_member(client.user.id)
         if member is None:
@@ -4421,18 +4365,10 @@ async def post_player_login_approval_notice(payload):
     guild_slug = normalize_guild_slug(payload.get("guildSlug") or payload.get("guild") or current_guild_slug())
     guild_name = str(payload.get("guildName") or (GUILD_REGISTRY.get(guild_slug) or {}).get("name") or guild_slug).strip()
     registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
-    discord_guild_id = str(
-        registry_entry.get("discordGuildId")
-        or (NACHTLOOT_DISCORD_GUILD_ID if guild_slug == NACHTLOOT_GUILD_SLUG else "")
-    ).strip()
+    discord_guild_id = str(registry_entry.get("discordGuildId") or "").strip()
     discord_guild = client.get_guild(int(discord_guild_id)) if discord_guild_id.isdigit() else None
-    if discord_guild is None and guild_slug == LICHTLOOT_GUILD_SLUG:
-        discord_guild = next(
-            (guild for guild in client.guilds if "lichtbringer" in str(getattr(guild, "name", "")).casefold()),
-            None
-        )
     if discord_guild is None:
-        raise RuntimeError(f"Discord-Server fuer {guild_slug} wurde nicht gefunden.")
+        raise RuntimeError(f"Für {guild_slug} ist keine erreichbare Discord-Server-ID registriert.")
 
     configured_role_ids = {
         int(str(role_id)) for role_id in (payload.get("notificationRoleIds") or [])
@@ -5436,23 +5372,10 @@ async def send_worldbuff_player_change_notice(payload):
     sent = set()
     guild_slug = normalize_guild_slug(payload.get("guildSlug") or payload.get("guild") or current_guild_slug())
     registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
-    discord_guild_id = str(registry_entry.get("discordGuildId") or (NACHTLOOT_DISCORD_GUILD_ID if guild_slug == NACHTLOOT_GUILD_SLUG else "")).strip()
+    discord_guild_id = str(registry_entry.get("discordGuildId") or "").strip()
     selected_guild = client.get_guild(int(discord_guild_id)) if discord_guild_id.isdigit() else None
     if not selected_guild and (wanted_names or wanted_role_ids):
-        for candidate_guild in client.guilds:
-            candidate_role_ids = {str(role.id) for role in candidate_guild.roles}
-            candidate_names = {
-                normalized_discord_name(name)
-                for member in candidate_guild.members
-                for name in (
-                    getattr(member, "name", ""),
-                    getattr(member, "display_name", ""),
-                    getattr(member, "global_name", ""),
-                )
-            }
-            if wanted_role_ids.intersection(candidate_role_ids) or wanted_names.intersection(candidate_names):
-                selected_guild = candidate_guild
-                break
+        raise RuntimeError(f"Für {guild_slug} ist keine erreichbare Discord-Server-ID registriert.")
     guilds = [selected_guild] if selected_guild else []
     for guild in guilds:
         for member in guild.members:
