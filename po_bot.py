@@ -26,14 +26,7 @@ except Exception:
 
 
 TOKEN = os.getenv("PO_BOT_TOKEN", "") or os.getenv("DISCORD_TOKEN", "")
-TEST_GUILD_ID = str(os.getenv("PO_BOT_GUILD_ID", "") or "").strip()
-LICHTLOOT_DISCORD_GUILD_ID = str(
-    os.getenv("LICHTLOOT_DISCORD_GUILD_ID", "") or TEST_GUILD_ID
-).strip()
-NACHTLOOT_DISCORD_GUILD_ID = str(os.getenv("NACHTLOOT_DISCORD_GUILD_ID", "") or "").strip()
 GUILD_SLUG = os.getenv("LICHTLOOT_GUILD", "") or os.getenv("LICHTLOOT_GUILD_SLUG", "") or "lichtloot"
-if GUILD_SLUG.strip().lower() == "lichtbringer":
-    GUILD_SLUG = "lichtloot"
 CURRENT_GUILD_SLUG = contextvars.ContextVar("CURRENT_GUILD_SLUG", default=GUILD_SLUG)
 GUILD_REGISTRY = {}
 DISCORD_GUILD_SLUGS = {}
@@ -59,8 +52,6 @@ BOT_STARTED_AT = time.time()
 
 def normalize_guild_slug(value):
     slug_value = str(value or "").strip().lower()
-    if slug_value == "lichtbringer":
-        return "lichtloot"
     return slug_value or GUILD_SLUG
 
 
@@ -76,10 +67,6 @@ def guild_display_name(value="", payload=None):
     guild_slug = normalize_guild_slug(
         payload.get("guildSlug") or payload.get("guild") or raw_name
     )
-    if guild_slug == "lichtloot":
-        return "Lichtbringer"
-    if guild_slug == "nachtloot":
-        return "Die Nachtwächter"
     registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
     return clean(
         registry_entry.get("name")
@@ -95,15 +82,6 @@ def current_guild_slug():
 
 def payload_guild_slug(payload):
     payload = payload or {}
-    visible_guild = " ".join(
-        clean(payload.get(key)).lower()
-        for key in ("guildName", "displayGuild", "gilde")
-        if clean(payload.get(key))
-    )
-    if "nachtloot" in visible_guild or "nachtw" in visible_guild:
-        return "nachtloot"
-    if "lichtbringer" in visible_guild:
-        return "lichtloot"
     return normalize_guild_slug(
         payload.get("guildSlug")
         or payload.get("guild")
@@ -115,31 +93,19 @@ def guild_slug_for_discord_guild(discord_guild_id, fallback=""):
     mapped = DISCORD_GUILD_SLUGS.get(str(discord_guild_id or "").strip())
     if mapped:
         return normalize_guild_slug(mapped)
-    return normalize_guild_slug(fallback) if clean(fallback) else ""
+    return ""
 
 
 def guild_slug_for_discord_server(guild, fallback=""):
     mapped = DISCORD_GUILD_SLUGS.get(str(getattr(guild, "id", "") or "").strip())
     if mapped:
         return normalize_guild_slug(mapped)
-    guild_name = str(getattr(guild, "name", "") or "").strip().lower()
-    if "nachtloot" in guild_name or "nachtw" in guild_name:
-        return "nachtloot"
-    if "lichtloot" in guild_name or "lichtbringer" in guild_name:
-        return "lichtloot"
-    if guild_name and GUILD_REGISTRY:
-        for slug_value, data in GUILD_REGISTRY.items():
-            candidates = [
-                slug_value,
-                data.get("name"),
-                data.get("guildName"),
-                data.get("guild_name"),
-                data.get("lootName"),
-                data.get("loot_name")
-            ]
-            if any(candidate and str(candidate).strip().lower() in guild_name for candidate in candidates):
-                return normalize_guild_slug(slug_value)
-    return normalize_guild_slug(fallback) if clean(fallback) else ""
+    return ""
+
+
+def registered_discord_guild_id(guild_slug):
+    registry_entry = GUILD_REGISTRY.get(normalize_guild_slug(guild_slug)) or {}
+    return clean(registry_entry.get("discordGuildId"))
 
 
 def payload_for_interaction(payload, interaction):
@@ -911,12 +877,7 @@ def p0plus_update_target_matches(member, targets):
 
 async def send_p0plus_points_update_dms(payload):
     guild_slug = payload_guild_slug(payload)
-    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
-    fallback_guild_ids = {
-        "lichtloot": LICHTLOOT_DISCORD_GUILD_ID,
-        "nachtloot": NACHTLOOT_DISCORD_GUILD_ID,
-    }
-    guild_id = clean(registry_entry.get("discordGuildId") or fallback_guild_ids.get(guild_slug) or "")
+    guild_id = registered_discord_guild_id(guild_slug)
     guild = client.get_guild(int(guild_id)) if guild_id.isdigit() else None
     if guild is None:
         raise RuntimeError(f"Discord-Server fuer {guild_slug or 'die Gilde'} wurde nicht gefunden.")
@@ -962,9 +923,7 @@ async def send_p0plus_points_update_dms(payload):
 
 async def send_p0plus_resolution_notice(payload):
     guild_slug = payload_guild_slug(payload)
-    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
-    fallback_guild_ids = {"lichtloot": LICHTLOOT_DISCORD_GUILD_ID, "nachtloot": NACHTLOOT_DISCORD_GUILD_ID}
-    guild_id = clean(registry_entry.get("discordGuildId") or fallback_guild_ids.get(guild_slug) or "")
+    guild_id = registered_discord_guild_id(guild_slug)
     guild = client.get_guild(int(guild_id)) if guild_id.isdigit() else None
     if guild is None:
         raise RuntimeError(f"Discord-Server fuer {guild_slug or 'die Gilde'} wurde nicht gefunden.")
@@ -1382,33 +1341,15 @@ def raid_announcement_image_url(raid):
     raid_key = normalize_raid((raid or {}).get("raid") or (raid or {}).get("raidName")).lower()
     image_raid_key = "zg" if raid_key in {"zg-mittwoch", "zg-prime", "zg-late"} else raid_key
     guild_slug = normalize_guild_slug((raid or {}).get("guildSlug") or "")
-    guild_name = clean((raid or {}).get("guild") or (raid or {}).get("gilde")).lower()
-    if "nachtloot" in guild_name or "nachtw" in guild_name:
-        guild_slug = "nachtloot"
-    if not (raid or {}).get("guildSlug") and guild_name:
-        for slug_value, data in GUILD_REGISTRY.items():
-            candidates = [
-                slug_value,
-                data.get("name"),
-                data.get("guildName"),
-                data.get("guild_name"),
-                data.get("lootName"),
-                data.get("loot_name"),
-            ]
-            if any(candidate and clean(candidate).lower() == guild_name for candidate in candidates):
-                guild_slug = normalize_guild_slug(slug_value)
-                break
     registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
     layout = registry_entry.get("layout") or {}
     images = layout.get("raidImages") if isinstance(layout, dict) else {}
     guild_image = clean((images or {}).get(raid_key) or (images or {}).get(image_raid_key))
-    if guild_slug != "lichtloot":
-        if guild_image:
-            return urllib.parse.urljoin(LICHTLOOT_URL.rstrip("/") + "/", guild_image)
-        return ""
     explicit = clean((raid or {}).get("raidImageUrl") or (raid or {}).get("imageUrl"))
     if explicit.startswith(("http://", "https://")):
         return explicit
+    if guild_image:
+        return urllib.parse.urljoin(LICHTLOOT_URL.rstrip("/") + "/", guild_image)
     if image_raid_key in {"zg", "aq20", "aq40", "bwl", "mc", "naxx", "ony"}:
         return f"https://lichtloot-production.up.railway.app/images/raid-banners/{image_raid_key}.jpg"
     return ""
@@ -1550,8 +1491,6 @@ def build_raid_announcement_embed(raid):
 
 
 def raid_banner_attachment_name(raid):
-    if payload_guild_slug(raid) != "lichtloot":
-        return ""
     raid_key = normalize_raid(raid.get("raid") or raid.get("raidName")).lower()
     filename = {
         "zg": "zg.jpg", "aq20": "aq20.jpg", "aq40": "aq40.jpg",
@@ -3125,11 +3064,8 @@ async def sync_accessible_discord_channels():
     for guild in client.guilds:
         guild_slug = guild_slug_for_discord_server(guild, "")
         if not guild_slug:
-            if not DISCORD_GUILD_SLUGS:
-                guild_slug = GUILD_SLUG
-            else:
-                print(f"PO Discord-Channel-Sync: Server {guild.name} ({guild.id}) ist keiner LichtLoot-Gilde zugeordnet, uebersprungen.")
-                continue
+            print(f"PO Discord-Channel-Sync: Server {guild.name} ({guild.id}) ist keiner registrierten Gilde zugeordnet, uebersprungen.")
+            continue
 
         member = guild.me or guild.get_member(client.user.id)
         if member is None:
@@ -3382,10 +3318,7 @@ def lichtloot_prio_url(payload=None):
 
 
 def guild_prio_link_icon(payload):
-    guild_slug = payload_guild_slug(payload)
-    if guild_slug == "nachtloot":
-        return custom_emoji("GildeniconNW", "🌙")
-    return custom_emoji("GildeniconLB", "⚜️")
+    return "🔗"
 
 
 def build_fixed_po_header(payload):
@@ -4302,7 +4235,9 @@ async def reviewer_allowed(user):
         normalized_prio_player_name(getattr(user, "display_name", "")),
         normalized_prio_player_name(getattr(user, "global_name", "")),
     }
-    guild_slug = guild_slug_for_discord_server(getattr(user, "guild", None), current_guild_slug())
+    guild_slug = guild_slug_for_discord_server(getattr(user, "guild", None), "")
+    if not guild_slug:
+        return False
     try:
         result = await asyncio.to_thread(api_get, {
             "action": "guildGetNotificationSettings",
@@ -4665,34 +4600,10 @@ async def send_queue_targeted_embed(payload, embed, image_path=None, show_recipi
     wanted_roles.discard("")
     guild_slug = payload_guild_slug(payload)
     registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
-    discord_guild_id = clean(
-        registry_entry.get("discordGuildId")
-        or ({
-            "lichtloot": LICHTLOOT_DISCORD_GUILD_ID,
-            "nachtloot": NACHTLOOT_DISCORD_GUILD_ID,
-        }.get(guild_slug) or "")
-    )
+    discord_guild_id = registered_discord_guild_id(guild_slug)
     target_guild = client.get_guild(int(discord_guild_id)) if discord_guild_id.isdigit() else None
     if target_guild is None:
-        guild_name = clean(payload.get("guildName") or registry_entry.get("name") or guild_slug)
-        guild_name_aliases = {
-            "lichtloot": {"lichtloot", "lichtbringer"},
-            "nachtloot": {"nachtloot", "nachtwachter", "nachtwaechter", "nachtwächter"},
-        }
-        expected_names = {
-            normalized_prio_player_name(value)
-            for value in ({guild_slug, guild_name} | guild_name_aliases.get(guild_slug, set()))
-            if clean(value)
-        }
-        target_guild = next(
-            (
-                guild for guild in client.guilds
-                if any(name and name in normalized_prio_player_name(guild.name) for name in expected_names)
-            ),
-            None,
-        )
-    if target_guild is None:
-        raise RuntimeError(f"Discord-Server fuer {guild_slug} wurde nicht gefunden.")
+        raise RuntimeError(f"Für {guild_slug} ist keine erreichbare Discord-Server-ID registriert.")
     recipients = []
     for guild in [target_guild]:
         guild_role_ids = {str(role.id) for role in guild.roles}
@@ -4746,31 +4657,10 @@ async def send_player_login_approval_notice_from_queue(payload):
         payload.get("guildName") or registry_entry.get("name") or guild_slug,
         payload,
     )
-    discord_guild_id = clean(
-        registry_entry.get("discordGuildId")
-        or ({
-            "lichtloot": LICHTLOOT_DISCORD_GUILD_ID,
-            "nachtloot": NACHTLOOT_DISCORD_GUILD_ID,
-        }.get(guild_slug) or "")
-    )
+    discord_guild_id = registered_discord_guild_id(guild_slug)
     discord_guild = client.get_guild(int(discord_guild_id)) if discord_guild_id.isdigit() else None
     if discord_guild is None:
-        guild_name_aliases = {
-            "lichtloot": {"lichtloot", "lichtbringer"},
-            "nachtloot": {"nachtloot", "nachtwachter", "nachtwaechter", "nachtwächter"},
-        }
-        expected_names = {
-            normalized_prio_player_name(value)
-            for value in ({guild_slug, guild_name} | guild_name_aliases.get(guild_slug, set()))
-            if clean(value)
-        }
-        discord_guild = next(
-            (
-                guild for guild in client.guilds
-                if any(name and name in normalized_prio_player_name(guild.name) for name in expected_names)
-            ),
-            None,
-        )
+        raise RuntimeError(f"Für {guild_slug} ist keine erreichbare Discord-Server-ID registriert.")
     if discord_guild is None:
         raise RuntimeError(f"Discord-Server fuer {guild_slug} wurde nicht gefunden.")
 
@@ -4961,14 +4851,7 @@ async def send_po_release_request_notice_from_queue(payload):
     request_type = clean(payload.get("requestType"))
     request_label = {"recruit":"Rekrutenstatus aufheben","p1p3":"P1–P3 Freigabe","p0":"P0 Freigabe","po":"PO-Freigabe"}.get(request_type,request_type or "PO-Freigabe")
     registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
-    discord_guild_id = clean(
-        payload.get("discordGuildId")
-        or registry_entry.get("discordGuildId")
-        or ({
-            "lichtloot": LICHTLOOT_DISCORD_GUILD_ID,
-            "nachtloot": NACHTLOOT_DISCORD_GUILD_ID,
-        }.get(guild_slug) or "")
-    )
+    discord_guild_id = registered_discord_guild_id(guild_slug)
     discord_guild = client.get_guild(int(discord_guild_id)) if discord_guild_id.isdigit() else None
     discord_channel_id = clean(
         payload.get("targetChannelId")
@@ -5079,14 +4962,7 @@ async def send_po_release_granted_notice_from_queue(payload):
 async def send_loot_master_leadpin_notice_from_queue(payload):
     raid_name = clean(payload.get("raidName")) or "Raid"
     guild_slug = normalize_guild_slug(payload.get("guildSlug") or payload.get("guild") or "")
-    guild_name = clean(payload.get("guildName") or payload.get("guild") or guild_slug)
-    guild_display_names = {
-        "lichtloot": "Lichtbringer",
-        "nachtloot": "Die Nachtwächter",
-        "panemloot": "Panem et Circenses",
-    }
-    if guild_slug in guild_display_names or guild_name.lower() in {"lichtloot", "nachtloot", "panemloot"}:
-        guild_name = guild_display_names.get(guild_slug, guild_display_names.get(guild_name.lower(), guild_name))
+    guild_name = guild_display_name(payload.get("guildName") or payload.get("guild") or guild_slug, payload)
     guild_name = guild_name or "Unbekannte Gilde"
     raid_id = clean(payload.get("raidId") or payload.get("id"))
     lead_pin = clean(payload.get("leadPin"))
@@ -5365,7 +5241,7 @@ async def publish_raid_calendar(payload):
     embed = discord.Embed(
         title=f"📅 Raidkalender · {guild_name}",
         description=f"**{len(events)} kommende Raidtermine**\nAlle Zeiten werden automatisch in deiner Discord-Zeitzone angezeigt.",
-        color=0x14B8A6 if guild_slug == "nachtloot" else 0xD4AF37,
+        color=0xD4AF37,
     )
     weekdays = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
     for date_text, rows in list(grouped.items())[:20]:
@@ -5416,6 +5292,20 @@ async def publish_raid_calendar(payload):
                 message = candidate
         except (discord.NotFound, discord.Forbidden, ValueError):
             message = None
+    if message is None:
+        try:
+            async for candidate in channel.history(limit=100):
+                candidate_embeds = getattr(candidate, "embeds", []) or []
+                candidate_title = clean(getattr(candidate_embeds[0], "title", "")) if candidate_embeds else ""
+                if (
+                    client.user
+                    and candidate.author.id == client.user.id
+                    and candidate_title == clean(embed.title)
+                ):
+                    message = candidate
+                    break
+        except (discord.Forbidden, discord.HTTPException):
+            message = None
     if message:
         await message.edit(embed=embed)
     else:
@@ -5423,6 +5313,40 @@ async def publish_raid_calendar(payload):
     state[state_key] = {"messageId": str(message.id), "channelId": str(channel.id), "guildSlug": payload_guild_slug(payload)}
     save_state(state)
     return message
+
+
+async def refresh_configured_raid_calendars():
+    result = await asyncio.to_thread(api_get, {
+        "action": "lichtbotGetRaidCalendars",
+        "queueToken": QUEUE_TOKEN,
+        "t": int(time.time()),
+    })
+    if not result.get("success"):
+        raise RuntimeError(result.get("error") or "Raidkalender konnten nicht geladen werden.")
+    updated = 0
+    for payload in result.get("calendars") or []:
+        guild_slug = normalize_guild_slug(payload.get("guildSlug") or payload.get("guild"))
+        token = CURRENT_GUILD_SLUG.set(guild_slug)
+        try:
+            message = await publish_raid_calendar(payload)
+            if message:
+                updated += 1
+        except Exception as error:
+            print(f"Automatischer Raidkalender fehlgeschlagen ({guild_slug}): {error}")
+        finally:
+            CURRENT_GUILD_SLUG.reset(token)
+    return updated
+
+
+async def raid_calendar_refresh_loop():
+    await client.wait_until_ready()
+    while not client.is_closed():
+        try:
+            updated = await refresh_configured_raid_calendars()
+            print(f"Automatische Raidkalender aktualisiert: {updated}")
+        except Exception as error:
+            print(f"Automatische Raidkalender-Aktualisierung fehlgeschlagen: {error}")
+        await asyncio.sleep(300)
 
 
 async def edit_po_message(message, embed, view):
@@ -6674,12 +6598,49 @@ async def po_queue_loop():
                                         f"{current_guild_slug()}:{payload.get('raidId') or payload.get('id')}"
                                     )
                                 continue
+                            followup_target_channel_id = clean(
+                                followup.get("targetChannelId")
+                                or followup.get("sourceChannelId")
+                                or channel_id
+                            )
+                            if followup_target_channel_id != channel_id:
+                                posted = await post_raid_announcement_by_id(
+                                    payload.get("raidId") or payload.get("id"),
+                                    channel_id,
+                                    payload,
+                                    force_new=clean(
+                                        payload.get("forceNewMessage") or payload.get("forceRepost")
+                                    ).lower() in {"1", "true", "yes", "ja"},
+                                )
+                                separate_po_payload = {
+                                    **followup,
+                                    "guildSlug": queue_guild_slug,
+                                    "sourceChannelId": followup_target_channel_id,
+                                    "targetChannelId": followup_target_channel_id,
+                                    "channelId": followup_target_channel_id,
+                                    "restoreArchived": "true",
+                                    "forceNewMessage": "false",
+                                    "lichtlootRaidId": clean(
+                                        followup.get("lichtlootRaidId")
+                                        or raid.get("raidId")
+                                        or payload.get("raidId")
+                                    ),
+                                }
+                                await post_or_update_from_queue(client, separate_po_payload)
+                                await resolve_queue_item(item.get("rowNumber"))
+                                print(
+                                    "Raid- und P0-Anmelder getrennt gepostet: "
+                                    f"{current_guild_slug()}:{payload.get('raidId') or payload.get('id')} "
+                                    f"raid_channel={channel_id} p0_channel={followup_target_channel_id} "
+                                    f"raid_posted={posted}"
+                                )
+                                continue
                             combined_payload = {
                                 **followup,
                                 "guildSlug": queue_guild_slug,
                                 "sourceChannelId": clean(followup.get("sourceChannelId") or channel_id),
-                                "targetChannelId": channel_id,
-                                "channelId": channel_id,
+                                "targetChannelId": followup_target_channel_id,
+                                "channelId": followup_target_channel_id,
                                 "restoreArchived": "true",
                                 "forceNewMessage": "false",
                                 "lichtlootRaidId": clean(
@@ -6941,6 +6902,9 @@ async def on_ready():
     if not hasattr(client, "discord_channel_sync_started"):
         client.discord_channel_sync_started = True
         client.loop.create_task(discord_channel_sync_loop())
+    if not hasattr(client, "raid_calendar_refresh_started"):
+        client.raid_calendar_refresh_started = True
+        client.loop.create_task(raid_calendar_refresh_loop())
     emoji_cache_ready.clear()
     found_classes, found_specs, found_items = {}, {}, {}
     try:
@@ -7010,7 +6974,10 @@ async def on_ready():
 async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
     """Aktualisiert vorhandene Raid-/PO-Anmelder im aktuellen Discord-Channel."""
     await refresh_guild_registry()
-    guild_slug = guild_slug_for_discord_server(getattr(interaction, "guild", None), GUILD_SLUG)
+    guild_slug = guild_slug_for_discord_server(getattr(interaction, "guild", None), "")
+    if not guild_slug:
+        await interaction.response.send_message("Dieser Discord-Server ist keiner freigeschalteten Gilde zugeordnet.", ephemeral=True)
+        return
     channel_id = clean(getattr(interaction, "channel_id", ""))
     kind = clean(refresh_kind).lower() or "alle"
     raid_refreshed = 0
@@ -7434,7 +7401,11 @@ async def raid_anmelder(
     beschreibung: str = "",
 ):
     await refresh_guild_registry()
-    token = CURRENT_GUILD_SLUG.set(guild_slug_for_discord_server(interaction.guild, GUILD_SLUG))
+    guild_slug = guild_slug_for_discord_server(interaction.guild, "")
+    if not guild_slug:
+        await interaction.response.send_message("Dieser Discord-Server ist keiner freigeschalteten Gilde zugeordnet.", ephemeral=True)
+        return
+    token = CURRENT_GUILD_SLUG.set(guild_slug)
     try:
         await interaction.response.defer(ephemeral=True, thinking=True)
         raid_key = normalize_raid(raid)
@@ -7515,7 +7486,10 @@ async def clearauswahl(interaction: discord.Interaction):
         return
     await interaction.response.defer(ephemeral=True)
     await refresh_guild_registry()
-    guild_slug = guild_slug_for_discord_server(getattr(interaction, "guild", None), GUILD_SLUG)
+    guild_slug = guild_slug_for_discord_server(getattr(interaction, "guild", None), "")
+    if not guild_slug:
+        await interaction.followup.send("Dieser Discord-Server ist keiner freigeschalteten Gilde zugeordnet.", ephemeral=True)
+        return
     token = CURRENT_GUILD_SLUG.set(guild_slug)
     try:
         channel_id = str(interaction.channel_id)
@@ -7547,9 +7521,11 @@ async def clearauswahl(interaction: discord.Interaction):
 )
 async def po_anmelder(interaction, raid: str, datum: str, uhrzeit: str, titel: str = ""):
     await refresh_guild_registry()
-    token = CURRENT_GUILD_SLUG.set(
-        guild_slug_for_discord_server(getattr(interaction, "guild", None), GUILD_SLUG)
-    )
+    guild_slug = guild_slug_for_discord_server(getattr(interaction, "guild", None), "")
+    if not guild_slug:
+        await interaction.response.send_message("Dieser Discord-Server ist keiner freigeschalteten Gilde zugeordnet.", ephemeral=True)
+        return
+    token = CURRENT_GUILD_SLUG.set(guild_slug)
     try:
         await interaction.response.defer(ephemeral=True)
         raid_key = normalize_raid(raid)
@@ -7976,11 +7952,14 @@ async def sync_foreign_raid_helper_message(message):
         return False
     rows = raid_helper_signup_rows_from_message(message)
     metadata = raid_helper_message_metadata(message)
+    guild_slug = guild_slug_for_discord_server(message.guild, "")
+    if not guild_slug:
+        return False
     try:
         result = await asyncio.to_thread(api_post, {
             "action": "saveDiscordSignupRows",
             "queueToken": QUEUE_TOKEN,
-            "guild": guild_slug_for_discord_server(message.guild, GUILD_SLUG),
+            "guild": guild_slug,
             "discordChannelId": str(message.channel.id),
             "raidHelperMessageId": str(message.id),
             "discordMessageId": str(message.id),
