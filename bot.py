@@ -1673,26 +1673,34 @@ def filter_nachtloot_alternating_worldbuff_rows(rows):
         buff_group = "Ony/Nef" if buff in ["Ony", "Nef"] else buff
         return (str((row or {}).get("datum") or ""), buff_group)
 
-    # Eigene, auf der Leitungsseite gepflegte Termine sind fuer Nachtloot
-    # maßgeblich. WBPoster-Zeilen desselben Tages/Buff-Slots sind nur eine
-    # externe Kopie und duerfen alte Uhrzeiten nicht wieder hinzufuegen.
-    authoritative_slots = {
-        slot_key(row)
-        for row in entries
-        if (
-            isinstance(row, dict)
-            and is_own_worldbuff(row)
-            and str(row.get("source") or "").strip().casefold() != "wb_poster"
-        )
-    }
+    # Pro Nachtwaechter-Tag gibt es genau einen Hakkar- und einen
+    # Ony/Nef-Slot. Zeitkorrekturen hinterlassen historisch gelegentlich noch
+    # weitere DB-Zeilen. Maßgeblich ist die zuletzt gespeicherte Seitenzeile.
+    own_by_slot = {}
+
+    def updated_timestamp(row):
+        raw = str((row or {}).get("updatedAt") or "").strip()
+        if not raw:
+            return 0.0
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            return 0.0
+
+    for index, row in enumerate(entries):
+        if not isinstance(row, dict) or not is_own_worldbuff(row):
+            continue
+        key = slot_key(row)
+        source_is_poster = str(row.get("source") or "").strip().casefold() == "wb_poster"
+        rank = (0 if source_is_poster else 1, updated_timestamp(row), index)
+        current = own_by_slot.get(key)
+        if current is None or rank > current[0]:
+            own_by_slot[key] = (rank, row)
+
+    selected_ids = {id(value[1]) for value in own_by_slot.values()}
     return [
         row for row in entries
-        if not (
-            isinstance(row, dict)
-            and is_own_worldbuff(row)
-            and str(row.get("source") or "").strip().casefold() == "wb_poster"
-            and slot_key(row) in authoritative_slots
-        )
+        if not (isinstance(row, dict) and is_own_worldbuff(row)) or id(row) in selected_ids
     ]
 
 
@@ -2336,7 +2344,8 @@ def import_buffs_aus_sheet():
             "gilde": row.get("gilde", ""),
             "charakter": row.get("charakter", ""),
             "status": row.get("status", ""),
-            "source": row.get("source", "")
+            "source": row.get("source", ""),
+            "updatedAt": row.get("updatedAt") or row.get("updated_at", "")
         })
 
     if not sheet_buffs:
@@ -2804,7 +2813,7 @@ def build_worldbuff_post_embed(overview_text, self_signup_enabled=True):
     if self_signup_enabled:
         signup_section = f"**Termin eintragen**\n{signup_text}"
     elif current_guild_slug() == NACHTLOOT_GUILD_SLUG:
-        signup_section = "ℹ️ **Hakkar und Ony wechseln sich bei den Nachtwächtern wochenweise ab.**"
+        signup_section = "ℹ️ **Nef und Ony wechseln sich bei den Nachtwächtern wochenweise ab.**"
     else:
         signup_section = "ℹ️ **Selbsteintragung kommt noch für diese Gilde.**"
     description = f"{overview}\n\n{signup_section}".strip()
