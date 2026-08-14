@@ -4197,6 +4197,10 @@ async def sync_accessible_discord_channels():
             result = await asyncio.to_thread(lichtloot_post, {
                 "action": "lichtbotSaveDiscordChannels",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
+                # Der PO-Bot veröffentlicht auch die LichtLoot-Raidanmelder
+                # und liefert deshalb die maßgebliche Channel-Liste. Dieser
+                # Bot darf nur Metadaten bereits bekannter Channels erneuern.
+                "updateOnly": "true",
                 "channels": channels
             })
             saved = int(result.get("saved", 0) or 0)
@@ -8269,8 +8273,6 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
     po_bot_owned_types = {
         "player_login_approval_notice",
         "player_login_granted_notice",
-        "raid_announcement",
-        "raid_announcement_refresh",
         "raid_announcement_role_notice",
         "raid_status_staff_notice",
         "loot_master_leadpin_notice",
@@ -8319,6 +8321,22 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             await post_worldbuff_replacement_from_queue(payload)
         elif update_type == "boss_token_notice":
             await post_boss_token_notice_from_queue(payload)
+        elif update_type == "raid_announcement":
+            posted = await post_raid_announcement_by_id(
+                payload.get("raidId") or payload.get("id"),
+                payload.get("channelId") or payload.get("discordChannelId"),
+            )
+            if not posted:
+                raise RuntimeError("Raidanmelder konnte nicht gepostet werden.")
+        elif update_type == "raid_announcement_refresh":
+            refreshed = await refresh_raid_signup_message_by_id(
+                payload.get("raidId") or payload.get("id"),
+                payload.get("channelId") or payload.get("discordChannelId"),
+                payload.get("messageId") or payload.get("discordMessageId") or payload.get("raidHelperMessageId"),
+                queue_guild_slug,
+            )
+            if refreshed not in {True, "foreign_message", "missing_message"}:
+                raise RuntimeError("Raidanmelder konnte nicht aktualisiert werden.")
         elif update_type == "player_login_approval_notice":
             await post_player_login_approval_notice(payload)
         elif update_type == "worldbuff_player_change_notice":
@@ -8510,7 +8528,7 @@ async def lichtloot_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
                 "limit": 500,
-                "types": "worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,worldbuff_replacement,boss_token_notice,worldbuff_backup_export",
+                "types": "worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,worldbuff_replacement,boss_token_notice,worldbuff_backup_export,raid_announcement,raid_announcement_refresh",
                 "t": int(time.time())
             })
 
@@ -8543,7 +8561,7 @@ async def lichtloot_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
                 "limit": 500,
-                "types": "worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,worldbuff_replacement,boss_token_notice,worldbuff_backup_export",
+                "types": "worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,worldbuff_replacement,boss_token_notice,worldbuff_backup_export,raid_announcement,raid_announcement_refresh",
                 "t": int(time.time())
             })
 
@@ -8561,8 +8579,6 @@ async def lichtloot_queue_loop():
                         if railway_type in {
                             "player_login_approval_notice",
                             "player_login_granted_notice",
-                            "raid_announcement",
-                            "raid_announcement_refresh",
                             "raid_announcement_role_notice",
                             "raid_status_staff_notice",
                             "loot_master_leadpin_notice",
