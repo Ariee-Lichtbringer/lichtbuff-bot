@@ -3906,43 +3906,11 @@ async def resolve_po_target_channel_id(client, payload):
 
     if configured_channel_id:
         print(f"PO-Anmelder Ziel-Channel nicht erreichbar ({payload.get('postKey')}): {configured_channel_id}")
-        # Ein in der Gildenleitung ausdrücklich ausgewählter Channel darf nie
-        # still durch einen ähnlich benannten PO-/Freigabe-Channel ersetzt
-        # werden. Der Auftrag bleibt dadurch offen und kann nach Korrektur der
-        # Channel-Auswahl erneut verarbeitet werden.
         return configured_channel_id
-
-    try:
-        result = await asyncio.to_thread(api_get, {
-            "action": "guildGetDiscordBotChannels",
-            "queueToken": QUEUE_TOKEN,
-            "t": int(time.time()),
-        })
-    except Exception as error:
-        print(f"PO-Anmelder Channel-Fallback konnte Channel-Liste nicht laden ({payload.get('postKey')}): {error}")
-        return configured_channel_id
-
-    channels = result.get("channels") or []
-    ranked = sorted(
-        [channel for channel in channels if clean(channel.get("id") or channel.get("channelId"))],
-        key=lambda channel: (
-            po_channel_rank(channel, payload),
-            clean(channel.get("category") or channel.get("categoryName")).lower(),
-            clean(channel.get("name") or channel.get("channelName")).lower(),
-        )
-    )
-    for channel in ranked:
-        if po_channel_rank(channel, payload) >= 99:
-            break
-        channel_id = clean(channel.get("id") or channel.get("channelId"))
-        if await fetch_accessible_channel(client, channel_id):
-            print(
-                "PO-Anmelder Channel-Fallback: "
-                f"{payload.get('postKey')} nutzt #{clean(channel.get('name') or channel.get('channelName'))} ({channel_id})"
-            )
-            return channel_id
-
-    return configured_channel_id
+    # Ohne ausdrücklich übergebene Ziel-ID darf ein Anmelder niemals anhand
+    # eines ähnlich benannten Raidchannels umgeleitet werden.
+    print(f"PO-Anmelder ohne ausdruecklichen Ziel-Channel verworfen: {payload.get('postKey')}")
+    return ""
 
 
 def parse_item_options(text):
