@@ -1674,28 +1674,39 @@ def filter_nachtloot_alternating_worldbuff_rows(rows):
         return (str((row or {}).get("datum") or ""), buff_group)
 
     # Pro Nachtwaechter-Tag gibt es genau einen Hakkar- und einen
-    # Ony/Nef-Slot. Zeitkorrekturen hinterlassen historisch gelegentlich noch
-    # weitere DB-Zeilen. Maßgeblich ist die zuletzt gespeicherte Seitenzeile.
+    # Ony/Nef-Slot. Fuer die Auswahl gilt exakt dieselbe Prioritaet wie in
+    # collapseWorldbuffDailySlots() auf der NachtLoot-Leitungsseite.
     own_by_slot = {}
 
-    def updated_timestamp(row):
-        raw = str((row or {}).get("updatedAt") or "").strip()
-        if not raw:
-            return 0.0
-        try:
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
-        except Exception:
-            return 0.0
+    def page_priority(row):
+        score = 0
+        caster = str((row or {}).get("charakter") or "").strip()
+        status = re.sub(r"[🟡🟢✅🔴🟠⚪]", "", str((row or {}).get("status") or "")).strip().casefold()
+        source = str((row or {}).get("source") or "").strip().casefold()
+        guild = str((row or {}).get("gilde") or "").strip().casefold()
+        if caster:
+            score += 1000
+        if "bestätigt" in status or "bestaetigt" in status:
+            score += 200
+        if "railway" in source or "player-worldbuff" in source:
+            score += 80
+        if "sheet" in source:
+            score += 30
+        if "lichtbringer" in guild:
+            score += 20
+        if guild and guild != "-":
+            score += 5
+        return score
 
     for index, row in enumerate(entries):
         if not isinstance(row, dict) or not is_own_worldbuff(row):
             continue
         key = slot_key(row)
-        source_is_poster = str(row.get("source") or "").strip().casefold() == "wb_poster"
-        rank = (0 if source_is_poster else 1, updated_timestamp(row), index)
         current = own_by_slot.get(key)
-        if current is None or rank > current[0]:
-            own_by_slot[key] = (rank, row)
+        score = page_priority(row)
+        # Wie auf der Seite wird bei Gleichstand die erste Zeile behalten.
+        if current is None or score > current[0]:
+            own_by_slot[key] = (score, row)
 
     selected_ids = {id(value[1]) for value in own_by_slot.values()}
     return [
@@ -2344,8 +2355,7 @@ def import_buffs_aus_sheet():
             "gilde": row.get("gilde", ""),
             "charakter": row.get("charakter", ""),
             "status": row.get("status", ""),
-            "source": row.get("source", ""),
-            "updatedAt": row.get("updatedAt") or row.get("updated_at", "")
+            "source": row.get("source", "")
         })
 
     if not sheet_buffs:
