@@ -1662,47 +1662,9 @@ def filter_worldbuff_rows_for_current_guild(rows):
     ]
 
 
-NACHTLOOT_HAKKAR_ANCHOR_MONDAY = date(2026, 8, 10)
-
-
-def nachtloot_worldbuff_for_date(value):
-    """Nachtloot wirft wochenweise abwechselnd Hakkar und Ony."""
-    if isinstance(value, datetime):
-        slot_date = value.date()
-    elif isinstance(value, date):
-        slot_date = value
-    else:
-        slot_date = datetime.strptime(str(value or "").strip(), "%d.%m.%Y").date()
-
-    slot_monday = slot_date - timedelta(days=slot_date.weekday())
-    weeks_from_anchor = (slot_monday - NACHTLOOT_HAKKAR_ANCHOR_MONDAY).days // 7
-    return "Hakkar" if weeks_from_anchor % 2 == 0 else "Ony"
-
-
 def filter_nachtloot_alternating_worldbuff_rows(rows):
-    """Entfernt fuer Nachtloot die nicht vorgesehene Buff-Auswahl einer Woche."""
-    if current_guild_slug() != NACHTLOOT_GUILD_SLUG:
-        return list(rows or [])
-
-    filtered = []
-    for row in rows or []:
-        if not is_own_worldbuff_guild((row or {}).get("gilde", "")):
-            filtered.append(row)
-            continue
-
-        buff = normalize_buff((row or {}).get("buff", ""))
-        if buff not in ["Hakkar", "Ony", "Nef"]:
-            filtered.append(row)
-            continue
-
-        try:
-            scheduled_buff = nachtloot_worldbuff_for_date((row or {}).get("datum", ""))
-        except (TypeError, ValueError):
-            continue
-        if buff == scheduled_buff:
-            filtered.append(row)
-
-    return filtered
+    """Nachtloot übernimmt Buff und Termin exakt aus der Worldbuff-Seite."""
+    return list(rows or [])
 
 
 def get_shared_wb_poster_rows():
@@ -2545,6 +2507,19 @@ def format_worldbuff_overview_row(emoji, buff, zeit, gilde, werfer_text=""):
     return f"{emoji} `{row.rstrip()}`"
 
 
+def display_worldbuff_name(buff_data, charakter=""):
+    """Zeigt freie Lichtbringer-Ony/Nef-Slots als echte Wahltermine an."""
+    buff = normalize_buff((buff_data or {}).get("buff", ""))
+    if (
+        buff in ["Ony", "Nef"]
+        and is_lichtbringer(str((buff_data or {}).get("gilde", "")))
+        and not str(charakter or "").strip()
+        and is_open_worldbuff_status((buff_data or {}).get("status"))
+    ):
+        return "Ony/Nef"
+    return buff
+
+
 def build_overview():
     sheet_buffs = import_buffs_aus_sheet()
     data = list(sheet_buffs)
@@ -2635,10 +2610,7 @@ def build_overview():
         tag_kurz = b.get("tag") or make_tag_from_date(datum)
         tag_lang = TAG_LANG.get(tag_kurz, tag_kurz)
         zeit = b["uhrzeit"]
-        buff = normalize_buff(b["buff"])
         gilde = b["gilde"]
-
-        emoji = get_buff_emoji(buff)
 
         if datum != current_date:
             text += f"\n**{tag_lang}, {datum}**\n"
@@ -2649,6 +2621,8 @@ def build_overview():
         key = make_buff_key(b)
         info = werfer.get(key)
         charakter = b.get("charakter") or (info and info.get("charakter")) or ""
+        buff = display_worldbuff_name(b, charakter)
+        emoji = get_buff_emoji(normalize_buff(b["buff"]))
 
         if charakter:
             if is_lichtbringer(gilde):
@@ -2722,13 +2696,13 @@ def current_worldbuff_announcement_block(max_lines=8):
             lines.append(f"**{tag_lang}, {datum}**")
             current_date = datum
 
-        buff_name = normalize_buff(buff.get("buff", ""))
         gilde = buff.get("gilde", "")
         key = make_buff_key(buff)
         info = werfer.get(key)
         charakter = buff.get("charakter") or (info and info.get("charakter")) or ""
+        buff_name = display_worldbuff_name(buff, charakter)
         werfer_text = f" - {'🔵' if is_lichtbringer(gilde) else '⚔️'} {charakter}" if charakter else ""
-        emoji = get_buff_emoji(buff_name)
+        emoji = get_buff_emoji(normalize_buff(buff.get("buff", "")))
         lines.append(format_worldbuff_overview_row(
             emoji,
             buff_name,
