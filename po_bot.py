@@ -1528,7 +1528,7 @@ def build_raid_announcement_embed(raid):
     worldbuff_block = current_worldbuff_announcement_block(
         raid_guild_slug,
         raid_date=raid.get("raidDate") or raid.get("raid_date"),
-    )
+    ) if raid.get("showWorldbuffs") is not False and clean(raid.get("showWorldbuffs")).lower() != "false" else ""
     if worldbuff_block:
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
     if prio_enabled:
@@ -1553,7 +1553,11 @@ def build_raid_announcement_embed(raid):
         image_url = raid_announcement_image_url(raid)
         if image_url:
             embed.set_image(url=image_url)
-    embed.set_footer(text="Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein.")
+    embed.set_footer(text=(
+        "Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein."
+        if prio_enabled else
+        "Bitte meldet euch im Discord für den Raid an."
+    ))
     return embed
 
 
@@ -1852,6 +1856,7 @@ def add_raid_signup_roster_fields(embed, helper):
     )
     signup_positions = {id(row): index + 1 for index, row in enumerate(signup_order)}
     raid = (helper or {}).get("raid") or {}
+    prio_enabled = raid.get("prioEnabled") is not False and clean(raid.get("prioEnabled")).lower() != "false"
     active_rows = [
         row for row in rows
         if clean(row.get("status")).lower() not in {
@@ -1971,7 +1976,9 @@ def add_raid_signup_roster_fields(embed, helper):
             player = clean(row.get("player") or row.get("char")) or "-"
             position = signup_positions.get(id(row), 0)
             po_status = clean(row.get("poApprovalStatus") or row.get("po_approval_status")).lower()
-            if po_status in {"approved", "freigegeben"}:
+            if not prio_enabled:
+                prio_icon = ""
+            elif po_status in {"approved", "freigegeben"}:
                 prio_icon = f" {custom_emoji('Beutegrun', '🟢')}"
             elif po_status in {"pending", "offen", "wartet"}:
                 prio_icon = f" {custom_emoji('beuteorange', '🟠')}"
@@ -2456,7 +2463,7 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None, f
     for key in (
         "raid", "raidName", "raidDate", "raidTime", "createdBy", "guild", "guildSlug", "guildName",
         "maxPlayers", "tankSlots", "healSlots", "ddSlots", "description", "raidImageUrl",
-        "lootMaster", "pluendermeister", "statusNotifyTargets", "prioEnabled"
+        "lootMaster", "pluendermeister", "statusNotifyTargets", "prioEnabled", "showWorldbuffs"
     ):
         value = payload.get(key)
         if value in (None, ""):
