@@ -4852,7 +4852,7 @@ def build_raid_announcement_text(raid):
     if custom_link:
         lines.extend(["", f"🔗 **Link:** {custom_link}"])
 
-    worldbuff_block = current_worldbuff_announcement_block()
+    worldbuff_block = current_worldbuff_announcement_block() if raid.get("showWorldbuffs") is not False and str(raid.get("showWorldbuffs") or "").strip().lower() != "false" else ""
     if worldbuff_block:
         lines.extend(["", "📢 **Aktuelle Worldbuffs**", worldbuff_block])
 
@@ -4919,7 +4919,7 @@ def build_raid_announcement_embed(raid):
             value=f"🧰 [So registriere ich mich auf der Lootseite]({LICHTLOOT_URL.rstrip('/')}/spieler-anleitung.html)",
             inline=False,
         )
-    worldbuff_block = current_worldbuff_announcement_block()
+    worldbuff_block = current_worldbuff_announcement_block() if raid.get("showWorldbuffs") is not False and str(raid.get("showWorldbuffs") or "").strip().lower() != "false" else ""
     if worldbuff_block:
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
     attachment_name = raid_banner_attachment_name(raid)
@@ -4929,7 +4929,11 @@ def build_raid_announcement_embed(raid):
         image_url = raid_image_url(raid)
         if image_url:
             embed.set_image(url=image_url)
-    embed.set_footer(text="Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein.")
+    embed.set_footer(text=(
+        "Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein."
+        if prio_enabled else
+        "Bitte meldet euch im Discord für den Raid an."
+    ))
     return embed
 
 
@@ -11185,7 +11189,14 @@ async def raid_announcement_loop():
                 active_ids.add(raid_id)
 
                 if raid_id not in posted_ids:
-                    if initialized:
+                    prio_enabled = (
+                        raid.get("prioEnabled") is not False
+                        and str(raid.get("prioEnabled") or "").strip().lower() != "false"
+                    )
+                    # Freie Raids ohne Prios werden gezielt vom P0-Bot in den
+                    # ausgewählten Channel gepostet. Der allgemeine Hauptbot-
+                    # Erkennungsloop würde unbekannte Instanzen sonst als ZG posten.
+                    if initialized and prio_enabled:
                         new_posts.append(raid)
                     posted_ids.add(raid_id)
 
