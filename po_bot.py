@@ -47,6 +47,7 @@ API_URL = normalize_api_url(
     os.getenv("PO_BOT_API_URL", "") or os.getenv("LICHTLOOT_RAILWAY_API_URL", "") or RAILWAY_API_URL
 )
 QUEUE_TOKEN = os.getenv("LICHTBOT_QUEUE_TOKEN", "")
+TEST_GUILD_ID = os.getenv("PO_BOT_TEST_GUILD_ID", "").strip()
 BOT_STARTED_AT = time.time()
 
 
