@@ -2129,6 +2129,22 @@ def raid_signup_row_count(helper):
     return len((helper or {}).get("signups") or []) + len((helper or {}).get("externalSignups") or [])
 
 
+def raid_announcement_is_stale(raid):
+    raid = raid or {}
+    status = clean(raid.get("status") or raid.get("raidStatus")).lower()
+    if status in {
+        "archiviert", "archive", "archived", "gelöscht", "geloescht", "deleted",
+        "abgesagt", "cancelled", "canceled",
+    }:
+        return True
+    raid_date = clean(raid.get("raidDate") or raid.get("date") or raid.get("datum"))[:10]
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raid_date):
+        today = datetime.now(ZoneInfo("Europe/Berlin")).date().isoformat()
+        if raid_date < today:
+            return True
+    return False
+
+
 def raid_signup_identity(row):
     row = row or {}
     user_id = clean(row.get("discordUserId") or row.get("discord_user_id"))
@@ -2318,6 +2334,13 @@ async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id
             raid[key] = value
     helper = dict(helper)
     helper["raid"] = raid
+    if raid_announcement_is_stale(raid):
+        print(
+            "Raidanmelder Refresh verworfen: Raid ist archiviert oder vergangen "
+            f"(raid={clean(raid.get('raidId') or raid_id)}, status={clean(raid.get('status'))}, "
+            f"datum={clean(raid.get('raidDate'))})."
+        )
+        return "stale"
     channel_id = clean(channel_id or raid.get("discordChannelId") or raid.get("discord_channel_id"))
     message_id = clean(message_id or raid.get("discordMessageId") or raid.get("discord_message_id"))
     if not channel_id:
@@ -2484,6 +2507,13 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None, f
             value = payload_raid.get(key)
         if value not in (None, ""):
             raid[key] = value
+    if raid_announcement_is_stale(raid):
+        print(
+            "Raidankuendigung verworfen: Raid ist archiviert oder vergangen "
+            f"(raid={clean(raid.get('raidId') or raid_id)}, status={clean(raid.get('status'))}, "
+            f"datum={clean(raid.get('raidDate'))})."
+        )
+        return "stale"
     channel_id = clean(channel_id or raid.get("discordChannelId") or raid.get("discord_channel_id"))
     if not channel_id:
         raise RuntimeError("Raid-Ankuendigung: Kein Channel hinterlegt.")
@@ -6561,6 +6591,15 @@ async def po_queue_loop():
                             if not helper or not helper.get("success"):
                                 helper = fallback_helper
                             raid = helper.get("raid") or fallback_helper.get("raid") or {}
+                            if raid_announcement_is_stale(raid):
+                                await resolve_queue_item(item.get("rowNumber"))
+                                print(
+                                    "Veraltete Raidankuendigung erledigt markiert, nicht gepostet: "
+                                    f"{current_guild_slug()}:{payload.get('raidId') or payload.get('id')} "
+                                    f"status={clean(raid.get('status')) or '-'} "
+                                    f"datum={clean(raid.get('raidDate')) or '-'}"
+                                )
+                                continue
                             followup = dict(payload.get("followupPoPost") or {})
                             channel_id = clean(
                                 payload.get("channelId")
@@ -6628,7 +6667,13 @@ async def po_queue_loop():
                             )
                             if refreshed:
                                 await resolve_queue_item(item.get("rowNumber"))
-                                if refreshed == "foreign_message":
+                                if refreshed == "stale":
+                                    print(
+                                        "Veralteter Raidanmelder-Refresh erledigt markiert; "
+                                        "archivierter oder vergangener Raid wurde nicht gepostet: "
+                                        f"{current_guild_slug()}:{payload.get('raidId') or payload.get('id')}"
+                                    )
+                                elif refreshed == "foreign_message":
                                     print(
                                         "Veralteter Raidanmelder-Refresh erledigt markiert; "
                                         "die Nachricht gehört einem anderen Bot: "
