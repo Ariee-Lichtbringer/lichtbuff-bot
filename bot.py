@@ -384,7 +384,7 @@ def configured_worldbuff_guild_slugs():
 
 
 async def refresh_guild_registry():
-    global GUILD_REGISTRY, DISCORD_GUILD_SLUGS, WORLDBUFF_GUILD_SLUGS
+    global GUILD_REGISTRY, DISCORD_GUILD_SLUGS, WORLDBUFF_GUILD_SLUGS, CHANNEL_GUILD_SLUGS
     if not LICHTBOT_QUEUE_TOKEN:
         return GUILD_REGISTRY
 
@@ -406,11 +406,7 @@ async def refresh_guild_registry():
         return GUILD_REGISTRY
 
     registry = {}
-    # Feste Notfall-Zuordnung, damit Nachtloot auch dann erreichbar bleibt,
-    # wenn in der zentralen Gildenliste noch keine Discord-ID gepflegt ist.
-    discord_map = {
-        NACHTLOOT_DISCORD_GUILD_ID: NACHTLOOT_GUILD_SLUG
-    } if NACHTLOOT_DISCORD_GUILD_ID else {}
+    discord_map = {}
     for row in result.get("guilds") or []:
         slug_value = normalize_guild_slug(row.get("slug"))
         if not slug_value:
@@ -439,16 +435,22 @@ async def refresh_guild_registry():
     GUILD_REGISTRY = registry
     DISCORD_GUILD_SLUGS = discord_map
     WORLDBUFF_GUILD_SLUGS = configured_worldbuff_guild_slugs()
+    configured_channel_slugs = {}
     for slug_value, data in GUILD_REGISTRY.items():
         layout = data.get("layout") if isinstance(data, dict) else {}
         if not isinstance(layout, dict):
             layout = {}
-        for configured_key in ("logSourceChannelId", "logAnalysisChannelId"):
-            log_channel_id = clean_channel_id_value(layout.get(configured_key))
-            if log_channel_id:
-                numeric_channel_id = int(log_channel_id)
-                LOG_ANALYSIS_CHANNEL_IDS.add(numeric_channel_id)
-                CHANNEL_GUILD_SLUGS[numeric_channel_id] = slug_value
+        for configured_key in (
+            "worldbuffChannelId", "worldbuffReplacementChannelId", "worldbuffBackupChannelId",
+            "hordenbuffChannelId", "p0PlusBackupChannelId", "logSourceChannelId", "logAnalysisChannelId"
+        ):
+            channel_id = clean_channel_id_value(layout.get(configured_key))
+            if channel_id:
+                numeric_channel_id = int(channel_id)
+                configured_channel_slugs[numeric_channel_id] = slug_value
+                if configured_key in ("logSourceChannelId", "logAnalysisChannelId"):
+                    LOG_ANALYSIS_CHANNEL_IDS.add(numeric_channel_id)
+    CHANNEL_GUILD_SLUGS.update(configured_channel_slugs)
     print(
         "Bot-Gilden geladen: "
         + (", ".join(f"{slug}#{data.get('discordGuildId') or '-'}" for slug, data in GUILD_REGISTRY.items()) or "keine")
@@ -564,6 +566,12 @@ def current_guild_slug():
     return CURRENT_GUILD_SLUG.get()
 
 
+def current_guild_layout():
+    registry_entry = GUILD_REGISTRY.get(current_guild_slug()) or {}
+    layout = registry_entry.get("layout") if isinstance(registry_entry, dict) else {}
+    return layout if isinstance(layout, dict) else {}
+
+
 def lichtbuff_self_signup_buttons_enabled(guild_slug=None):
     slug_value = normalize_guild_slug(guild_slug or current_guild_slug())
     guild = GUILD_REGISTRY.get(slug_value) or {}
@@ -606,12 +614,9 @@ def worldbuff_post_file():
 
 def hordenbuff_channel_ids_for_current_guild():
     guild_slug = current_guild_slug()
-    if guild_slug == PANEM_GUILD_SLUG:
-        return {PANEM_HORDENBUFF_CHANNEL_ID}
-    if guild_slug == NACHTLOOT_GUILD_SLUG:
-        return {NACHTLOOT_HORDENBUFF_CHANNEL_ID}
-    if guild_slug == LICHTLOOT_GUILD_SLUG:
-        return {HORDENBUFF_CHANNEL_ID}
+    configured_channel_id = clean_channel_id_value(current_guild_layout().get("hordenbuffChannelId"))
+    if configured_channel_id:
+        return {int(configured_channel_id)}
 
     registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
     discord_guild_id = str(registry_entry.get("discordGuildId") or "").strip()
@@ -647,14 +652,12 @@ def hordenbuff_channel_rank(channel):
 
 def ticker_channel_ids_for_current_guild():
     guild_slug = current_guild_slug()
-    if guild_slug == PANEM_GUILD_SLUG:
-        channel_ids = {PANEM_TICKER_CHANNEL_ID}
-    elif guild_slug == NACHTLOOT_GUILD_SLUG:
-        channel_ids = set()
-    elif guild_slug == LICHTLOOT_GUILD_SLUG:
-        channel_ids = {TICKER_CHANNEL_ID, POST_CHANNEL_ID}
-    else:
-        return set()
+    channel_ids = set()
+    layout = current_guild_layout()
+    for key in ("worldbuffChannelId", "worldbuffReplacementChannelId"):
+        configured_channel_id = clean_channel_id_value(layout.get(key))
+        if configured_channel_id:
+            channel_ids.add(int(configured_channel_id))
     for discord_guild in getattr(client, "guilds", []) or []:
         if guild_slug_for_discord_server(discord_guild, "") != guild_slug:
             continue
@@ -696,14 +699,13 @@ def backup_channel_rank(channel, kind="backup"):
 
 
 async def resolve_backup_channel_id(payload, kind="backup"):
-    configured_channel_id = clean_channel_id_value(payload.get("channelId") or payload.get("targetChannelId"))
+    layout_key = "worldbuffBackupChannelId" if kind == "worldbuff" else "p0PlusBackupChannelId"
+    configured_channel_id = clean_channel_id_value(
+        payload.get("channelId") or payload.get("targetChannelId") or current_guild_layout().get(layout_key)
+    )
     if configured_channel_id and await fetch_accessible_discord_channel(configured_channel_id):
         return configured_channel_id
 
-    if kind == "worldbuff":
-        if current_guild_slug() == NACHTLOOT_GUILD_SLUG:
-            return clean_channel_id_value(NACHTLOOT_WORLDBUFF_BACKUP_CHANNEL_ID)
-        return clean_channel_id_value(WORLDBUFF_BACKUP_CHANNEL_ID)
     if configured_channel_id:
         print(f"Backup-Channel nicht erreichbar fuer {current_guild_slug()}: {configured_channel_id}")
 
@@ -758,21 +760,10 @@ def worldbuff_replacement_channel_ids(target, payload=None):
     if direct_channel_id:
         return [int(direct_channel_id)]
 
-    if current_guild_slug() != LICHTLOOT_GUILD_SLUG:
-        configured_channel_id = clean_channel_id_value(get_configured_worldbuff_channel_id())
-        if configured_channel_id:
-            return [int(configured_channel_id)]
-        return []
-
-    raw = str(target or "both").strip().lower()
-    channel_ids = []
-    if raw in {"guild", "intern", "internal", "gildenintern", "both", "beide", "all", "alle"}:
-        channel_ids.append(WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_ID)
-    if raw in {"worldbuff", "worldbuffs", "world", "both", "beide", "all", "alle"}:
-        channel_ids.append(WORLDBUFF_REPLACEMENT_WORLDBUFF_CHANNEL_ID)
-    if not channel_ids:
-        channel_ids = [WORLDBUFF_REPLACEMENT_GUILD_CHANNEL_ID, WORLDBUFF_REPLACEMENT_WORLDBUFF_CHANNEL_ID]
-    return list(dict.fromkeys(int(channel_id) for channel_id in channel_ids if channel_id))
+    configured_channel_id = clean_channel_id_value(
+        current_guild_layout().get("worldbuffReplacementChannelId") or get_configured_worldbuff_channel_id()
+    )
+    return [int(configured_channel_id)] if configured_channel_id else []
 
 
 def worldbuff_channel_rank(channel):
@@ -794,14 +785,12 @@ def worldbuff_channel_rank(channel):
 
 def get_configured_worldbuff_channel_id():
     guild_slug = current_guild_slug()
-
-    # LichtLoot besitzt einen festen "Lichtbuff Post"-Channel. Fuer diese
-    # Hauptgilde darf nicht irgendein anderer Channel mit "worldbuff" oder
-    # "buff" im Namen automatisch ausgewaehlt werden.
-    if guild_slug == LICHTLOOT_GUILD_SLUG:
-        return str(WORLDBUFF_REPLACEMENT_WORLDBUFF_CHANNEL_ID or POST_CHANNEL_ID)
-    if guild_slug == NACHTLOOT_GUILD_SLUG:
-        return str(NACHTLOOT_WORLDBUFF_CHANNEL_ID)
+    layout = current_guild_layout()
+    configured_channel_id = clean_channel_id_value(
+        layout.get("worldbuffChannelId") or layout.get("worldbuffReplacementChannelId")
+    )
+    if configured_channel_id:
+        return configured_channel_id
 
     now = time.time()
     cached = WORLDBUFF_CHANNEL_CACHE.get(guild_slug)
@@ -4048,8 +4037,9 @@ async def sync_accessible_discord_channels():
             result = await asyncio.to_thread(lichtloot_post, {
                 "action": "lichtbotSaveDiscordChannels",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
-                # Nur Metadaten bereits bekannter Channels erneuern.
-                "updateOnly": "true",
+                # Vollstaendiger Abgleich: neue Gilden muessen ihre Channels
+                # beim ersten Bot-Start erst in LichtLoot bekannt machen.
+                "replace": "true",
                 "channels": channels
             })
             saved = int(result.get("saved", 0) or 0)
