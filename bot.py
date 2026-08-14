@@ -4766,12 +4766,27 @@ def format_raid_announcement_time(value):
 
 
 def configured_discord_link(data):
-    url = str((data or {}).get("linkUrl") or "").strip()
-    if not re.match(r"^https?://", url, re.I):
-        return ""
-    label = str((data or {}).get("linkIcon") or (data or {}).get("linkText") or "Link").strip()
-    label = label.replace("[", "").replace("]", "")[:80] or "Link"
-    return f"[{label}]({url})"
+    source = data or {}
+    raw_url = str(source.get("linkUrl") or "").strip()
+    links = []
+    if raw_url.startswith("["):
+        try:
+            parsed = json.loads(raw_url)
+            if isinstance(parsed, list):
+                links = parsed
+        except (TypeError, ValueError, json.JSONDecodeError):
+            links = []
+    if not links:
+        links = [{"url": raw_url, "text": source.get("linkText"), "icon": source.get("linkIcon")}]
+    formatted = []
+    for item in links[:10]:
+        url = str((item or {}).get("url") or "").strip()
+        if not re.match(r"^https?://", url, re.I):
+            continue
+        label = str((item or {}).get("icon") or (item or {}).get("text") or "Link").strip()
+        label = label.replace("[", "").replace("]", "")[:80] or "Link"
+        formatted.append(f"[{label}]({url})")
+    return "\n".join(formatted)
 
 
 def build_raid_announcement_text(raid):

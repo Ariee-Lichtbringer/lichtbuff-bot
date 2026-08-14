@@ -1461,12 +1461,27 @@ def format_worldbuff_announcement_row(buff, row_time, guild, caster=""):
 
 
 def configured_discord_link(data):
-    url = clean((data or {}).get("linkUrl"))
-    if not re.match(r"^https?://", url, re.I):
-        return ""
-    label = clean((data or {}).get("linkIcon") or (data or {}).get("linkText") or "Link")
-    label = label.replace("[", "").replace("]", "")[:80] or "Link"
-    return f"[{label}]({url})"
+    source = data or {}
+    raw_url = clean(source.get("linkUrl"))
+    links = []
+    if raw_url.startswith("["):
+        try:
+            parsed = json.loads(raw_url)
+            if isinstance(parsed, list):
+                links = parsed
+        except (TypeError, ValueError, json.JSONDecodeError):
+            links = []
+    if not links:
+        links = [{"url": raw_url, "text": source.get("linkText"), "icon": source.get("linkIcon")}]
+    formatted = []
+    for item in links[:10]:
+        url = clean((item or {}).get("url"))
+        if not re.match(r"^https?://", url, re.I):
+            continue
+        label = clean((item or {}).get("icon") or (item or {}).get("text") or "Link")
+        label = label.replace("[", "").replace("]", "")[:80] or "Link"
+        formatted.append(f"[{label}]({url})")
+    return "\n".join(formatted)
 
 
 def build_raid_announcement_embed(raid):
