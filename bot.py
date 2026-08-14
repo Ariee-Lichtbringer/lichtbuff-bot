@@ -8541,7 +8541,7 @@ async def lichtloot_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
                 "limit": 500,
-                "types": "worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,worldbuff_replacement,boss_token_notice,worldbuff_backup_export,raid_announcement,raid_announcement_refresh",
+                "types": "worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,worldbuff_replacement,boss_token_notice,worldbuff_backup_export",
                 "t": int(time.time())
             })
 
@@ -8574,7 +8574,7 @@ async def lichtloot_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
                 "limit": 500,
-                "types": "worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,worldbuff_replacement,boss_token_notice,worldbuff_backup_export,raid_announcement,raid_announcement_refresh",
+                "types": "worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,worldbuff_replacement,boss_token_notice,worldbuff_backup_export",
                 "t": int(time.time())
             })
 
@@ -11527,10 +11527,6 @@ async def on_ready():
     if not hasattr(client, "hordenbuff_action_view_registered"):
         client.hordenbuff_action_view_registered = True
         client.add_view(RendSignupView())
-
-    if not hasattr(client, "raid_signup_view_restore_started"):
-        client.raid_signup_view_restore_started = True
-        client.loop.create_task(restore_active_raid_signup_views())
 
     if not hasattr(client, "hordenbuff_task_started"):
         client.hordenbuff_task_started = True
