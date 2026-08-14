@@ -4783,7 +4783,9 @@ def configured_discord_link(data):
         url = str((item or {}).get("url") or "").strip()
         if not re.match(r"^https?://", url, re.I):
             continue
-        label = str((item or {}).get("icon") or (item or {}).get("text") or "Link").strip()
+        icon = str((item or {}).get("icon") or "").strip()
+        text = str((item or {}).get("text") or "").strip()
+        label = " ".join(part for part in (icon, text) if part).strip() or "Link"
         label = label.replace("[", "").replace("]", "")[:80] or "Link"
         formatted.append(f"[{label}]({url})")
     return "\n".join(formatted)
