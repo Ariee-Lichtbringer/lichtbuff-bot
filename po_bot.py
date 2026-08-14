@@ -3630,6 +3630,7 @@ async def load_raid_item_rows(raid):
             "action": "getGuildPoItems",
             "guild": current_guild_slug(),
             "raid": loot_raid(raid),
+            "queueToken": QUEUE_TOKEN,
             "t": int(time.time()),
         })
         for setting in settings.get("items") or []:
@@ -6977,8 +6978,13 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
     await refresh_guild_registry()
     guild_slug = guild_slug_for_discord_server(getattr(interaction, "guild", None), "")
     if not guild_slug:
-        await interaction.response.send_message("Dieser Discord-Server ist keiner freigeschalteten Gilde zugeordnet.", ephemeral=True)
-        return
+        return {
+            "raid": 0,
+            "replaced": 0,
+            "po": 0,
+            "skipped": 0,
+            "errors": ["Dieser Discord-Server ist keiner freigeschalteten Gilde zugeordnet."],
+        }
     channel_id = clean(getattr(interaction, "channel_id", ""))
     kind = clean(refresh_kind).lower() or "alle"
     raid_refreshed = 0
@@ -7177,26 +7183,40 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
 ])
 async def anmelder_refresh(interaction, was: str = "alle"):
     await interaction.response.defer(ephemeral=True, thinking=True)
-    await emoji_cache_ready.wait()
-    result = await refresh_signup_posts_in_channel(interaction, was)
-    raid_count = int(result.get("raid") or 0)
-    replaced = int(result.get("replaced") or 0)
-    po_count = int(result.get("po") or 0)
-    skipped = int(result.get("skipped") or 0)
-    errors = result.get("errors") or []
-    total = raid_count + replaced + po_count
-    if total:
-        text = f"✅ Aktualisiert: **{raid_count} Raidanmelder** und **{po_count} PO-Anmelder**."
-        if replaced:
-            text += f" **{replaced} alter Raidanmelder** wurde durch die aktuelle Bot-Version ersetzt."
-    else:
-        text = "ℹ️ In diesem Channel wurden keine passenden Anmelder gefunden."
-    if skipped:
-        text += f" Übersprungen: {skipped}."
-    if errors:
-        preview = "\n".join(f"• {clean(error)[:220]}" for error in errors[:3])
-        text += f"\n⚠️ {len(errors)} Fehler:\n{preview}"
-    await interaction.followup.send(text, ephemeral=True)
+    try:
+        await asyncio.wait_for(emoji_cache_ready.wait(), timeout=20)
+        result = await asyncio.wait_for(
+            refresh_signup_posts_in_channel(interaction, was),
+            timeout=120,
+        )
+        raid_count = int(result.get("raid") or 0)
+        replaced = int(result.get("replaced") or 0)
+        po_count = int(result.get("po") or 0)
+        skipped = int(result.get("skipped") or 0)
+        errors = result.get("errors") or []
+        total = raid_count + replaced + po_count
+        if total:
+            text = f"✅ Aktualisiert: **{raid_count} Raidanmelder** und **{po_count} P0-Anmelder**."
+            if replaced:
+                text += f" **{replaced} alter Raidanmelder** wurde durch die aktuelle Bot-Version ersetzt."
+        else:
+            text = "ℹ️ In diesem Channel wurden keine passenden Anmelder gefunden."
+        if skipped:
+            text += f" Übersprungen: {skipped}."
+        if errors:
+            preview = "\n".join(f"• {clean(error)[:220]}" for error in errors[:3])
+            text += f"\n⚠️ {len(errors)} Fehler:\n{preview}"
+        await interaction.followup.send(text, ephemeral=True)
+    except asyncio.TimeoutError:
+        await interaction.followup.send(
+            "❌ Die Aktualisierung hat zu lange gedauert und wurde beendet. Bitte prüfe die Bot-Berechtigungen und versuche es erneut.",
+            ephemeral=True,
+        )
+    except Exception as error:
+        await interaction.followup.send(
+            f"❌ Die Anmelder konnten nicht aktualisiert werden: {clean(error) or type(error).__name__}",
+            ephemeral=True,
+        )
 
 
 def may_manage_discord_channel(interaction):
