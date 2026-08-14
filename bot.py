@@ -4838,13 +4838,16 @@ def build_raid_announcement_text(raid):
             slot_parts.append(f"DD {dd_slots}")
         lines.append("👥 **Slots:** " + " · ".join(slot_parts))
 
-    lines.extend([
-        "",
-        f"🔑 **Prio-PIN:** `{player_pin}`",
-        f"🌐 **Webansicht:** {LICHTLOOT_URL}",
-        "",
-        "Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein."
-    ])
+    lines.append("")
+    if raid.get("prioEnabled") is not False and str(raid.get("prioEnabled") or "").strip().lower() != "false":
+        lines.extend([
+            f"🔑 **Prio-PIN:** `{player_pin}`",
+            f"🌐 **Webansicht:** {LICHTLOOT_URL}",
+            "",
+            "Bitte meldet euch im Discord an und tragt eure Prios rechtzeitig ein."
+        ])
+    else:
+        lines.append("Bitte meldet euch im Discord für den Raid an.")
     custom_link = configured_discord_link(raid)
     if custom_link:
         lines.extend(["", f"🔗 **Link:** {custom_link}"])
@@ -4904,15 +4907,18 @@ def build_raid_announcement_embed(raid):
     if slot_parts:
         embed.add_field(name="Slots", value=" · ".join(slot_parts), inline=False)
 
-    embed.add_field(name="Prio-PIN", value=f"`{player_pin}`", inline=True)
+    prio_enabled = raid.get("prioEnabled") is not False and str(raid.get("prioEnabled") or "").strip().lower() != "false"
+    if prio_enabled:
+        embed.add_field(name="Prio-PIN", value=f"`{player_pin}`", inline=True)
     custom_link = configured_discord_link(raid)
     if custom_link:
         embed.add_field(name="Link", value=custom_link, inline=True)
-    embed.add_field(
-        name="Hilfe zur Lootseite",
-        value=f"🧰 [So registriere ich mich auf der Lootseite]({LICHTLOOT_URL.rstrip('/')}/spieler-anleitung.html)",
-        inline=False,
-    )
+    if prio_enabled:
+        embed.add_field(
+            name="Hilfe zur Lootseite",
+            value=f"🧰 [So registriere ich mich auf der Lootseite]({LICHTLOOT_URL.rstrip('/')}/spieler-anleitung.html)",
+            inline=False,
+        )
     worldbuff_block = current_worldbuff_announcement_block()
     if worldbuff_block:
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)

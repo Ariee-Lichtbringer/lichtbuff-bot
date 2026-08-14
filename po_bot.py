@@ -1518,7 +1518,9 @@ def build_raid_announcement_embed(raid):
             slots.append(f"{label} {value}")
     if slots:
         embed.add_field(name="Slots", value=" · ".join(slots), inline=False)
-    embed.add_field(name="Prio-PIN", value=f"`{clean(raid.get('playerPin')) or '-'}`", inline=True)
+    prio_enabled = raid.get("prioEnabled") is not False and clean(raid.get("prioEnabled")).lower() != "false"
+    if prio_enabled:
+        embed.add_field(name="Prio-PIN", value=f"`{clean(raid.get('playerPin')) or '-'}`", inline=True)
     custom_link = configured_discord_link(raid)
     if custom_link:
         embed.add_field(name="Link", value=custom_link, inline=True)
@@ -1529,20 +1531,21 @@ def build_raid_announcement_embed(raid):
     )
     if worldbuff_block:
         embed.add_field(name="Aktuelle Worldbuffs", value=worldbuff_block[:1024], inline=False)
-    embed.add_field(
-        name="Hilfe zur Lootseite",
-        value=f"🧰 [So registriere ich mich auf der Lootseite]({LICHTLOOT_URL.rstrip('/')}/spieler-anleitung.html)",
-        inline=False,
-    )
-    embed.add_field(
-        name="Prios auf LichtLoot",
-        value=(
-            f"{custom_emoji('beutelilia', '🟣')} **P1–P3 Lootbag**  ·  "
-            f"{custom_emoji('beuteorange', '🟠')} **PO eingetragen**  ·  "
-            f"{custom_emoji('Beutegrun', '🟢')} **PO freigegeben**"
-        ),
-        inline=False,
-    )
+    if prio_enabled:
+        embed.add_field(
+            name="Hilfe zur Lootseite",
+            value=f"🧰 [So registriere ich mich auf der Lootseite]({LICHTLOOT_URL.rstrip('/')}/spieler-anleitung.html)",
+            inline=False,
+        )
+        embed.add_field(
+            name="Prios auf LichtLoot",
+            value=(
+                f"{custom_emoji('beutelilia', '🟣')} **P1–P3 Lootbag**  ·  "
+                f"{custom_emoji('beuteorange', '🟠')} **PO eingetragen**  ·  "
+                f"{custom_emoji('Beutegrun', '🟢')} **PO freigegeben**"
+            ),
+            inline=False,
+        )
     attachment_name = raid_banner_attachment_name(raid)
     if attachment_name:
         embed.set_image(url=f"attachment://{attachment_name}")
@@ -1680,11 +1683,10 @@ def build_raid_announcement_text(raid):
     loot_master = clean(raid.get("lootMaster") or raid.get("pluendermeister"))
     if loot_master:
         lines.append(f"🪙 **Plündermeister:** {loot_master}")
-    lines.extend([
-        "",
-        f"🔑 **Prio-PIN:** `{clean(raid.get('playerPin')) or '-'}`",
-        f"🌐 **Webansicht:** {LICHTLOOT_URL}",
-    ])
+    lines.append("")
+    if raid.get("prioEnabled") is not False and clean(raid.get("prioEnabled")).lower() != "false":
+        lines.append(f"🔑 **Prio-PIN:** `{clean(raid.get('playerPin')) or '-'}`")
+        lines.append(f"🌐 **Webansicht:** {LICHTLOOT_URL}")
     custom_link = configured_discord_link(raid)
     if custom_link:
         lines.append(f"🔗 **Link:** {custom_link}")
@@ -2454,7 +2456,7 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None, f
     for key in (
         "raid", "raidName", "raidDate", "raidTime", "createdBy", "guild", "guildSlug", "guildName",
         "maxPlayers", "tankSlots", "healSlots", "ddSlots", "description", "raidImageUrl",
-        "lootMaster", "pluendermeister", "statusNotifyTargets"
+        "lootMaster", "pluendermeister", "statusNotifyTargets", "prioEnabled"
     ):
         value = payload.get(key)
         if value in (None, ""):
