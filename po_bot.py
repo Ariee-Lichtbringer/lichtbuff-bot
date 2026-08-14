@@ -372,13 +372,6 @@ def normalize_raid(value):
     # Apostrophe (z. B. AHN'QIRAJ 20). Für die Raid-Zuordnung werden nur
     # Buchstaben und Zahlen berücksichtigt.
     text = re.sub(r"[^A-Z0-9]+", "", clean(value).upper())
-    # Discord-Embeds tragen häufig beschreibende Titelzusätze wie
-    # "Blackwing Lair Anmeldung" oder "BWL Raidanmelder". Diese Zusätze
-    # gehören nicht zur Raid-ID und dürfen die Zuordnung nicht verhindern.
-    for suffix in ("RAIDANMELDER", "ANMELDUNG", "ANMELDER", "RAID"):
-        if text.endswith(suffix) and len(text) > len(suffix):
-            text = text[:-len(suffix)]
-            break
     if text in {"ZGMITTWOCH", "ZULGURUBMITTWOCH"}:
         return "ZG-MITTWOCH"
     if text in {"ZGPRIME", "ZULGURUBPRIME"}:
@@ -406,7 +399,7 @@ def display_raid(value):
 
 
 def po_release_required_for_raid(value):
-    return normalize_raid(value) in {"MC", "BWL", "AQ40", "NAXX"}
+    return normalize_raid(value) in {"MC", "BWL", "AQ40", "NAXX", "ZG-MITTWOCH", "ZG-PRIME", "ZG-LATE"}
 
 
 def loot_raid(value):
@@ -788,6 +781,213 @@ class FreeMeetingDmView(discord.ui.View):
     @discord.ui.button(label="Nicht teilnehmen", emoji="❌", style=discord.ButtonStyle.danger)
     async def no_button(self, interaction, button):
         await interaction.response.send_modal(FreeMeetingSignupModal(self.target_channel_id, self.target_message_id, "no"))
+
+
+class P0PlusPointsCorrectionButton(discord.ui.Button):
+    def __init__(self, entry, action, row, guild_slug):
+        item = clean((entry or {}).get("item")) or "Item"
+        prefix = "Erhalten" if action == "received" else "Punkte falsch"
+        label = f"{prefix}: {item}"[:80]
+        style = discord.ButtonStyle.success if action == "received" else discord.ButtonStyle.danger
+        # Feste IDs machen die Buttons auch nach einem Bot-Neustart wieder
+        # ansprechbar. Die eigentlichen Angaben werden aus dem Embed gelesen.
+        custom_id = f"lichtloot:p0plus:{clean(guild_slug) or 'nachtloot'}:{action}:{row}"
+        super().__init__(label=label, style=style, row=row, custom_id=custom_id)
+        self.entry = dict(entry or {})
+        self.action = action
+        self.guild_slug = clean(guild_slug) or "lichtloot"
+
+    async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild_slug = self.guild_slug
+        entry = dict(self.entry or {})
+        # Bei wiederhergestellten Views ist kein ursprüngliches Python-Objekt
+        # mehr vorhanden. Discord liefert aber das Embed der DM weiterhin mit.
+        try:
+            field = interaction.message.embeds[0].fields[self.row]
+            field_name = clean(field.name)
+            field_value = clean(field.value)
+            raid, _, item = field_name.partition(" · ")
+            player_match = re.search(r"Charakter:\s*\*\*(.+?)\*\*", field_value)
+            points_match = re.search(r"PO\+:\s*\*\*([\d.,-]+)", field_value)
+            entry.update({
+                "raid": raid or entry.get("raid"),
+                "item": item or entry.get("item"),
+                "player": player_match.group(1) if player_match else entry.get("player"),
+                "points": points_match.group(1) if points_match else entry.get("points"),
+            })
+        except Exception:
+            pass
+        category = "item_received" if self.action == "received" else "points_incorrect"
+        note = (
+            "Spieler meldet: Item wurde bereits erhalten. Bitte PO+-Stand prüfen und gegebenenfalls entfernen."
+            if self.action == "received"
+            else "Spieler meldet: Der angezeigte PO+-Punktestand stimmt nicht. Bitte prüfen und korrigieren."
+        )
+        try:
+            result = await asyncio.to_thread(api_post, {
+                "action": "reportIssue",
+                "guildSlug": guild_slug,
+                "type": "PO+ Punkte Update",
+                "source": "Discord DM",
+                "category": category,
+                "raid": clean(entry.get("raid")),
+                "item": clean(entry.get("item")),
+                "points": clean(entry.get("points")),
+                "player": clean(entry.get("player")),
+                "server": clean(entry.get("server")),
+                "note": note,
+                "page": "PO-Bot DM",
+                "discordUserId": str(interaction.user.id),
+                "discordName": clean(getattr(interaction.user, "name", "")),
+            })
+            if not result.get("success"):
+                raise RuntimeError(result.get("error") or "Rückmeldung konnte nicht gespeichert werden.")
+            # Die sichtbare DM-Ansicht frisch aus ihren Embed-Feldern aufbauen.
+            # So werden nach einem Neustart keine Platzhalter-Buttons angezeigt.
+            rebuilt_entries = []
+            try:
+                for embed_field in interaction.message.embeds[0].fields[:5]:
+                    field_raid, _, field_item = clean(embed_field.name).partition(" · ")
+                    field_value = clean(embed_field.value)
+                    field_player = re.search(r"Charakter:\s*\*\*(.+?)\*\*", field_value)
+                    field_points = re.search(r"PO\+:\s*\*\*([\d.,-]+)", field_value)
+                    rebuilt_entries.append({
+                        "raid": field_raid,
+                        "item": field_item,
+                        "player": field_player.group(1) if field_player else "",
+                        "points": field_points.group(1) if field_points else "",
+                    })
+            except Exception:
+                rebuilt_entries = []
+            rebuilt_view = P0PlusPointsCorrectionView(rebuilt_entries or [entry], guild_slug)
+            for child in rebuilt_view.children:
+                if getattr(child, "row", None) == self.row and getattr(child, "action", "") == self.action:
+                    child.disabled = True
+                    child.label = "Gemeldet ✓"
+            await interaction.message.edit(view=rebuilt_view)
+            await interaction.followup.send("✅ Danke, deine Rückmeldung wurde an die Gildenleitung weitergegeben.", ephemeral=True)
+        except Exception as error:
+            await interaction.followup.send(f"⚠️ Rückmeldung konnte nicht gespeichert werden: `{error}`", ephemeral=True)
+
+
+class P0PlusPointsCorrectionView(discord.ui.View):
+    def __init__(self, entries, guild_slug):
+        super().__init__(timeout=None)
+        # Discord erlaubt höchstens fünf Reihen. Jede Item-DM enthält deshalb
+        # maximal fünf Einträge und pro Eintrag zwei eindeutige Aktionen.
+        for row, entry in enumerate(list(entries or [])[:5]):
+            self.add_item(P0PlusPointsCorrectionButton(entry, "received", row, guild_slug))
+            self.add_item(P0PlusPointsCorrectionButton(entry, "incorrect", row, guild_slug))
+
+
+def p0plus_update_target_matches(member, targets):
+    targets = list(targets or [])
+    if not targets:
+        return True
+    wanted_roles = {
+        clean(target.get("value") or target.get("id"))
+        for target in targets
+        if clean(target.get("type")).lower() == "role"
+    }
+    wanted_names = {
+        normalized_prio_player_name(target.get("value") or target.get("name"))
+        for target in targets
+        if clean(target.get("type") or "name").lower() == "name"
+    }
+    wanted_user_ids = {
+        clean(target.get("value") or target.get("id"))
+        for target in targets
+        if clean(target.get("type")).lower() == "user"
+    }
+    member_roles = {str(role.id) for role in getattr(member, "roles", [])}
+    member_names = {
+        normalized_prio_player_name(getattr(member, "name", "")),
+        normalized_prio_player_name(getattr(member, "display_name", "")),
+        normalized_prio_player_name(getattr(member, "global_name", "")),
+    }
+    return bool(str(member.id) in wanted_user_ids or wanted_roles.intersection(member_roles) or configured_discord_name_matches(wanted_names, member_names))
+
+
+async def send_p0plus_points_update_dms(payload):
+    guild_slug = payload_guild_slug(payload)
+    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
+    fallback_guild_ids = {
+        "lichtloot": LICHTLOOT_DISCORD_GUILD_ID,
+        "nachtloot": NACHTLOOT_DISCORD_GUILD_ID,
+    }
+    guild_id = clean(registry_entry.get("discordGuildId") or fallback_guild_ids.get(guild_slug) or "")
+    guild = client.get_guild(int(guild_id)) if guild_id.isdigit() else None
+    if guild is None:
+        raise RuntimeError(f"Discord-Server fuer {guild_slug or 'die Gilde'} wurde nicht gefunden.")
+    sent = 0
+    failed = []
+    for account in payload.get("accounts") or []:
+        user_id = clean(account.get("discordUserId"))
+        if not user_id.isdigit():
+            continue
+        member = guild.get_member(int(user_id))
+        if member is None:
+            try:
+                member = await guild.fetch_member(int(user_id))
+            except Exception:
+                failed.append(clean(account.get("discordName")) or user_id)
+                continue
+        if not p0plus_update_target_matches(member, payload.get("targets")):
+            continue
+        entries = list(account.get("entries") or [])
+        for start in range(0, len(entries), 5):
+            chunk = entries[start:start + 5]
+            description = clean(payload.get("messageTemplate")) or "Bitte prüfe deinen aktuell gespeicherten PO+-Punktestand."
+            embed = discord.Embed(title="⭐ Dein aktueller PO+-Punktestand", description=description, color=0xFACC15)
+            for entry in chunk:
+                points = format_points(entry.get("points"))
+                embed.add_field(
+                    name=f"{clean(entry.get('raid')) or 'Raid'} · {clean(entry.get('item')) or 'Item'}",
+                    value=f"Charakter: **{clean(entry.get('player')) or '-'}**\nPO+: **{points} Punkte**",
+                    inline=False,
+                )
+            embed.set_footer(text="Die Meldung ändert keine Punkte automatisch. Die Gildenleitung prüft sie zuerst.")
+            try:
+                await member.send(embed=embed, view=P0PlusPointsCorrectionView(chunk, guild_slug))
+            except Exception as error:
+                failed.append(clean(getattr(member, "display_name", "")) or user_id)
+                print(f"PO+ Punkte Update DM an {member} fehlgeschlagen: {error}")
+                break
+        else:
+            sent += 1
+    print(f"PO+ Punkte Update: {sent} persönliche DMs gesendet; Fehler: {len(set(failed))}.")
+    return sent
+
+
+async def send_p0plus_resolution_notice(payload):
+    guild_slug = payload_guild_slug(payload)
+    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
+    fallback_guild_ids = {"lichtloot": LICHTLOOT_DISCORD_GUILD_ID, "nachtloot": NACHTLOOT_DISCORD_GUILD_ID}
+    guild_id = clean(registry_entry.get("discordGuildId") or fallback_guild_ids.get(guild_slug) or "")
+    guild = client.get_guild(int(guild_id)) if guild_id.isdigit() else None
+    if guild is None:
+        raise RuntimeError(f"Discord-Server fuer {guild_slug or 'die Gilde'} wurde nicht gefunden.")
+    user_id = clean(payload.get("discordUserId"))
+    member = guild.get_member(int(user_id)) if user_id.isdigit() else None
+    if member is None and user_id.isdigit():
+        member = await guild.fetch_member(int(user_id))
+    if member is None:
+        raise RuntimeError("Discord-Empfänger wurde nicht gefunden.")
+    embed = discord.Embed(
+        title=clean(payload.get("noticeTitle")) or "✅ PO+-Meldung erledigt",
+        description=clean(payload.get("message")) or "Deine PO+-Meldung wurde von der Gildenleitung erledigt.",
+        color=0x22C55E,
+    )
+    embed.add_field(name="Charakter", value=clean(payload.get("player")) or "-", inline=True)
+    embed.add_field(name="Raid", value=clean(payload.get("raid")) or "-", inline=True)
+    item_label = "Korrigiertes Item" if payload.get("correctedPoints") is not None else "Entferntes Item"
+    embed.add_field(name=item_label, value=clean(payload.get("item")) or "-", inline=False)
+    if payload.get("correctedPoints") is not None:
+        embed.add_field(name="Neuer Punktestand", value=f"{format_points(payload.get('correctedPoints'))} Punkte", inline=False)
+    await member.send(embed=embed)
+    print(f"PO+-Erledigungsvermerk gesendet: {guild_slug}:{member}")
+    return 1
 
 
 async def send_free_meeting_dms(payload, message, source_embed, signup=True):
@@ -1879,6 +2079,48 @@ def raid_signup_row_count(helper):
     return len((helper or {}).get("signups") or []) + len((helper or {}).get("externalSignups") or [])
 
 
+def raid_signup_identity(row):
+    row = row or {}
+    user_id = clean(row.get("discordUserId") or row.get("discord_user_id"))
+    player = normalized_prio_player_name(row.get("player") or row.get("char") or row.get("spieler"))
+    return (user_id, player)
+
+
+def is_raidhelper_signup(row):
+    source = clean((row or {}).get("source")).lower().replace("_", "-")
+    return "raid-helper" in source or "raidhelper" in source
+
+
+def preserve_raidhelper_signups(helper, saved_payload):
+    """Verhindert, dass ein unvollständiger Refresh RaidHelper-Anmeldungen ausblendet."""
+    helper = dict(helper or {})
+    current_signups = list(helper.get("signups") or [])
+    current_external = list(helper.get("externalSignups") or [])
+    current_keys = {
+        raid_signup_identity(row)
+        for row in current_signups + current_external
+        if any(raid_signup_identity(row))
+    }
+    saved_rows = list((saved_payload or {}).get("combinedRaidSignups") or [])
+    saved_rows += list((saved_payload or {}).get("combinedRaidExternalSignups") or [])
+    preserved = 0
+    for row in saved_rows:
+        if not is_raidhelper_signup(row):
+            continue
+        identity = raid_signup_identity(row)
+        if any(identity) and identity in current_keys:
+            continue
+        current_external.append(dict(row))
+        if any(identity):
+            current_keys.add(identity)
+        preserved += 1
+    if preserved:
+        print(f"RaidHelper-Schutz: {preserved} bestehende Anmeldung(en) beim Refresh beibehalten.")
+    helper["signups"] = current_signups
+    helper["externalSignups"] = current_external
+    return helper
+
+
 def raid_helper_snapshot_from_payload(payload):
     payload = payload or {}
     raid = dict(payload.get("raidSnapshot") or {})
@@ -1963,43 +2205,11 @@ def combined_po_payload_for_message(message_id):
     return state, None, None
 
 
-def message_component_custom_ids(message):
-    return {
-        clean(getattr(component, "custom_id", ""))
-        for row in (getattr(message, "components", None) or [])
-        for component in (getattr(row, "children", None) or [])
-        if clean(getattr(component, "custom_id", ""))
-    }
-
-
-def is_plain_po_signup_message(message):
-    """A pure PO signup must never be edited as a raid signup."""
-    component_ids = message_component_custom_ids(message)
-    has_po_controls = any(
-        value.startswith(("po-", "po_", "po:"))
-        for value in component_ids
-    )
-    has_raid_controls = any(
-        value.startswith(("raid_", "combined_raid_"))
-        for value in component_ids
-    )
-    if has_po_controls and not has_raid_controls:
-        return True
-    for embed in getattr(message, "embeds", []) or []:
-        title = clean(getattr(embed, "title", "")).lower()
-        footer = clean(getattr(getattr(embed, "footer", None), "text", "")).lower()
-        if "po-anmelder" in title and "post-id:" in footer and not has_raid_controls:
-            return True
-    return False
-
-
 async def edit_raid_message_preserving_po(message, raid, helper):
     # The Discord server is the final authority for the guild when an existing
     # signup post is refreshed. This prevents incomplete queue snapshots from
     # ever applying another guild's banner or signup data to the message.
     raid = dict(raid or {})
-    if is_plain_po_signup_message(message):
-        raise RuntimeError("Sicherheitsstopp: Ein reiner PO-Anmelder darf nicht als Raidanmelder überschrieben werden.")
     message_guild_slug = guild_slug_for_discord_server(
         getattr(message, "guild", None),
         payload_guild_slug(raid),
@@ -2016,6 +2226,7 @@ async def edit_raid_message_preserving_po(message, raid, helper):
             await message.edit(embed=embed, attachments=[], view=RaidSignupView(raid))
         return
 
+    helper = preserve_raidhelper_signups(helper, po_payload)
     po_payload["combinedRaidSnapshot"] = raid
     po_payload["combinedRaidSignups"] = list((helper or {}).get("signups") or [])
     po_payload["combinedRaidExternalSignups"] = list((helper or {}).get("externalSignups") or [])
@@ -2226,25 +2437,18 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None, f
     if existing_message_id:
         try:
             existing_message = await channel.fetch_message(int(existing_message_id))
-            if is_plain_po_signup_message(existing_message):
-                print(
-                    f"Gespeicherte Raid-Nachrichten-ID zeigt auf einen PO-Anmelder; "
-                    f"erstelle getrennten Raidpost: {raid_id} in {channel_id}/{existing_message_id}"
-                )
-                existing_message_id = ""
-            else:
-                await edit_raid_message_preserving_po(existing_message, raid, helper)
-                await asyncio.to_thread(api_post, {
-                    "action": "lichtbotSetRaidDiscordMessage",
-                    "queueToken": QUEUE_TOKEN,
-                    "guild": payload_guild_slug(raid),
-                    "guildSlug": payload_guild_slug(raid),
-                    "raidId": clean(raid.get("raidId") or raid.get("id") or raid_id),
-                    "discordChannelId": channel_id,
-                    "discordMessageId": existing_message_id
-                })
-                print(f"Bestehender Raidanmelder aktualisiert: {raid_id} in {channel_id}/{existing_message_id}")
-                return True
+            await edit_raid_message_preserving_po(existing_message, raid, helper)
+            await asyncio.to_thread(api_post, {
+                "action": "lichtbotSetRaidDiscordMessage",
+                "queueToken": QUEUE_TOKEN,
+                "guild": payload_guild_slug(raid),
+                "guildSlug": payload_guild_slug(raid),
+                "raidId": clean(raid.get("raidId") or raid.get("id") or raid_id),
+                "discordChannelId": channel_id,
+                "discordMessageId": existing_message_id
+            })
+            print(f"Bestehender Raidanmelder aktualisiert: {raid_id} in {channel_id}/{existing_message_id}")
+            return True
         except (discord.NotFound, discord.Forbidden):
             print(f"Bestehender Raidanmelder nicht erreichbar, erstelle neu: {raid_id} in {channel_id}/{existing_message_id}")
     embed = build_raid_announcement_embed(raid)
@@ -3123,42 +3327,6 @@ def ensure_payload_lichtloot_raid(payload):
     payload = payload_with_saved_lichtloot_id(payload)
     if payload_lichtloot_raid_pin(payload):
         return payload
-    # Ein PO-Anmelder zu einem bestehenden Raid darf niemals seinen postKey
-    # als neuen Raid anlegen. Zuerst wird deshalb ueber die eindeutige
-    # Kombination Gilde + Raidtyp + Datum + Uhrzeit nach dem echten Raid
-    # gesucht und dessen IDs uebernommen.
-    raid_date, raid_time = payload_raid_schedule(payload)
-    if clean(payload.get("raid")) and raid_date:
-        try:
-            helper = api_get({
-                "action": "getRaidHelper",
-                "guild": payload_guild_slug(payload),
-                "guildSlug": payload_guild_slug(payload),
-                "raid": payload.get("raid") or "",
-                "raidDate": raid_date,
-                "raidTime": raid_time,
-                "t": int(time.time()),
-            })
-            existing_raid = (helper or {}).get("raid") or {}
-            existing_pin = clean(existing_raid.get("playerPin") or existing_raid.get("prioPin") or existing_raid.get("raidPin"))
-            existing_raid_id = clean(existing_raid.get("raidId") or existing_raid.get("id"))
-            if (helper or {}).get("success") and existing_pin:
-                return payload_with_lichtloot_id_from_sources({
-                    **payload,
-                    "raidId": existing_raid_id,
-                    "lichtlootCanonicalRaidId": existing_raid_id,
-                }, existing_raid)
-        except Exception as error:
-            print(f"Bestehender LichtLoot-Raid fuer PO-Anmelder konnte nicht gesucht werden: {error}")
-
-    create_requested = clean(payload.get("createLichtlootRaid") or payload.get("createRaid")).lower() in {"1", "true", "yes", "ja"}
-    if not create_requested:
-        print(
-            "PO-Anmelder bleibt ohne Raid-Neuanlage: "
-            f"guild={payload_guild_slug(payload)} postKey={clean(payload.get('postKey'))} "
-            f"raid={clean(payload.get('raid'))} date={raid_date} time={raid_time}"
-        )
-        return payload
     prio_pin = generated_pin(payload.get("postKey") or payload.get("raid") or "po", 3)
     lead_pin = generated_pin((payload.get("postKey") or "") + "-lead", 4)
     result = api_post({
@@ -3203,9 +3371,6 @@ def ensure_payload_lichtloot_raid(payload):
 
 def save_po_signup_prio(payload, player, class_name, item, player_login="", item_id=""):
     raid_pin = payload_lichtloot_raid_pin(payload)
-    if not raid_pin:
-        return None
-
     login = clean(player_login)
     class_name = class_display_name(class_name)
     post_key = clean((payload or {}).get("postKey") or (payload or {}).get("poPostKey") or (payload or {}).get("postId"))
@@ -3807,18 +3972,6 @@ def message_matches_post_key(message, post_key):
     return False
 
 
-def message_po_prio_pin(message):
-    for embed in getattr(message, "embeds", []) or []:
-        text = "\n".join(filter(None, [
-            clean(getattr(embed, "title", "")),
-            clean(getattr(embed, "description", "")),
-        ]))
-        match = re.search(r"(?:Prio-PIN|LichtLoot\s*ID)\s*:\s*([A-Z0-9]+)", text, re.IGNORECASE)
-        if match:
-            return clean(match.group(1)).upper()
-    return ""
-
-
 async def find_existing_message_id(client, payload):
     try:
         entries = await load_entries(payload)
@@ -3847,9 +4000,8 @@ async def find_existing_message_id(client, payload):
 
 
 async def deduplicate_po_messages(client, channel, payload, preferred_message=None):
-    """Keep one PO signup per Prio-PIN/channel, even when post keys differ."""
+    """Keep exactly one PO signup message for a post key, even after concurrent creates."""
     post_key = clean((payload or {}).get("postKey") or (payload or {}).get("poPostKey"))
-    raid_pin = payload_lichtloot_raid_pin(payload).upper()
     if not post_key:
         return preferred_message
     await asyncio.sleep(1.0)
@@ -3858,25 +4010,14 @@ async def deduplicate_po_messages(client, channel, payload, preferred_message=No
         async for candidate in channel.history(limit=250):
             if getattr(getattr(candidate, "author", None), "id", None) != getattr(client.user, "id", None):
                 continue
-            if message_matches_post_key(candidate, post_key) or (raid_pin and message_po_prio_pin(candidate) == raid_pin):
+            if message_matches_post_key(candidate, post_key):
                 matches.append(candidate)
     except Exception as error:
         print(f"PO-Anmelder Dublettenprüfung fehlgeschlagen ({post_key}): {error}")
         return preferred_message
     if not matches:
         return preferred_message
-    preferred_id = int(preferred_message.id) if preferred_message else 0
-    keep = next((candidate for candidate in matches if int(candidate.id) == preferred_id), None)
-    if keep is None:
-        # Bei Altdubletten bleibt der in LichtLoot bekannte Post mit Einträgen
-        # erhalten; ansonsten der neueste sichtbare Post.
-        known_ids = {
-            clean(entry.get("discordMessageId") or entry.get("mainMessageId"))
-            for entry in (await load_entries(payload) or [])
-            if clean(entry.get("player") or entry.get("item") or entry.get("itemName"))
-        }
-        keep = next((candidate for candidate in matches if str(candidate.id) in known_ids), None)
-    keep = keep or max(matches, key=lambda candidate: int(candidate.id))
+    keep = max(matches, key=lambda candidate: int(candidate.id))
     for duplicate in matches:
         if duplicate.id == keep.id:
             continue
@@ -3911,27 +4052,6 @@ async def remember_po_message(payload):
         })
     except Exception as error:
         print(f"PO-Anmelder Nachricht-ID konnte nicht in LichtLoot gespeichert werden ({payload.get('postKey')}): {error}")
-
-
-async def forget_deleted_po_message(payload):
-    """Entfernt einen in Discord gelöschten PO-Anmelder auch aus Bot und API."""
-    state = load_state()
-    state_key = po_post_state_key(payload)
-    if state_key and state_key in state:
-        state.pop(state_key, None)
-        save_state(state)
-    try:
-        await asyncio.to_thread(api_post, {
-            "action": "lichtbotDeletePoPost",
-            "queueToken": QUEUE_TOKEN,
-            "guild": payload_guild_slug(payload),
-            "guildSlug": payload_guild_slug(payload),
-            "postKey": clean(payload.get("postKey") or payload.get("poPostKey") or payload.get("postId")),
-            "sourceChannelId": payload_source_channel_id(payload),
-            "targetChannelId": payload_target_channel_id(payload),
-        })
-    except Exception as error:
-        print(f"Gelöschter PO-Anmelder konnte nicht aus LichtLoot entfernt werden ({payload.get('postKey')}): {error}")
 
 
 async def load_payloads_from_api_entries():
@@ -4391,13 +4511,7 @@ async def send_raid_staff_action_notice(interaction, raid, char_name, action, no
         for target in targets
         if clean(target.get("type")).lower() == "role"
     }
-    wanted_user_ids = {
-        clean(target.get("value") or target.get("id"))
-        for target in targets
-        if clean(target.get("type")).lower() == "user"
-    }
     wanted_roles.discard("")
-    wanted_user_ids.discard("")
     raid_name = clean((raid or {}).get("raidName") or (raid or {}).get("raid")) or "Raid"
     raid_date = format_raid_announcement_date((raid or {}).get("raidDate") or "")
     raid_time = format_raid_announcement_time((raid or {}).get("raidTime") or "")
@@ -4523,252 +4637,6 @@ async def send_queue_targeted_embed(payload, embed, image_path=None, show_recipi
         except Exception as error:
             print(f"Raid-DM an {member} fehlgeschlagen: {error}")
     return len(sent)
-
-
-class P0PlusPointsCorrectionButton(discord.ui.Button):
-    def __init__(self, entry, action, row, guild_slug):
-        item = clean((entry or {}).get("item")) or "Item"
-        prefix = "Erhalten" if action == "received" else ("Punkte stimmen" if action == "correct" else "Punkte falsch")
-        super().__init__(
-            label=f"{prefix}: {item}"[:80],
-            style=discord.ButtonStyle.success if action in {"received", "correct"} else discord.ButtonStyle.danger,
-            row=row,
-            custom_id=f"lichtloot:p0plus:{normalize_guild_slug(guild_slug)}:{action}:{row}",
-        )
-        self.entry = dict(entry or {})
-        self.action = action
-        self.guild_slug = normalize_guild_slug(guild_slug)
-
-    async def callback(self, interaction):
-        await interaction.response.defer(ephemeral=True)
-        entry = dict(self.entry or {})
-        try:
-            field = interaction.message.embeds[0].fields[self.row]
-            raid, _, item = clean(field.name).partition(" · ")
-            player_match = re.search(r"Charakter:\s*\*\*(.+?)\*\*", clean(field.value))
-            points_match = re.search(r"PO\+:\s*\*\*([\d.,-]+)", clean(field.value))
-            entry.update({"raid": raid, "item": item, "player": player_match.group(1) if player_match else "", "points": points_match.group(1) if points_match else ""})
-        except Exception:
-            pass
-        category = "item_received" if self.action == "received" else ("points_confirmed" if self.action == "correct" else "points_incorrect")
-        note = (
-            "Spieler meldet: Item wurde bereits erhalten. Bitte PO+-Stand prüfen und gegebenenfalls entfernen."
-            if self.action == "received"
-            else ("Spieler bestätigt: Der angezeigte PO+-Punktestand stimmt." if self.action == "correct" else "Spieler meldet: Der angezeigte PO+-Punktestand stimmt nicht. Bitte prüfen und korrigieren.")
-        )
-        try:
-            result = await asyncio.to_thread(api_post, {
-                "action": "reportIssue", "guildSlug": self.guild_slug, "type": "PO+ Punkte Update",
-                "source": "Discord DM", "category": category, "raid": clean(entry.get("raid")),
-                "item": clean(entry.get("item")), "points": clean(entry.get("points")),
-                "player": clean(entry.get("player")), "server": clean(entry.get("server")),
-                "note": note, "page": "PO-Bot DM", "discordUserId": str(interaction.user.id),
-                "discordName": clean(getattr(interaction.user, "name", "")),
-            })
-            if not result.get("success"):
-                raise RuntimeError(result.get("error") or "Rückmeldung konnte nicht gespeichert werden.")
-            rebuilt_entries = []
-            for embed_field in interaction.message.embeds[0].fields[:5]:
-                field_raid, _, field_item = clean(embed_field.name).partition(" · ")
-                field_player = re.search(r"Charakter:\s*\*\*(.+?)\*\*", clean(embed_field.value))
-                field_points = re.search(r"PO\+:\s*\*\*([\d.,-]+)", clean(embed_field.value))
-                rebuilt_entries.append({"raid": field_raid, "item": field_item, "player": field_player.group(1) if field_player else "", "points": field_points.group(1) if field_points else ""})
-            rebuilt_view = P0PlusPointsCorrectionView(rebuilt_entries or [entry], self.guild_slug)
-            for child in rebuilt_view.children:
-                if getattr(child, "row", None) == self.row:
-                    child.disabled = True
-                    child.label = "Bestätigt ✓" if self.action == "correct" else ("Gemeldet ✓" if getattr(child, "action", "") == self.action else child.label)
-            await interaction.message.edit(view=rebuilt_view)
-            confirmation = "✅ Danke, der PO+-Punktestand für dieses Item wurde als korrekt bestätigt." if self.action == "correct" else "✅ Danke, deine Rückmeldung wurde an die Gildenleitung weitergegeben."
-            await interaction.followup.send(confirmation, ephemeral=True)
-        except Exception as error:
-            await interaction.followup.send(f"⚠️ Rückmeldung konnte nicht gespeichert werden: `{error}`", ephemeral=True)
-
-
-class P0PlusPointsCorrectionView(discord.ui.View):
-    def __init__(self, entries, guild_slug, include_all_correct=True):
-        super().__init__(timeout=None)
-        for row, entry in enumerate(list(entries or [])[:5]):
-            self.add_item(P0PlusPointsCorrectionButton(entry, "received", row, guild_slug))
-            self.add_item(P0PlusPointsCorrectionButton(entry, "incorrect", row, guild_slug))
-        # Discord erlaubt maximal fünf Button-Reihen. Der Sammelbutton sitzt
-        # deshalb neben den beiden Aktionen des ersten Items.
-        if entries and include_all_correct:
-            self.add_item(P0PlusAllCorrectButton(entries, guild_slug))
-
-
-class P0PlusAllCorrectButton(discord.ui.Button):
-    def __init__(self, entries, guild_slug):
-        super().__init__(
-            label="Alle Punkte stimmen",
-            emoji="✅",
-            style=discord.ButtonStyle.success,
-            row=0,
-            custom_id=f"lichtloot:p0plus:{normalize_guild_slug(guild_slug)}:all_correct",
-        )
-        self.entries = list(entries or [])[:5]
-        self.guild_slug = normalize_guild_slug(guild_slug)
-
-    async def callback(self, interaction):
-        await interaction.response.defer(ephemeral=True)
-        try:
-            confirmed = 0
-            for field in interaction.message.embeds[0].fields[:5]:
-                raid, _, item = clean(field.name).partition(" · ")
-                field_value = clean(field.value)
-                player_match = re.search(r"Charakter:\s*\*\*(.+?)\*\*", field_value)
-                points_match = re.search(r"PO\+:\s*\*\*([\d.,-]+)", field_value)
-                player = player_match.group(1) if player_match else ""
-                points = points_match.group(1) if points_match else ""
-                result = await asyncio.to_thread(api_post, {
-                    "action": "reportIssue", "guildSlug": self.guild_slug,
-                    "type": "PO+ Punkte Update", "source": "Discord DM",
-                    "category": "points_confirmed", "raid": raid, "item": item,
-                    "player": player, "points": points,
-                    "note": f"Spieler bestätigt: Der PO+-Punktestand für {item or 'dieses Item'} stimmt ({points or '0'} Punkte).",
-                    "page": "PO-Bot DM", "discordUserId": str(interaction.user.id),
-                    "discordName": clean(getattr(interaction.user, "name", "")),
-                })
-                if not result.get("success"):
-                    raise RuntimeError(result.get("error") or "Bestätigung konnte nicht gespeichert werden.")
-                confirmed += 1
-            for child in self.view.children:
-                child.disabled = True
-            self.label = "Alle bestätigt ✓"
-            await interaction.message.edit(view=self.view)
-            await interaction.followup.send(f"✅ Danke, {confirmed} angezeigte PO+-Punktestände wurden als korrekt bestätigt.", ephemeral=True)
-        except Exception as error:
-            await interaction.followup.send(f"⚠️ Bestätigung konnte nicht gespeichert werden: `{error}`", ephemeral=True)
-
-
-async def send_p0plus_points_update_from_queue(payload):
-    """Send each linked account only its own PO+ overview."""
-    accounts = list(payload.get("accounts") or [])
-    targets = list(payload.get("targets") or [])
-    wanted_names = {
-        normalized_prio_player_name(target.get("value") or target.get("name"))
-        for target in targets
-        if clean(target.get("type") or "name").lower() == "name"
-    }
-    wanted_roles = {
-        clean(target.get("value") or target.get("id"))
-        for target in targets
-        if clean(target.get("type")).lower() == "role"
-    }
-    wanted_user_ids = {
-        clean(target.get("value") or target.get("id"))
-        for target in targets
-        if clean(target.get("type")).lower() == "user"
-    }
-    wanted_names.discard("")
-    wanted_roles.discard("")
-    wanted_user_ids.discard("")
-    guild_slug = payload_guild_slug(payload)
-    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
-    discord_guild_id = clean(registry_entry.get("discordGuildId") or NACHTLOOT_DISCORD_GUILD_ID)
-    guild = client.get_guild(int(discord_guild_id)) if discord_guild_id.isdigit() else None
-    if guild is None:
-        raise RuntimeError(f"Discord-Server fuer {guild_slug} wurde nicht gefunden.")
-    intro = clean(payload.get("messageTemplate")) or "Hier findest du deinen aktuell gespeicherten PO+-Punktestand."
-    sent = 0
-    for account in accounts:
-        user_id = clean(account.get("discordUserId"))
-        if not user_id.isdigit():
-            continue
-        member = guild.get_member(int(user_id))
-        if member is None or member.bot:
-            continue
-        member_names = {
-            normalized_prio_player_name(getattr(member, "name", "")),
-            normalized_prio_player_name(getattr(member, "display_name", "")),
-            normalized_prio_player_name(getattr(member, "global_name", "")),
-            normalized_prio_player_name(account.get("discordName")),
-        }
-        member_roles = {str(role.id) for role in getattr(member, "roles", [])}
-        if targets and not (user_id in wanted_user_ids or configured_discord_name_matches(wanted_names, member_names) or wanted_roles.intersection(member_roles)):
-            continue
-        raw_entries = list(account.get("entries") or [])
-        grouped_entries = {}
-        for raw_entry in raw_entries:
-            raid_name = clean(raw_entry.get("raid")) or "Raid"
-            item_name = clean(raw_entry.get("item")) or "Item"
-            group_key = (raid_name.lower(), item_name.lower())
-            if group_key not in grouped_entries:
-                grouped_entries[group_key] = {
-                    "raid": raid_name,
-                    "item": item_name,
-                    "points": 0,
-                    "players": [],
-                    "server": clean(raw_entry.get("server")),
-                }
-            grouped_entry = grouped_entries[group_key]
-            try:
-                grouped_entry["points"] += float(str(raw_entry.get("points") or 0).replace(",", "."))
-            except Exception:
-                pass
-            player_name = clean(raw_entry.get("player"))
-            if player_name and player_name not in grouped_entry["players"]:
-                grouped_entry["players"].append(player_name)
-        entries = []
-        for grouped_entry in grouped_entries.values():
-            grouped_entry["player"] = " / ".join(grouped_entry.pop("players", []))
-            entries.append(grouped_entry)
-        entries.sort(key=lambda entry: (clean(entry.get("raid")).lower(), clean(entry.get("item")).lower()))
-        existing_messages = []
-        try:
-            dm_channel = member.dm_channel or await member.create_dm()
-            async for old_message in dm_channel.history(limit=60):
-                if old_message.author.id != client.user.id or not old_message.embeds:
-                    continue
-                old_title = clean(old_message.embeds[0].title)
-                if old_title in {"⭐ PO+ Punkte Update", "⭐ Dein aktueller PO+-Punktestand"}:
-                    existing_messages.append(old_message)
-            # Immer die neueste sichtbare Übersicht wiederverwenden. Ältere
-            # Nachrichten werden nur dann als ersetzt markiert, wenn weniger
-            # Blöcke als zuvor benötigt werden.
-            existing_messages.sort(key=lambda message: message.id, reverse=True)
-        except Exception as error:
-            print(f"Vorhandene PO+-DM von {member} konnte nicht gesucht werden: {error}")
-        delivered = True
-        chunk_index = 0
-        for start in range(0, len(entries), 5):
-            chunk = entries[start:start + 5]
-            embed = discord.Embed(title="⭐ Dein aktueller PO+-Punktestand", description=intro[:1800], color=0xF1C40F)
-            for entry in chunk:
-                embed.add_field(
-                    name=f"{clean(entry.get('raid')) or 'Raid'} · {clean(entry.get('item')) or 'Item'}",
-                    value=f"Charakter: **{clean(entry.get('player')) or '-'}**\nPO+: **{format_points(entry.get('points'))} Punkte**",
-                    inline=False,
-                )
-            embed.set_footer(text="Die Meldung ändert keine Punkte automatisch. Die Gildenleitung prüft sie zuerst.")
-            try:
-                view = P0PlusPointsCorrectionView(chunk, guild_slug)
-                if chunk_index < len(existing_messages):
-                    await existing_messages[chunk_index].edit(embed=embed, view=view)
-                else:
-                    await member.send(embed=embed, view=view)
-            except Exception as error:
-                delivered = False
-                print(f"PO+-Punkte-DM an {member} fehlgeschlagen: {error}")
-                break
-            chunk_index += 1
-        for obsolete_message in existing_messages[chunk_index:]:
-            try:
-                await obsolete_message.edit(
-                    content="",
-                    embed=discord.Embed(
-                        title="⭐ PO+ Punkte Update",
-                        description="Diese ältere Übersicht wurde durch die aktuelle PO+-Liste ersetzt.",
-                        color=0x64748B,
-                    ),
-                    view=None,
-                )
-            except Exception:
-                pass
-        if delivered:
-            sent += 1
-    print(f"PO+-Punkte-DMs gesendet: {guild_slug}:{sent}/{len(accounts)}")
-    return sent
 
 
 async def send_player_login_approval_notice_from_queue(payload):
@@ -5074,20 +4942,34 @@ async def send_po_release_granted_notice_from_queue(payload):
     character = clean(payload.get("character") or payload.get("player")) or "Unbekannt"
     server = clean(payload.get("server"))
     class_name = clean(payload.get("className") or payload.get("class"))
+    decision = clean(payload.get("decision") or payload.get("status")).lower()
+    revoked = decision == "revoked"
+    reason = clean(payload.get("reason"))
+    custom_message = clean(payload.get("customMessage") or payload.get("message"))
     embed = discord.Embed(
-        title="✅ PO-Freigabe erteilt",
-        description=f"Deine PO-Freigabe für **{raid_name}** wurde erfolgreich bestätigt.",
-        color=0x22C55E,
+        title="❌ PO-Freigabe entzogen" if revoked else "✅ PO-Freigabe erteilt",
+        description=(f"Deine PO-Freigabe für **{raid_name}** wurde entzogen." if revoked else f"Deine PO-Freigabe für **{raid_name}** wurde erfolgreich bestätigt."),
+        color=0xEF4444 if revoked else 0x22C55E,
     )
     embed.add_field(name="🏰 Gilde", value=guild_name, inline=True)
     embed.add_field(name="⚔️ Raid", value=raid_name, inline=True)
     embed.add_field(name="👤 Charakter", value=f"{character}{f'-{server}' if server else ''}", inline=True)
     if class_name:
         embed.add_field(name="🛡️ Klasse", value=f"{class_icon(class_name)} {class_display_name(class_name)}", inline=True)
-    embed.set_footer(text="Du kannst deine Prios jetzt auf der entsprechenden Lootseite eintragen.")
+    if reason:
+        embed.add_field(name="📋 Grund", value=reason, inline=False)
+    if custom_message:
+        embed.add_field(name="💬 Zusätzliche Nachricht", value=custom_message[:1024], inline=False)
+    embed.set_footer(text="Bitte wende dich bei Rückfragen an die Gildenleitung." if revoked else "Du kannst deine Prios jetzt auf der entsprechenden Lootseite eintragen.")
     try:
         user = client.get_user(int(user_id)) or await client.fetch_user(int(user_id))
         await user.send(embed=embed)
+        if payload.get("sendStaffCopy"):
+            copy_embed = embed.copy()
+            copy_embed.title = "ℹ️ Kopie: " + ("PO-Freigabe entzogen" if revoked else "PO-Freigabe erteilt")
+            copy_embed.description = f"Diese Nachricht wurde an **{character}{f'-{server}' if server else ''}** gesendet.\n\n{embed.description}"
+            copy_embed.set_footer(text="Informationskopie für Raidleitung und Offiziere.")
+            await send_queue_targeted_embed(payload, copy_embed)
         return 1
     except Exception as error:
         print(f"PO-Freigabe-DM an {character} konnte nicht gesendet werden: {error}")
@@ -5212,59 +5094,6 @@ class PoClearPostView(discord.ui.View):
         self.add_item(PoClearPostSelect(payloads))
 
 
-def bot_post_list_label(message):
-    embeds = list(getattr(message, "embeds", []) or [])
-    title = clean(getattr(embeds[0], "title", "")) if embeds else ""
-    if not title:
-        content = clean(getattr(message, "content", ""))
-        title = content.splitlines()[0] if content else "Bot-Nachricht"
-    return title[:100]
-
-
-class BotChannelPostDeleteSelect(discord.ui.Select):
-    def __init__(self, messages):
-        self.message_ids = [str(message.id) for message in messages[:25]]
-        options = []
-        for index, message in enumerate(messages[:25]):
-            created = getattr(message, "created_at", None)
-            timestamp = created.astimezone().strftime("%d.%m.%Y %H:%M") if created else ""
-            options.append(discord.SelectOption(
-                label=bot_post_list_label(message),
-                description=(f"{timestamp} · Nachricht {message.id}")[:100],
-                value=str(index),
-                emoji="🗑️",
-            ))
-        super().__init__(placeholder="Bot-Post auswählen und löschen", options=options)
-
-    async def callback(self, interaction):
-        await interaction.response.defer(ephemeral=True)
-        message_id = self.message_ids[int(self.values[0])]
-        try:
-            message = await interaction.channel.fetch_message(int(message_id))
-            if getattr(getattr(message, "author", None), "id", None) != getattr(interaction.client.user, "id", None):
-                raise RuntimeError("Diese Nachricht stammt nicht von diesem PO-Bot.")
-            payload = next((
-                dict(value) for value in load_state().values()
-                if isinstance(value, dict)
-                and clean(value.get("messageId") or value.get("discordMessageId")) == message_id
-            ), None)
-            label = bot_post_list_label(message)
-            await message.delete(reason=f"Bot-Post-Auswahl von {interaction.user} ({interaction.user.id})")
-            if payload:
-                await forget_deleted_po_message(payload)
-            await interaction.followup.send(f"🗑️ **{label}** wurde gelöscht.", ephemeral=True)
-        except discord.NotFound:
-            await interaction.followup.send("ℹ️ Der ausgewählte Post wurde bereits gelöscht.", ephemeral=True)
-        except Exception as error:
-            await interaction.followup.send(f"⚠️ Post konnte nicht gelöscht werden: `{clean(error)[:300]}`", ephemeral=True)
-
-
-class BotChannelPostDeleteView(discord.ui.View):
-    def __init__(self, messages):
-        super().__init__(timeout=180)
-        self.add_item(BotChannelPostDeleteSelect(messages))
-
-
 async def delete_entry(payload, entry, user):
     raid_pin = payload_lichtloot_raid_pin(payload)
     guild_slug = payload_guild_slug(payload)
@@ -5273,7 +5102,6 @@ async def delete_entry(payload, entry, user):
         "queueToken": QUEUE_TOKEN,
         "guild": guild_slug,
         "guildSlug": guild_slug,
-        "entryId": entry.get("id") or entry.get("entryId") or "",
         "postKey": payload["postKey"],
         "sourceChannelId": payload_source_channel_id(payload),
         "targetChannelId": payload_target_channel_id(payload),
@@ -5288,8 +5116,6 @@ async def delete_entry(payload, entry, user):
     })
     if not result.get("success"):
         raise RuntimeError(result.get("error") or "PO-Eintrag konnte nicht gelöscht werden.")
-    if int(result.get("deleted") or 0) < 1:
-        raise RuntimeError("PO-Eintrag wurde in der Verwaltung nicht gefunden und deshalb nicht gelöscht.")
     return result
 
 
@@ -5383,6 +5209,41 @@ async def send_po_message(channel, embed, view):
     return await channel.send(embed=embed, view=view, silent=True)
 
 
+async def enrich_calendar_events_with_signups(events, guild_slug):
+    """Lädt die aktuellen LichtLoot-Anmeldungen für vorhandene Raidanmelder."""
+    enriched = []
+    for raw_event in events:
+        event = dict(raw_event or {})
+        lookup = {
+            **event,
+            "guild": guild_slug,
+            "guildSlug": guild_slug,
+            "raidId": clean(event.get("raidId") or event.get("id")),
+            "raid": clean(event.get("raid") or event.get("name")),
+            "raidDate": clean(event.get("date") or event.get("raidDate")),
+            "raidTime": clean(event.get("time") or event.get("raidTime")),
+        }
+        try:
+            helper = await get_raid_helper_for_refresh(lookup)
+            if helper and helper.get("success"):
+                event["signups"] = raid_signup_row_count(helper)
+                raid = helper.get("raid") if isinstance(helper.get("raid"), dict) else {}
+                helper_max = clean(raid.get("maxPlayers") or raid.get("max_players"))
+                if helper_max:
+                    event["maxPlayers"] = helper_max
+        except Exception as error:
+            # Raids ohne LichtLoot-Anmelder behalten den vom Kalender
+            # übergebenen Wert. Das betrifft derzeit vor allem andere Raids
+            # als ZG und AQ20.
+            print(
+                "Kalender-Anmeldungen konnten nicht geladen werden "
+                f"({clean(event.get('name') or event.get('raid'))}): {error}"
+            )
+        enriched.append(event)
+        await asyncio.sleep(0.1)
+    return enriched
+
+
 async def publish_raid_calendar(payload):
     channel_id = clean(payload.get("channelId") or payload.get("discordChannelId"))
     if not channel_id:
@@ -5391,12 +5252,13 @@ async def publish_raid_calendar(payload):
     if channel is None:
         raise RuntimeError("Discord-Channel für den Terminkalender ist nicht erreichbar.")
     events = [event for event in (payload.get("events") or []) if isinstance(event, dict)]
+    guild_slug = payload_guild_slug(payload)
+    events = await enrich_calendar_events_with_signups(events, guild_slug)
     events.sort(key=lambda event: (clean(event.get("date")), clean(event.get("time"))))
     grouped = {}
     for event in events:
         grouped.setdefault(clean(event.get("date")), []).append(event)
     guild_name = guild_display_name(payload=payload)
-    guild_slug = payload_guild_slug(payload)
     embed = discord.Embed(
         title=f"📅 Raidkalender · {guild_name}",
         description=f"**{len(events)} kommende Raidtermine**\nAlle Zeiten werden automatisch in deiner Discord-Zeitzone angezeigt.",
@@ -5420,11 +5282,13 @@ async def publish_raid_calendar(payload):
                 time_label = clean(event.get("time")) or "-"
                 relative = ""
             name = clean(event.get("name") or event.get("raid") or "Raid")
-            raid_key = normalize_raid(event.get("raid") or name)
-            raid_icon = {
+            raid_key = normalize_raid(event.get("raid") or name).lower()
+            raid_icon_key = "zg" if raid_key.startswith("zg") else raid_key
+            raid_icon_fallback = {
                 "mc": "🔥", "bwl": "🐉", "aq40": "🦂", "aq20": "🏜️",
                 "naxx": "💀", "zg": "🐯", "ony": "🐲",
-            }.get(raid_key, "⚔️")
+            }.get(raid_icon_key, "⚔️")
+            raid_icon = custom_emoji(raid_icon_key, raid_icon_fallback)
             count = max(0, int(event.get("signups") or 0))
             max_players = max(0, int(event.get("maxPlayers") or 0))
             count_text = f"{count}/{max_players}" if max_players else str(count)
@@ -5433,11 +5297,9 @@ async def publish_raid_calendar(payload):
             prio_url = clean(event.get("prioUrl"))
             links = f"[💬 Raid-Channel]({discord_link})"
             if prio_url:
-                links += f" · [🎯 Prios öffnen]({prio_url})"
-            lead = clean(event.get("lead"))
-            lead_text = f" · 👑 {lead}" if lead else ""
-            lines.append(f"{time_label} · 👥 `{count_text}` · {raid_icon} **{name}**{relative}\n└ {links}{lead_text}")
-        embed.add_field(name=field_name, value="\n".join(lines)[:1024] or "–", inline=False)
+                links += f" · [{custom_emoji('beutelilia', '🟣')} Prios eintragen]({prio_url})"
+            lines.append(f"{time_label} · 👥 `{count_text}` · {raid_icon} **{name}**{relative}\n└ {links}")
+        embed.add_field(name=field_name, value="\n\n".join(lines)[:1024] or "–", inline=False)
     embed.set_footer(text="Europe/Berlin · Automatisch erstellt und aktualisiert durch LichtLoot")
     state = load_state()
     state_key = f"_raidCalendar:{payload_guild_slug(payload)}:{channel_id}"
@@ -6023,15 +5885,8 @@ class PoReviewSelect(discord.ui.Select):
             saved = result.get("entry") or entry
             await refresh_po_message(interaction.client, action_payload)
             dm_sent = await send_po_approval_message(interaction.client, saved)
-            prio_sync = result.get("prioSync") or {}
-            sync_text = (
-                " Automatisch in die LichtLoot-Prioliste eingetragen."
-                if prio_sync.get("success")
-                else f" ⚠️ Prioliste nicht aktualisiert: {prio_sync.get('error') or 'unbekannter Fehler'}."
-            )
             await interaction.followup.send(
                 f"✅ Freigegeben: **{saved.get('player') or entry.get('player')}** → **{saved.get('item') or entry.get('item')}**."
-                + sync_text
                 + (" Nachricht wurde gesendet." if dm_sent else " Nachricht konnte nicht per DM gesendet werden."),
                 ephemeral=True,
             )
@@ -6191,7 +6046,10 @@ class PoDeleteEntrySelect(discord.ui.Select):
                 return
             action_payload = payload_for_interaction(self.payload, interaction)
             await delete_entry(action_payload, entry, interaction.user)
-            await refresh_po_message(interaction.client, action_payload)
+            # Die Datenbank ist nach der Löschung verbindlich. Der direkte
+            # Refresh aktualisiert den Post sofort; der zusätzlich von
+            # Railway erzeugte Queue-Auftrag dient als zuverlässige Sicherung.
+            await refresh_po_message_safely(interaction.client, action_payload)
             await interaction.followup.send(
                 f"🗑️ Gelöscht: **{entry.get('player')}** → **{entry.get('item') or entry.get('itemName')}**.",
                 ephemeral=True,
@@ -6361,6 +6219,7 @@ async def refresh_po_message(client, payload):
     if combined_raid_snapshot(payload):
         helper = await get_raid_helper_for_refresh(payload)
         if helper and helper.get("success"):
+            helper = preserve_raidhelper_signups(helper, payload)
             payload = {
                 **payload,
                 "combinedRaidSnapshot": helper.get("raid") or combined_raid_snapshot(payload),
@@ -6532,7 +6391,7 @@ async def po_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": QUEUE_TOKEN,
                 "limit": "50",
-                "types": "player_login_approval_notice,player_login_granted_notice,po_post,p0_post_refresh,p0plus_points_update_dm,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,loot_master_leadpin_notice,po_release_request_notice,po_release_granted_notice,po_rejection_notice,po_approval_notice,po_post_delete,free_discord_embed,raid_calendar",
+                "types": "player_login_approval_notice,player_login_granted_notice,po_post,p0_post_refresh,p0plus_points_update_dm,p0plus_resolution_notice,raid_announcement,raid_announcement_refresh,raid_announcement_role_notice,raid_status_staff_notice,loot_master_leadpin_notice,po_release_request_notice,po_release_granted_notice,po_rejection_notice,po_approval_notice,po_post_delete,free_discord_embed,raid_calendar",
                 "t": int(time.time()),
             })
             if result.get("success"):
@@ -6551,6 +6410,7 @@ async def po_queue_loop():
                         "po_rejection_notice",
                         "po_approval_notice",
                         "p0plus_points_update_dm",
+                        "p0plus_resolution_notice",
                         "free_discord_embed",
                         "raid_calendar",
                     }
@@ -6591,10 +6451,6 @@ async def po_queue_loop():
                             continue
                         if item_type == "player_login_granted_notice":
                             await send_player_login_granted_notice_from_queue(payload)
-                            await resolve_queue_item(item.get("rowNumber"))
-                            continue
-                        if item_type == "p0plus_points_update_dm":
-                            await send_p0plus_points_update_from_queue(payload)
                             await resolve_queue_item(item.get("rowNumber"))
                             continue
                         if item_type == "free_discord_embed":
@@ -6655,23 +6511,21 @@ async def po_queue_loop():
                                 or payload.get("discordChannelId")
                                 or raid.get("discordChannelId")
                             )
-                            force_new_raid = clean(
-                                payload.get("forceNewMessage") or payload.get("forceRepost")
-                            ).lower() in {"1", "true", "yes", "ja"}
-                            posted = await post_raid_announcement_by_id(
-                                payload.get("raidId") or payload.get("id"),
-                                channel_id,
-                                payload,
-                                force_new=force_new_raid,
-                            )
-                            if not (posted or posted == "stale"):
-                                continue
                             if not followup:
-                                await resolve_queue_item(item.get("rowNumber"))
-                                print(
-                                    f"Raidanmelder allein vom PO-Bot gepostet: "
-                                    f"{current_guild_slug()}:{payload.get('raidId') or payload.get('id')}"
+                                posted = await post_raid_announcement_by_id(
+                                    payload.get("raidId") or payload.get("id"),
+                                    channel_id,
+                                    payload,
+                                    force_new=clean(
+                                        payload.get("forceNewMessage") or payload.get("forceRepost")
+                                    ).lower() in {"1", "true", "yes", "ja"},
                                 )
+                                if posted or posted == "stale":
+                                    await resolve_queue_item(item.get("rowNumber"))
+                                    print(
+                                        f"Raidanmelder allein vom PO-Bot gepostet: "
+                                        f"{current_guild_slug()}:{payload.get('raidId') or payload.get('id')}"
+                                    )
                                 continue
                             combined_payload = {
                                 **followup,
@@ -6680,17 +6534,27 @@ async def po_queue_loop():
                                 "targetChannelId": channel_id,
                                 "channelId": channel_id,
                                 "restoreArchived": "true",
-                                "forceNewMessage": "true",
+                                "forceNewMessage": "false",
                                 "lichtlootRaidId": clean(
                                     followup.get("lichtlootRaidId")
                                     or raid.get("raidId")
                                     or payload.get("raidId")
                                 ),
+                                "combinedRaidSnapshot": raid,
+                                "combinedRaidSignups": helper.get("signups") or [],
+                                "combinedRaidExternalSignups": helper.get("externalSignups") or [],
                             }
                             normalized = await post_or_update_from_queue(client, combined_payload)
+                            await asyncio.to_thread(api_post, {
+                                "action": "lichtbotSetRaidDiscordMessage",
+                                "queueToken": QUEUE_TOKEN,
+                                "raidId": clean(raid.get("raidId") or payload.get("raidId")),
+                                "discordChannelId": channel_id,
+                                "discordMessageId": clean(normalized.get("messageId")),
+                            })
                             await resolve_queue_item(item.get("rowNumber"))
                             print(
-                                f"Raid- und PO-Anmelder vom PO-Bot nacheinander gepostet: "
+                                f"Kombinierter Raid-/PO-Anmelder vom PO-Bot gepostet: "
                                 f"{current_guild_slug()}:{payload.get('raidId') or payload.get('id')}"
                             )
                             continue
@@ -6730,6 +6594,14 @@ async def po_queue_loop():
                             continue
                         if item_type == "po_release_granted_notice":
                             await send_po_release_granted_notice_from_queue(payload)
+                            await resolve_queue_item(item.get("rowNumber"))
+                            continue
+                        if item_type == "p0plus_points_update_dm":
+                            await send_p0plus_points_update_dms(payload)
+                            await resolve_queue_item(item.get("rowNumber"))
+                            continue
+                        if item_type == "p0plus_resolution_notice":
+                            await send_p0plus_resolution_notice(payload)
                             await resolve_queue_item(item.get("rowNumber"))
                             continue
                         if item_type == "raid_signup_notice":
@@ -6873,8 +6745,8 @@ class PoBot(discord.Client):
     async def setup_hook(self):
         self.add_view(NachtlootHelpView())
         self.add_view(FreeMeetingView())
-        self.add_view(P0PlusPointsCorrectionView([{} for _ in range(5)], "lichtloot", include_all_correct=False))
-        self.add_view(P0PlusPointsCorrectionView([{} for _ in range(5)], "nachtloot", include_all_correct=False))
+        # Stateless wiederherstellbare PO+-DM-Buttons für bis zu fünf Items.
+        self.add_view(P0PlusPointsCorrectionView([{} for _ in range(5)], "nachtloot"))
         self.bg_task = asyncio.create_task(po_queue_loop())
         if TEST_GUILD_ID:
             guild = discord.Object(id=int(TEST_GUILD_ID))
@@ -7016,11 +6888,7 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                             continue
                         embed = candidate.embeds[0]
                         field_names = {clean(field.name).lower() for field in embed.fields}
-                        if not any(
-                            marker in field_name
-                            for field_name in field_names
-                            for marker in ("slots", "gesamt angemeldet", "rollenverteilung")
-                        ):
+                        if not ({"slots", "gesamt angemeldet", "rollenverteilung"} & field_names):
                             continue
                         candidate_raid = normalize_raid(clean(embed.title)).lower()
                         field_text = " ".join(clean(field.value) for field in embed.fields)
@@ -7163,9 +7031,7 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                     await refresh_po_message(client, payload)
                     po_refreshed += 1
                 except discord.NotFound:
-                    # Was in Discord gelöscht wurde, darf bei späteren
-                    # Aktualisierungen nicht wieder als PO-Anmelder auftauchen.
-                    await forget_deleted_po_message(payload)
+                    # Gelöschte historische PO-Posts sind kein Refresh-Fehler.
                     skipped += 1
                 except Exception as error:
                     errors.append(f"PO {clean(payload.get('title') or payload.get('postKey'))}: {error}")
@@ -7488,36 +7354,35 @@ async def embed_erstellen(interaction: discord.Interaction, titel: str, text: st
     await post_slash_embed(interaction, {"embedType": "custom", "title": titel, "description": text, "points": slash_embed_points(felder), "color": farbe, "footer": fusszeile}, "✅ Freies Embed erstellt.")
 
 
-@client.tree.command(name="clearauswahl", description="Zeigt die Posts dieses PO-Bots im Channel und löscht einen ausgewählten Post.")
+@client.tree.command(name="clearauswahl", description="Löscht gezielt einen PO-Anmelder aus diesem Channel.")
 async def clearauswahl(interaction: discord.Interaction):
     permissions = getattr(interaction.user, "guild_permissions", None)
     if not permissions or not (permissions.administrator or permissions.manage_messages):
         await interaction.response.send_message("⚠️ Dafür benötigst du die Berechtigung „Nachrichten verwalten“.", ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
+    await refresh_guild_registry()
+    guild_slug = guild_slug_for_discord_server(getattr(interaction, "guild", None), GUILD_SLUG)
+    token = CURRENT_GUILD_SLUG.set(guild_slug)
     try:
-        found = []
-        async for message in interaction.channel.history(limit=250):
-            if getattr(getattr(message, "author", None), "id", None) != getattr(client.user, "id", None):
+        channel_id = str(interaction.channel_id)
+        payloads = list(await load_payloads_from_api_entries())
+        payloads.extend(payload for payload in load_state().values() if isinstance(payload, dict))
+        found, seen = [], set()
+        for payload in payloads:
+            post_key = clean(payload.get("postKey"))
+            target_id = clean(payload.get("targetChannelId") or payload.get("channelId") or payload.get("sourceChannelId"))
+            identity = (post_key, clean(payload.get("messageId") or payload.get("discordMessageId")))
+            if target_id != channel_id or payload_guild_slug(payload) != guild_slug or not post_key or identity in seen:
                 continue
-            found.append(message)
-            if len(found) >= 25:
-                break
+            seen.add(identity)
+            found.append(payload)
         if not found:
-            await interaction.followup.send("In diesem Channel wurden keine Posts dieses PO-Bots gefunden.", ephemeral=True)
+            await interaction.followup.send("In diesem Channel wurden keine aktiven PO-Anmelder gefunden.", ephemeral=True)
             return
-        await interaction.followup.send(
-            "Welchen Post dieses PO-Bots möchtest du löschen? Es werden höchstens die 25 neuesten Bot-Posts angezeigt.",
-            view=BotChannelPostDeleteView(found),
-            ephemeral=True,
-        )
-    except discord.Forbidden:
-        await interaction.followup.send(
-            "⚠️ Der Bot darf den Nachrichtenverlauf in diesem Channel nicht lesen.",
-            ephemeral=True,
-        )
-    except Exception as error:
-        await interaction.followup.send(f"⚠️ Bot-Posts konnten nicht geladen werden: `{clean(error)[:300]}`", ephemeral=True)
+        await interaction.followup.send("Welchen PO-Anmelder möchtest du vollständig löschen?", view=PoClearPostView(found), ephemeral=True)
+    finally:
+        CURRENT_GUILD_SLUG.reset(token)
 
 
 @client.tree.command(name="po_anmelder", description="Erstellt einen PO-Anmelder im aktuellen Channel.")
