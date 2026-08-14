@@ -2320,16 +2320,26 @@ async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id
     helper["raid"] = raid
     channel_id = clean(channel_id or raid.get("discordChannelId") or raid.get("discord_channel_id"))
     message_id = clean(message_id or raid.get("discordMessageId") or raid.get("discord_message_id"))
-    if not channel_id or not message_id:
+    if not channel_id:
         return "missing_message"
+    if not message_id:
+        print(
+            "Raidanmelder Refresh ohne Message-ID: "
+            f"erstelle den fehlenden Discord-Post neu fuer raid={raid_id} channel={channel_id}"
+        )
+        return await post_raid_announcement_by_id(raid_id, channel_id, payload_data, force_new=True)
     channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
     try:
         message = await channel.fetch_message(int(message_id))
     except discord.NotFound:
         # Die gespeicherte ID kann auf einen inzwischen gelöschten alten
-        # Raid-Helper-/Bot-Post zeigen. Der Channel-Refresh sucht danach den
-        # aktuellen eigenen Anmelder und verknüpft ihn neu.
-        return "missing_message"
+        # Raid-Helper-/Bot-Post zeigen. Dann wird ein neuer eigener Anmelder
+        # erstellt und dessen Message-ID wieder am Raid gespeichert.
+        print(
+            "Raidanmelder Refresh mit geloeschter Message-ID: "
+            f"erstelle den Discord-Post neu fuer raid={raid_id} channel={channel_id}"
+        )
+        return await post_raid_announcement_by_id(raid_id, channel_id, payload_data, force_new=True)
     # Discord erlaubt nur dem ursprünglichen Autor, eine Nachricht zu ändern.
     # Alte Raidanmelder können noch auf eine Nachricht des früheren Hauptbots
     # zeigen. Solche Queue-Aufträge dürfen nicht endlos erneut versucht werden,

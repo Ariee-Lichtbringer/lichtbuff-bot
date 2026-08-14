@@ -5888,13 +5888,26 @@ async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id
     raid = helper.get("raid") or {}
     channel_id = str(channel_id or raid.get("discordChannelId") or raid.get("discord_channel_id") or "").strip()
     message_id = str(message_id or raid.get("discordMessageId") or raid.get("discord_message_id") or "").strip()
-    if not channel_id or not message_id:
-        print(f"Raid-Anmelder-Refresh uebersprungen, Channel/Message fehlt: raid={raid_id} channel={channel_id} message={message_id}")
+    if not channel_id:
+        print(f"Raid-Anmelder-Refresh uebersprungen, Channel fehlt: raid={raid_id}")
         return "missing_message"
+    if not message_id:
+        print(
+            "Raid-Anmelder-Refresh ohne Message-ID: "
+            f"erstelle den fehlenden Discord-Post neu fuer raid={raid_id} channel={channel_id}"
+        )
+        return await post_raid_announcement_by_id(raid_id, channel_id)
     channel = client.get_channel(int(channel_id))
     if channel is None:
         channel = await client.fetch_channel(int(channel_id))
-    target_message = await channel.fetch_message(int(message_id))
+    try:
+        target_message = await channel.fetch_message(int(message_id))
+    except discord.NotFound:
+        print(
+            "Raid-Anmelder-Refresh mit geloeschter Message-ID: "
+            f"erstelle den Discord-Post neu fuer raid={raid_id} channel={channel_id}"
+        )
+        return await post_raid_announcement_by_id(raid_id, channel_id)
     embed = build_raid_announcement_embed(raid)
     add_raid_signup_roster_fields(embed, helper)
     await refresh_guild_registry()
