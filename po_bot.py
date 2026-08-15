@@ -6966,6 +6966,9 @@ async def on_ready():
     if not hasattr(client, "raid_signup_views_restored"):
         client.raid_signup_views_restored = True
         await restore_active_raid_signup_views()
+    if not hasattr(client, "all_signup_posts_refresh_started"):
+        client.all_signup_posts_refresh_started = True
+        client.loop.create_task(refresh_all_signup_posts_after_start())
     state = load_state()
     for payload in state.values():
         if not isinstance(payload, dict) or not payload.get("postKey"):
@@ -7389,6 +7392,25 @@ async def restart_all_active_signup_posts():
         "skipped": skipped,
         "errors": errors,
     }
+
+
+async def refresh_all_signup_posts_after_start():
+    """Aktualisiert nach einem Deployment einmal alle aktiven Raid- und P0-Anmelder."""
+    await client.wait_until_ready()
+    await emoji_cache_ready.wait()
+    try:
+        result = await restart_all_active_signup_posts()
+        print(
+            "Automatische Anmelder-Aktualisierung abgeschlossen: "
+            f"{int(result.get('raidRefreshed') or 0)} Raidanmelder aktualisiert, "
+            f"{int(result.get('poViews') or 0)} P0-Anmelder aktualisiert, "
+            f"{int(result.get('skipped') or 0)} übersprungen, "
+            f"{len(result.get('errors') or [])} Fehler."
+        )
+        for error in result.get("errors") or []:
+            print(f"Automatische Anmelder-Aktualisierung: {error}")
+    except Exception as error:
+        print(f"Automatische Anmelder-Aktualisierung fehlgeschlagen: {error}")
 
 
 @client.tree.command(
