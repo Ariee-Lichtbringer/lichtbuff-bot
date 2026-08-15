@@ -5089,6 +5089,7 @@ async def delete_entry(payload, entry, user):
         "queueToken": QUEUE_TOKEN,
         "guild": guild_slug,
         "guildSlug": guild_slug,
+        "entryId": entry.get("id") or entry.get("entryId") or "",
         "postKey": payload["postKey"],
         "sourceChannelId": payload_source_channel_id(payload),
         "targetChannelId": payload_target_channel_id(payload),
@@ -5103,6 +5104,10 @@ async def delete_entry(payload, entry, user):
     })
     if not result.get("success"):
         raise RuntimeError(result.get("error") or "PO-Eintrag konnte nicht gelöscht werden.")
+    if int(result.get("deleted") or 0) < 1:
+        raise RuntimeError(
+            "Der PO-Eintrag wurde nicht gefunden. Der Anmelder wird neu geladen; bitte danach erneut prüfen."
+        )
     return result
 
 
@@ -6087,12 +6092,26 @@ class PoDeleteEntrySelect(discord.ui.Select):
             # Die Datenbank ist nach der Löschung verbindlich. Der direkte
             # Refresh aktualisiert den Post sofort; der zusätzlich von
             # Railway erzeugte Queue-Auftrag dient als zuverlässige Sicherung.
-            await refresh_po_message_safely(interaction.client, action_payload)
+            try:
+                await refresh_po_message(interaction.client, action_payload)
+            except Exception as refresh_error:
+                print(
+                    f"PO-Eintrag gelöscht, aber Anmelder konnte nicht sofort aktualisiert werden "
+                    f"({action_payload.get('postKey')}): {refresh_error}"
+                )
+                await interaction.followup.send(
+                    f"🗑️ Gelöscht: **{entry.get('player')}** → "
+                    f"**{entry.get('item') or entry.get('itemName')}**. "
+                    "Die Anzeige wird im Hintergrund aktualisiert.",
+                    ephemeral=True,
+                )
+                return
             await interaction.followup.send(
                 f"🗑️ Gelöscht: **{entry.get('player')}** → **{entry.get('item') or entry.get('itemName')}**.",
                 ephemeral=True,
             )
         except Exception as error:
+            await refresh_po_message_safely(interaction.client, payload_for_interaction(self.payload, interaction))
             await interaction.followup.send(f"⚠️ Löschen ging nicht: `{error}`", ephemeral=True)
 
 
