@@ -1341,7 +1341,7 @@ def format_raid_announcement_time(value):
 def raid_announcement_image_url(raid):
     raid_key = normalize_raid((raid or {}).get("raid") or (raid or {}).get("raidName")).lower()
     image_raid_key = "zg" if raid_key in {"zg-mittwoch", "zg-prime", "zg-late"} else raid_key
-    guild_slug = normalize_guild_slug((raid or {}).get("guildSlug") or "")
+    guild_slug = normalize_guild_slug((raid or {}).get("guildSlug") or current_guild_slug())
     registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
     layout = registry_entry.get("layout") or {}
     images = layout.get("raidImages") if isinstance(layout, dict) else {}
@@ -1493,6 +1493,15 @@ def build_raid_announcement_embed(raid):
 
 def raid_banner_attachment_name(raid):
     raid_key = normalize_raid(raid.get("raid") or raid.get("raidName")).lower()
+    image_raid_key = "zg" if raid_key in {"zg-mittwoch", "zg-prime", "zg-late"} else raid_key
+    guild_slug = normalize_guild_slug(raid.get("guildSlug") or current_guild_slug())
+    registry_entry = GUILD_REGISTRY.get(guild_slug) or {}
+    layout = registry_entry.get("layout") or {}
+    images = layout.get("raidImages") if isinstance(layout, dict) else {}
+    guild_image = clean((images or {}).get(raid_key) or (images or {}).get(image_raid_key))
+    explicit = clean(raid.get("raidImageUrl") or raid.get("imageUrl"))
+    if explicit.startswith(("http://", "https://")) or guild_image:
+        return ""
     filename = {
         "zg": "zg.jpg", "aq20": "aq20.jpg", "aq40": "aq40.jpg",
         "bwl": "bwl.jpg", "mc": "mc.jpg", "naxx": "naxx.jpg", "ony": "ony.jpg",
