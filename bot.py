@@ -2941,12 +2941,15 @@ async def update_worldbuff_post(sync_ticker=True, force_repost=False, refresh_re
         await msg.edit(content="", embed=guide_embed, view=signup_view)
         await delete_extra_messages(existing_messages)
     else:
+        # Der gespeicherte Post kann nach einem Botwechsel, einer geloeschten
+        # lokalen Cache-Datei oder einer manuell entfernten Nachricht fehlen.
+        # In diesem Fall muss sich auch der Nachtwaechter-Post selbst heilen.
+        # Die Suche oben verhindert weiterhin doppelte Posts des aktuellen Bots.
         if current_guild_slug() == NACHTLOOT_GUILD_SLUG:
             print(
-                "Worldbuff-Uebersicht fuer Nachtwaechter nicht neu erstellt: "
-                "gespeicherter eigener Post wurde nicht gefunden."
+                "Worldbuff-Uebersicht fuer Nachtwaechter wurde nicht gefunden; "
+                "erstelle einen neuen Zielpost."
             )
-            return 0
         msg = await send_silent(channel, embed=guide_embed, view=signup_view)
     save_json(worldbuff_post_file(), {"message_id": msg.id, "message_ids": [msg.id]})
     return 1
