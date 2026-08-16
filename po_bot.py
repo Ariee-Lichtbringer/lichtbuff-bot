@@ -25,7 +25,7 @@ except Exception:
     pass
 
 
-TOKEN = os.getenv("PO_BOT_TOKEN", "") or os.getenv("DISCORD_TOKEN", "")
+TOKEN = os.getenv("PO_BOT_TOKEN", "").strip()
 GUILD_SLUG = os.getenv("LICHTLOOT_GUILD", "") or os.getenv("LICHTLOOT_GUILD_SLUG", "") or "lichtloot"
 CURRENT_GUILD_SLUG = contextvars.ContextVar("CURRENT_GUILD_SLUG", default=GUILD_SLUG)
 GUILD_REGISTRY = {}
@@ -3133,7 +3133,9 @@ async def sync_accessible_discord_channels():
             result = await asyncio.to_thread(api_post, {
                 "action": "lichtbotSaveDiscordChannels",
                 "queueToken": QUEUE_TOKEN,
-                "fullSync": "true",
+                # Haupt- und P0-Bot teilen sich die gespeicherte Channel-Liste.
+                # Ein Bot darf daher keine Channels loeschen, die nur der andere
+                # Bot wegen abweichender Discord-Rechte sehen kann.
                 "channels": channels
             })
             saved = int(result.get("saved", 0) or 0)

@@ -3985,9 +3985,9 @@ async def sync_accessible_discord_channels():
             result = await asyncio.to_thread(lichtloot_post, {
                 "action": "lichtbotSaveDiscordChannels",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
-                # Vollstaendiger Abgleich: neue Gilden muessen ihre Channels
-                # beim ersten Bot-Start erst in LichtLoot bekannt machen.
-                "replace": "true",
+                # Beide Discord-Bots schreiben in dieselbe Channel-Liste.
+                # Deshalb nur erreichbare Channels ergaenzen/aktualisieren und
+                # niemals die vom jeweils anderen Bot gefundenen Channels loeschen.
                 "channels": channels
             })
             saved = int(result.get("saved", 0) or 0)
@@ -6004,7 +6004,11 @@ async def on_message_edit(before, after):
     if after.author == client.user:
         return
 
-    token = CURRENT_GUILD_SLUG.set(guild_slug_for_message(after))
+    guild_slug = guild_slug_for_message(after)
+    if not guild_slug:
+        return
+
+    token = CURRENT_GUILD_SLUG.set(guild_slug)
     try:
         await handle_log_analysis_message(after)
         await handle_ticker_update(after)
@@ -6017,7 +6021,16 @@ async def on_message(message):
     if message.author == client.user:
         return
 
-    CURRENT_GUILD_SLUG.set(guild_slug_for_message(message))
+    guild_slug = guild_slug_for_message(message)
+    if not guild_slug:
+        if getattr(message, "guild", None) is not None:
+            print(
+                "Nachricht von nicht zugeordnetem Discord-Server ignoriert: "
+                f"{message.guild.name} ({message.guild.id}), Channel {message.channel.id}."
+            )
+        return
+
+    CURRENT_GUILD_SLUG.set(guild_slug)
 
     await handle_log_analysis_message(message)
 
@@ -6332,6 +6345,9 @@ async def close_discord_client_after_failed_start():
     except Exception:
         pass
 
+
+if not TOKEN:
+    raise SystemExit("DISCORD_TOKEN fehlt.")
 
 start_public_api_server()
 asyncio.run(run_discord_bot_with_backoff())
