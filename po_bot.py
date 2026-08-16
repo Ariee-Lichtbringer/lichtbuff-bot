@@ -7163,6 +7163,24 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                 errors.append(f"Raidanmelder konnten nicht geladen werden: {error}")
 
         if kind in {"alle", "po"}:
+            # Nach dem Raid-Refresh den gerade gespeicherten Discord-Zielpost
+            # erneut laden. Falls ein kombinierter Raid-/P0-Anmelder zuvor
+            # gelöscht war, kann der Raid-Refresh bereits einen Ersatzpost
+            # angelegt haben. Der P0-Refresh muss genau diesen Post übernehmen,
+            # damit beide Anmelder wieder gemeinsam im Channel stehen.
+            current_raids = []
+            if kind == "alle":
+                try:
+                    current_result = await asyncio.to_thread(api_get, {
+                        "action": "getActiveRaids",
+                        "guild": guild_slug,
+                        "guildSlug": guild_slug,
+                        "t": int(time.time() * 1000),
+                    })
+                    current_raids = list(current_result.get("allRaids") or current_result.get("raids") or [])
+                except Exception as error:
+                    errors.append(f"Aktuelle Raid-/P0-Zuordnung konnte nicht geladen werden: {error}")
+
             state = load_state()
             payloads = []
             payloads.extend(payload for payload in state.values() if isinstance(payload, dict))
@@ -7174,6 +7192,56 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
             seen_messages = set()
             for raw_payload in payloads:
                 payload = dict(raw_payload or {})
+                paired_raid = None
+                paired_with_raid_post = False
+                payload_raid_ids = {
+                    clean(payload.get(key))
+                    for key in ("lichtlootRaidId", "raidId", "id", "raidPin", "prioPin", "lichtlootPlayerPin")
+                    if clean(payload.get(key))
+                }
+                payload_raid_key = normalize_raid(payload.get("raid") or payload.get("raidName")).lower()
+                payload_raid_date = clean(payload.get("raidDate") or payload.get("date"))[:10]
+                for candidate in current_raids:
+                    candidate_ids = {
+                        clean(candidate.get(key))
+                        for key in ("raidId", "id", "playerPin", "prioPin", "raidPin")
+                        if clean(candidate.get(key))
+                    }
+                    ids_match = bool(payload_raid_ids.intersection(candidate_ids))
+                    schedule_matches = (
+                        payload_raid_key
+                        and payload_raid_key == normalize_raid(candidate.get("raid") or candidate.get("raidName")).lower()
+                        and (
+                            not payload_raid_date
+                            or payload_raid_date == clean(candidate.get("raidDate") or candidate.get("date"))[:10]
+                        )
+                    )
+                    if ids_match or schedule_matches:
+                        paired_raid = candidate
+                        break
+
+                if paired_raid:
+                    paired_channel_id = clean(
+                        paired_raid.get("discordChannelId") or paired_raid.get("discord_channel_id")
+                    )
+                    paired_message_id = clean(
+                        paired_raid.get("discordMessageId") or paired_raid.get("discord_message_id")
+                    )
+                    if paired_channel_id == channel_id and paired_message_id:
+                        helper = await get_raid_helper_for_refresh(paired_raid)
+                        if helper and helper.get("success"):
+                            helper = preserve_raidhelper_signups(helper, payload)
+                            payload.update({
+                                "targetChannelId": channel_id,
+                                "channelId": channel_id,
+                                "messageId": paired_message_id,
+                                "discordMessageId": paired_message_id,
+                                "combinedRaidSnapshot": helper.get("raid") or paired_raid,
+                                "combinedRaidSignups": helper.get("signups") or [],
+                                "combinedRaidExternalSignups": helper.get("externalSignups") or [],
+                            })
+                            paired_with_raid_post = True
+
                 payload_channel_id = clean(
                     payload.get("targetChannelId")
                     or payload.get("channelId")
@@ -7186,11 +7254,20 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                     continue
                 seen_messages.add(message_id)
                 try:
-                    await refresh_po_message(client, payload)
+                    if paired_with_raid_post:
+                        # post_or_update speichert die neue gemeinsame
+                        # Message-ID zusätzlich im lokalen/API-Zustand.
+                        await post_or_update_from_queue(client, payload)
+                    else:
+                        await refresh_po_message(client, payload)
                     po_refreshed += 1
                 except discord.NotFound:
-                    # Gelöschte historische PO-Posts sind kein Refresh-Fehler.
-                    skipped += 1
+                    # Ein aktiver P0-Anmelder darf nach dem Löschen seiner
+                    # Discord-Nachricht nicht dauerhaft verschwinden.
+                    payload["messageId"] = ""
+                    payload["discordMessageId"] = ""
+                    await post_or_update_from_queue(client, payload)
+                    po_refreshed += 1
                 except Exception as error:
                     errors.append(f"PO {clean(payload.get('title') or payload.get('postKey'))}: {error}")
 
@@ -7317,6 +7394,7 @@ async def restart_all_active_signup_posts():
     for guild_slug in guild_slugs:
         token = CURRENT_GUILD_SLUG.set(normalize_guild_slug(guild_slug))
         try:
+            current_raids = []
             try:
                 result = await asyncio.to_thread(api_get, {
                     "action": "getActiveRaids",
@@ -7348,6 +7426,16 @@ async def restart_all_active_signup_posts():
                             f"Raid {clean(raid.get('raidName') or raid.get('raid') or raid.get('raidId'))}: {error}"
                         )
                     await asyncio.sleep(0.25)
+                # Ein eventuell neu erstellter Raidpost besitzt jetzt eine
+                # neue Message-ID. Diese wird für die anschließende gemeinsame
+                # Raid-/P0-Wiederherstellung benötigt.
+                refreshed_result = await asyncio.to_thread(api_get, {
+                    "action": "getActiveRaids",
+                    "guild": guild_slug,
+                    "guildSlug": guild_slug,
+                    "t": int(time.time() * 1000),
+                })
+                current_raids = list(refreshed_result.get("allRaids") or refreshed_result.get("raids") or [])
             except Exception as error:
                 errors.append(f"Raids für {guild_slug}: {error}")
 
@@ -7366,6 +7454,46 @@ async def restart_all_active_signup_posts():
                 payload = dict(raw_payload or {})
                 if payload_guild_slug(payload) != normalize_guild_slug(guild_slug):
                     continue
+                paired_with_raid_post = False
+                payload_ids = {
+                    clean(payload.get(key))
+                    for key in ("lichtlootRaidId", "raidId", "id", "raidPin", "prioPin", "lichtlootPlayerPin")
+                    if clean(payload.get(key))
+                }
+                payload_raid_key = normalize_raid(payload.get("raid") or payload.get("raidName")).lower()
+                payload_raid_date = clean(payload.get("raidDate") or payload.get("date"))[:10]
+                for raid in current_raids:
+                    raid_ids = {
+                        clean(raid.get(key))
+                        for key in ("raidId", "id", "playerPin", "prioPin", "raidPin")
+                        if clean(raid.get(key))
+                    }
+                    ids_match = bool(payload_ids.intersection(raid_ids))
+                    schedule_matches = (
+                        payload_raid_key
+                        and payload_raid_key == normalize_raid(raid.get("raid") or raid.get("raidName")).lower()
+                        and (
+                            not payload_raid_date
+                            or payload_raid_date == clean(raid.get("raidDate") or raid.get("date"))[:10]
+                        )
+                    )
+                    if not (ids_match or schedule_matches):
+                        continue
+                    channel_id = clean(raid.get("discordChannelId") or raid.get("discord_channel_id"))
+                    message_id = clean(raid.get("discordMessageId") or raid.get("discord_message_id"))
+                    if channel_id and message_id and channel_id == payload_target_channel_id(payload):
+                        helper = await get_raid_helper_for_refresh(raid)
+                        if helper and helper.get("success"):
+                            helper = preserve_raidhelper_signups(helper, payload)
+                            payload.update({
+                                "messageId": message_id,
+                                "discordMessageId": message_id,
+                                "combinedRaidSnapshot": helper.get("raid") or raid,
+                                "combinedRaidSignups": helper.get("signups") or [],
+                                "combinedRaidExternalSignups": helper.get("externalSignups") or [],
+                            })
+                            paired_with_raid_post = True
+                    break
                 post_identity = (
                     clean(payload.get("postKey") or payload.get("poPostKey")),
                     clean(payload.get("messageId") or payload.get("discordMessageId")),
@@ -7374,10 +7502,16 @@ async def restart_all_active_signup_posts():
                     continue
                 seen_po_posts.add(post_identity)
                 try:
-                    await restore_po_view_fast(client, payload)
+                    if paired_with_raid_post:
+                        await post_or_update_from_queue(client, payload)
+                    else:
+                        await restore_po_view_fast(client, payload)
                     po_views += 1
                 except discord.NotFound:
-                    skipped += 1
+                    payload["messageId"] = ""
+                    payload["discordMessageId"] = ""
+                    await post_or_update_from_queue(client, payload)
+                    po_views += 1
                 except Exception as error:
                     errors.append(
                         f"PO {clean(payload.get('title') or payload.get('postKey'))}: {error}"
