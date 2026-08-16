@@ -6555,6 +6555,8 @@ async def post_or_update_from_queue(client, payload):
     if po_payload_is_stale(payload):
         raise RuntimeError("Vergangener oder archivierter P0-Anmelder wird nicht gepostet.")
     post_key = clean(payload.get("postKey") or payload.get("poPostKey") or payload.get("postId"))
+    source = clean(payload.get("source")).lower()
+    update_existing_only = source in {"lichtloot_prio_saved", "raidlead_prio_saved"}
     if not post_key and clean(payload.get("source")).lower() == "p0_review":
         raid_key = normalize_raid(payload.get("raid") or payload.get("raidName"))
         raid_id = clean(payload.get("raidId") or payload.get("id") or payload.get("raidPin") or payload.get("prioPin"))
@@ -6630,10 +6632,29 @@ async def post_or_update_from_queue(client, payload):
             else:
                 await message.edit(embeds=embeds, attachments=[], view=view)
         except Exception as error:
-            print(f"PO-Anmelder wird neu gepostet, alte Nachricht nicht nutzbar ({post_key}): {error}")
+            action = "wird gesucht" if update_existing_only else "wird neu gepostet"
+            print(f"PO-Anmelder {action}, alte Nachricht nicht nutzbar ({post_key}): {error}")
             message = None
     if message is None:
-        if banner:
+        if update_existing_only:
+            found_message_id = await find_existing_message_id(client, normalized)
+            if found_message_id:
+                try:
+                    message = await channel.fetch_message(int(found_message_id))
+                    if not message_is_po_signup(message):
+                        message = None
+                    elif banner:
+                        await message.edit(embeds=embeds, attachments=[banner], view=view)
+                    else:
+                        await message.edit(embeds=embeds, attachments=[], view=view)
+                except Exception as error:
+                    print(f"Gefundener P0-Anmelder konnte nicht aktualisiert werden ({post_key}/{found_message_id}): {error}")
+                    message = None
+            if message is None:
+                raise RuntimeError(
+                    f"Bestehender P0-Anmelder nicht gefunden; direkte LichtLoot-Aktualisierung erstellt keinen neuen Post ({post_key})."
+                )
+        elif banner:
             message = await channel.send(embeds=embeds, file=banner, view=view, silent=True)
         else:
             message = await channel.send(embeds=embeds, view=view, silent=True)
