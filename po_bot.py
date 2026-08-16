@@ -328,6 +328,7 @@ p0plus_cache = {}
 P0PLUS_CACHE_SECONDS = int(os.getenv("PO_BOT_P0PLUS_CACHE_SECONDS", "60") or "60")
 empty_queue_log_at = 0
 slash_commands_synced_for_guilds = False
+PO_GUILDWIDE_DEDUP_DONE = set()
 
 
 def clean(value):
@@ -1437,7 +1438,10 @@ def build_raid_announcement_embed(raid):
         description = f"{description}\n\n{announcement_message}"
     embed = discord.Embed(title=raid_name.upper(), description=description[:3900], color=0x7c3aed)
     shared_post_id = raid_signup_post_id(raid)
-    if shared_post_id:
+    raid_id = clean(raid.get("raidId") or raid.get("lichtlootRaidId") or raid.get("id"))
+    if raid_id:
+        embed.set_footer(text=f"Raid-ID: {raid_id}")
+    elif shared_post_id:
         embed.set_footer(text=f"Post-ID: {shared_post_id}")
     embed.add_field(name="Raidlead", value=clean(raid.get("createdBy") or raid.get("erstelltVon") or "Gildenleitung"), inline=True)
     embed.add_field(
@@ -1787,6 +1791,9 @@ def raid_signup_source(interaction, origin_channel_id=None, origin_message_id=No
 def signup_post_id_from_message(message):
     for embed in getattr(message, "embeds", []) or []:
         footer_text = clean(getattr(getattr(embed, "footer", None), "text", ""))
+        raid_id_match = re.search(r"(?:^|\s)Raid-ID:\s*(\S+)", footer_text, re.IGNORECASE)
+        if raid_id_match:
+            return clean(raid_id_match.group(1))
         post_id_match = re.search(r"(?:^|\s)Post-ID:\s*(\S+)", footer_text, re.IGNORECASE)
         if post_id_match:
             return clean(post_id_match.group(1))
@@ -1796,7 +1803,9 @@ def signup_post_id_from_message(message):
 def raid_signup_post_id(raid, preferred=""):
     raid = raid or {}
     stored = clean(preferred or raid.get("signupPostId") or raid.get("postKey") or raid.get("postId"))
-    if stored:
+    # Alte kombinierte Posts hatten faelschlich die P0-Post-ID auch am
+    # Raidanmelder. Diese ID darf fuer einen Raid nicht weiterverwendet werden.
+    if stored and "-po-anmelder-" not in stored.casefold() and "-p0-anmelder-" not in stored.casefold():
         return stored
     raid_id = clean(raid.get("raidId") or raid.get("id") or raid.get("playerPin") or raid.get("prioPin"))
     raid_key = normalize_raid(raid.get("raid") or raid.get("raidName")).lower()
@@ -2559,7 +2568,7 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None, f
                 "raidId": clean(raid.get("raidId") or raid.get("id") or raid_id),
                 "discordChannelId": channel_id,
                 "discordMessageId": existing_message_id,
-                "signupPostId": raid_signup_post_id(raid, payload.get("postKey")),
+                "signupPostId": raid_signup_post_id(raid, payload.get("signupPostId")),
             })
             print(f"Bestehender Raidanmelder aktualisiert: {raid_id} in {channel_id}/{existing_message_id}")
             return True
@@ -2584,7 +2593,7 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None, f
             "raidId": clean(raid.get("raidId") or raid.get("id") or raid_id),
             "discordChannelId": channel_id,
             "discordMessageId": str(message.id),
-            "signupPostId": raid_signup_post_id(raid, payload.get("postKey"))
+            "signupPostId": raid_signup_post_id(raid, payload.get("signupPostId"))
         })
         # Nach der Umstellung auf die neue Message-ID erneut laden: Der erste
         # Snapshot kann noch alte Raid-Helper-Zeilen enthalten haben. Der
@@ -3235,38 +3244,60 @@ def payload_lichtloot_raid_pin(payload):
     return clean(
         payload.get("lichtlootPlayerPin")
         or payload.get("playerPin")
-        or payload.get("lichtlootRaidId")
         or payload.get("raidPin")
         or payload.get("prioPin")
     )
 
 
+def payload_lichtloot_raid_id(payload):
+    return clean(
+        payload.get("lichtlootRaidId")
+        or payload.get("lichtlootCanonicalRaidId")
+        or payload.get("raidId")
+    )
+
+
 def payload_with_lichtloot_id(payload):
     raid_pin = payload_lichtloot_raid_pin(payload)
-    if not raid_pin:
-        return dict(payload or {})
-    return {
-        **(payload or {}),
-        "lichtlootPlayerPin": raid_pin,
-        "playerPin": raid_pin,
-        "lichtlootRaidId": raid_pin,
-        "raidPin": raid_pin,
-        "prioPin": raid_pin,
-    }
+    raid_id = payload_lichtloot_raid_id(payload)
+    result = dict(payload or {})
+    if raid_pin:
+        result.update({
+            "lichtlootPlayerPin": raid_pin,
+            "playerPin": raid_pin,
+            "raidPin": raid_pin,
+            "prioPin": raid_pin,
+        })
+    if raid_id:
+        result["lichtlootRaidId"] = raid_id
+        result["lichtlootCanonicalRaidId"] = raid_id
+        result["raidId"] = raid_id
+    return result
 
 
 def payload_with_lichtloot_id_from_sources(payload, *sources):
     raid_pin = payload_lichtloot_raid_pin(payload)
+    raid_id = payload_lichtloot_raid_id(payload)
     if not raid_pin:
         for source in sources:
             raid_pin = payload_lichtloot_raid_pin(source or {})
             if raid_pin:
                 break
 
+    if not raid_id:
+        for source in sources:
+            raid_id = payload_lichtloot_raid_id(source or {})
+            if raid_id:
+                break
+
     if raid_pin:
         result = payload_with_lichtloot_id({**(payload or {}), "raidPin": raid_pin})
     else:
         result = dict(payload or {})
+    if raid_id:
+        result["lichtlootRaidId"] = raid_id
+        result["lichtlootCanonicalRaidId"] = raid_id
+        result["raidId"] = raid_id
 
     lead_pin = clean((payload or {}).get("lichtlootLeadPin") or (payload or {}).get("leadPin"))
     if not lead_pin:
@@ -3488,7 +3519,7 @@ def ensure_payload_lichtloot_raid(payload):
         "lichtlootCanonicalRaidId": canonical_raid_id,
         "raidPin": raid_pin,
         "prioPin": raid_pin,
-        "lichtlootRaidId": raid_pin,
+        "lichtlootRaidId": canonical_raid_id,
         "lichtlootPlayerPin": raid_pin,
         "lichtlootLeadPin": clean(result.get("leadPin") or lead_pin),
         "leadPin": clean(result.get("leadPin") or lead_pin),
@@ -3510,12 +3541,12 @@ def save_po_signup_prio(payload, player, class_name, item, player_login="", item
         "guildSlug": payload_guild_slug(payload),
         "postKey": post_key,
         "poPostKey": post_key,
-        "raidId": post_key,
+        "raidId": clean(payload.get("lichtlootRaidId") or payload.get("raidId") or post_key),
         "sourceChannelId": payload_source_channel_id(payload),
         "targetChannelId": payload_target_channel_id(payload),
         "raidPin": raid_pin,
         "prioPin": raid_pin,
-        "lichtlootRaidId": raid_pin,
+        "lichtlootRaidId": clean(payload.get("lichtlootRaidId") or payload.get("raidId")),
         "playerPin": login,
         "spielerLogin": login,
         "player": player,
@@ -4072,6 +4103,14 @@ def message_matches_post_key(message, post_key):
     return False
 
 
+def message_is_po_signup(message):
+    for embed in getattr(message, "embeds", []) or []:
+        title = clean(getattr(embed, "title", "")).casefold()
+        if "po-anmelder" in title or "p0-anmelder" in title:
+            return True
+    return False
+
+
 async def find_existing_message_id(client, payload):
     try:
         entries = await load_entries(payload)
@@ -4084,14 +4123,16 @@ async def find_existing_message_id(client, payload):
             return message_id
     target_channel_id = payload_target_channel_id(payload)
     post_key = clean(payload.get("postKey"))
-    if not target_channel_id or not post_key:
+    raid_id = payload_lichtloot_raid_id(payload)
+    identifiers = [value for value in (post_key, raid_id) if value]
+    if not target_channel_id or not identifiers:
         return ""
     try:
         channel = await fetch_accessible_channel(client, target_channel_id)
         if channel is None:
             raise RuntimeError(f"Channel nicht erreichbar: {target_channel_id}")
         async for message in channel.history(limit=100):
-            if message_matches_post_key(message, post_key):
+            if any(message_matches_post_key(message, identifier) for identifier in identifiers):
                 print(f"PO-Anmelder bestehende Discord-Nachricht gefunden: {post_key} -> {message.id}")
                 return str(message.id)
     except Exception as error:
@@ -4100,34 +4141,68 @@ async def find_existing_message_id(client, payload):
 
 
 async def deduplicate_po_messages(client, channel, payload, preferred_message=None):
-    """Keep exactly one PO signup message for a post key, even after concurrent creates."""
+    """Keep exactly one PO signup message per guild and post key."""
     post_key = clean((payload or {}).get("postKey") or (payload or {}).get("poPostKey"))
-    if not post_key:
+    raid_id = payload_lichtloot_raid_id(payload or {})
+    identifiers = [value for value in (post_key, raid_id) if value]
+    if not identifiers:
         return preferred_message
     await asyncio.sleep(1.0)
     matches = []
-    try:
-        async for candidate in channel.history(limit=250):
-            if getattr(getattr(candidate, "author", None), "id", None) != getattr(client.user, "id", None):
+    guild = getattr(channel, "guild", None)
+    dedup_key = (
+        str(getattr(guild, "id", "") or ""),
+        raid_id or post_key,
+    )
+    scan_guildwide = dedup_key not in PO_GUILDWIDE_DEDUP_DONE
+    guild_channels = list(getattr(guild, "text_channels", []) or []) if guild and scan_guildwide else [channel]
+    guild_channels.sort(key=lambda candidate: 0 if int(candidate.id) == int(channel.id) else 1)
+    for candidate_channel in guild_channels:
+        member = getattr(guild, "me", None) if guild else None
+        if member is not None:
+            permissions = candidate_channel.permissions_for(member)
+            if not permissions.view_channel or not permissions.read_message_history:
                 continue
-            if message_matches_post_key(candidate, post_key):
-                matches.append(candidate)
-    except Exception as error:
-        print(f"PO-Anmelder Dublettenprüfung fehlgeschlagen ({post_key}): {error}")
-        return preferred_message
+        try:
+            async for candidate in candidate_channel.history(limit=250):
+                if getattr(getattr(candidate, "author", None), "id", None) != getattr(client.user, "id", None):
+                    continue
+                if message_is_po_signup(candidate) and any(
+                    message_matches_post_key(candidate, identifier) for identifier in identifiers
+                ):
+                    matches.append(candidate)
+        except (discord.Forbidden, discord.NotFound):
+            continue
+        except Exception as error:
+            print(
+                "PO-Anmelder Dublettenprüfung in Channel "
+                f"{getattr(candidate_channel, 'id', '?')} fehlgeschlagen ({post_key}): {error}"
+            )
     if not matches:
+        PO_GUILDWIDE_DEDUP_DONE.add(dedup_key)
         return preferred_message
-    keep = max(matches, key=lambda candidate: int(candidate.id))
+    preferred_id = int(getattr(preferred_message, "id", 0) or 0)
+    keep = next((candidate for candidate in matches if int(candidate.id) == preferred_id), None)
+    if keep is None:
+        target_matches = [
+            candidate for candidate in matches
+            if int(getattr(getattr(candidate, "channel", None), "id", 0) or 0) == int(channel.id)
+        ]
+        keep = max(target_matches or matches, key=lambda candidate: int(candidate.id))
     for duplicate in matches:
         if duplicate.id == keep.id:
             continue
         try:
             await duplicate.delete()
-            print(f"Doppelten PO-Anmelder entfernt: {post_key} -> {duplicate.id}")
+            print(
+                "Doppelten PO-Anmelder gildenweit entfernt: "
+                f"{post_key} -> Channel {duplicate.channel.id}, Nachricht {duplicate.id}"
+            )
         except discord.NotFound:
             pass
         except Exception as error:
             print(f"Doppelter PO-Anmelder konnte nicht entfernt werden ({post_key}/{duplicate.id}): {error}")
+    PO_GUILDWIDE_DEDUP_DONE.add(dedup_key)
     return keep
 
 
@@ -4148,6 +4223,8 @@ async def remember_po_message(payload):
             "raidDate": payload.get("raidDate") or payload.get("date") or "",
             "raidTime": payload.get("raidTime") or payload.get("time") or "",
             "mode": payload.get("mode") or "signup",
+            "raidId": clean(payload.get("lichtlootRaidId") or payload.get("raidId")),
+            "lichtlootRaidId": clean(payload.get("lichtlootRaidId") or payload.get("raidId")),
             "raidPin": payload_lichtloot_raid_pin(payload),
         })
     except Exception as error:
@@ -4186,9 +4263,10 @@ async def load_payloads_from_api_entries():
             "date": clean(entry.get("raidDate") or entry.get("date")),
             "time": clean(entry.get("raidTime") or entry.get("time")),
             "mode": clean(entry.get("mode")) or "signup",
-            "raidPin": clean(entry.get("raidPin") or entry.get("prioPin") or entry.get("lichtlootPlayerPin") or entry.get("lichtlootRaidId")),
-            "prioPin": clean(entry.get("prioPin") or entry.get("raidPin") or entry.get("lichtlootPlayerPin") or entry.get("lichtlootRaidId")),
-            "lichtlootRaidId": clean(entry.get("lichtlootRaidId") or entry.get("raidPin") or entry.get("prioPin") or entry.get("lichtlootPlayerPin")),
+            "raidPin": clean(entry.get("raidPin") or entry.get("prioPin") or entry.get("lichtlootPlayerPin")),
+            "prioPin": clean(entry.get("prioPin") or entry.get("raidPin") or entry.get("lichtlootPlayerPin")),
+            "raidId": clean(entry.get("raidId") or entry.get("lichtlootRaidId")),
+            "lichtlootRaidId": clean(entry.get("lichtlootRaidId") or entry.get("raidId")),
             "lichtlootPlayerPin": clean(entry.get("lichtlootPlayerPin") or entry.get("raidPin") or entry.get("prioPin") or entry.get("lichtlootRaidId")),
             "source": "lichtloot_restore",
         }
@@ -4414,7 +4492,7 @@ async def review_entry(payload, entry, user):
         "discordMessageId": payload.get("messageId") or entry.get("discordMessageId") or "",
         "raidPin": raid_pin,
         "prioPin": raid_pin,
-        "lichtlootRaidId": raid_pin,
+        "lichtlootRaidId": payload_lichtloot_raid_id(payload),
         "lichtlootPlayerPin": raid_pin,
         "player": entry.get("player") or "",
         "item": entry.get("item") or entry.get("itemName") or "",
@@ -4445,7 +4523,7 @@ async def reject_entry(payload, entry, user, reason=""):
         "discordMessageId": payload.get("messageId") or entry.get("discordMessageId") or "",
         "raidPin": raid_pin,
         "prioPin": raid_pin,
-        "lichtlootRaidId": raid_pin,
+        "lichtlootRaidId": payload_lichtloot_raid_id(payload),
         "lichtlootPlayerPin": raid_pin,
         "player": entry.get("player") or "",
         "item": entry.get("item") or entry.get("itemName") or "",
@@ -5167,7 +5245,7 @@ async def delete_entry(payload, entry, user):
         "targetChannelId": payload_target_channel_id(payload),
         "raidPin": raid_pin,
         "prioPin": raid_pin,
-        "lichtlootRaidId": raid_pin,
+        "lichtlootRaidId": payload_lichtloot_raid_id(payload),
         "discordMessageId": payload.get("messageId") or entry.get("discordMessageId") or "",
         "player": entry.get("player") or "",
         "item": entry.get("item") or entry.get("itemName") or "",
@@ -5210,8 +5288,12 @@ def make_embed(payload, entries, p0plus_labels=None):
         title=f"📋 {display_raid(payload.get('raid') or '')} PO-Anmelder",
         color=discord.Color.gold(),
     )
-    if clean(payload.get("postKey")):
-        embed.set_footer(text=f"Post-ID: {payload.get('postKey')}")
+    raid_id = payload_lichtloot_raid_id(payload)
+    post_id = clean(payload.get("postKey"))
+    if raid_id:
+        embed.set_footer(text=f"Raid-ID: {raid_id}")
+    elif post_id:
+        embed.set_footer(text=f"Post-ID: {post_id}")
 
     note = po_post_note(payload)
     header_lines = build_fixed_po_header(payload)
@@ -5500,7 +5582,7 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
             "messageId": payload.get("messageId") or "",
             "raidPin": raid_pin,
             "prioPin": raid_pin,
-            "lichtlootRaidId": raid_pin,
+            "lichtlootRaidId": payload_lichtloot_raid_id(payload),
             "player": char_name,
             "server": server,
             "className": class_name,
@@ -6322,12 +6404,7 @@ def po_message_parts(payload, entries, p0plus_labels, items):
     raid = combined_raid_snapshot(payload)
     if not raid:
         return [po_embed], PoView(payload, items, entries)
-    raid = {
-        **raid,
-        # Ein kombinierter Discord-Post hat genau eine gemeinsame ID. Der
-        # Raid- und der P0-Teil zeigen und verwenden deshalb denselben postKey.
-        "signupPostId": clean(payload.get("postKey") or payload.get("poPostKey") or payload.get("postId")),
-    }
+    raid = {**raid, "signupPostId": raid_signup_post_id(raid)}
     raid_embed = build_raid_announcement_embed(raid)
     helper = {
         "raid": raid,
@@ -6369,6 +6446,10 @@ async def refresh_po_message(client, payload):
         await message.edit(embeds=embeds, attachments=[banner], view=view)
     else:
         await message.edit(embeds=embeds, attachments=[], view=view)
+    message = await deduplicate_po_messages(client, channel, payload, message)
+    payload["messageId"] = str(message.id)
+    payload["discordMessageId"] = str(message.id)
+    await remember_po_message(payload)
     register_po_view(client, payload, items, entries)
 
 
@@ -6715,7 +6796,9 @@ async def po_queue_loop():
                                 or followup.get("sourceChannelId")
                                 or channel_id
                             )
-                            if followup_target_channel_id != channel_id:
+                            # Raid- und P0-Anmelder bleiben immer getrennte
+                            # Nachrichten mit unterschiedlichen Post-IDs.
+                            if followup_target_channel_id:
                                 posted = await post_raid_announcement_by_id(
                                     payload.get("raidId") or payload.get("id"),
                                     channel_id,
@@ -7347,7 +7430,7 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                         paired_raid = candidate
                         break
 
-                if paired_raid:
+                if paired_raid and payload.get("combineRaidAndPo") is True:
                     paired_channel_id = clean(
                         paired_raid.get("discordChannelId") or paired_raid.get("discord_channel_id")
                     )
@@ -7608,7 +7691,11 @@ async def restart_all_active_signup_posts():
                         continue
                     channel_id = clean(raid.get("discordChannelId") or raid.get("discord_channel_id"))
                     message_id = clean(raid.get("discordMessageId") or raid.get("discord_message_id"))
-                    if channel_id and message_id and channel_id == payload_target_channel_id(payload):
+                    if (
+                        payload.get("combineRaidAndPo") is True
+                        and channel_id and message_id
+                        and channel_id == payload_target_channel_id(payload)
+                    ):
                         helper = await get_raid_helper_for_refresh(raid)
                         if helper and helper.get("success"):
                             helper = preserve_raidhelper_signups(helper, payload)
