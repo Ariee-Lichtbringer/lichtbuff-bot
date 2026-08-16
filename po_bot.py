@@ -6621,7 +6621,7 @@ async def post_or_update_from_queue(client, payload):
     if normalized.get("messageId"):
         try:
             message = await channel.fetch_message(int(normalized["messageId"]))
-            if not message_is_po_signup(message):
+            if not message_is_po_signup(message) and not combined_raid_snapshot(normalized):
                 print(
                     "Gespeicherte P0-Message-ID zeigt auf einen Raidanmelder; "
                     f"P0-Anmelder wird separat erstellt ({post_key}/{message.id})."
@@ -6641,7 +6641,7 @@ async def post_or_update_from_queue(client, payload):
             if found_message_id:
                 try:
                     message = await channel.fetch_message(int(found_message_id))
-                    if not message_is_po_signup(message):
+                    if not message_is_po_signup(message) and not combined_raid_snapshot(normalized):
                         message = None
                     elif banner:
                         await message.edit(embeds=embeds, attachments=[banner], view=view)
@@ -6918,9 +6918,16 @@ async def po_queue_loop():
                                 or followup.get("sourceChannelId")
                                 or channel_id
                             )
-                            # Raid- und P0-Anmelder bleiben immer getrennte
-                            # Nachrichten mit unterschiedlichen Post-IDs.
-                            if followup_target_channel_id:
+                            # Nur bei bewusst unterschiedlichen Zielchannels
+                            # bleiben Raid- und P0-Anmelder getrennt. Liegen
+                            # beide im selben Channel, wird der bestehende
+                            # Raidanmelder um den P0-Bereich ergänzt. Andernfalls
+                            # entstehen zwei konkurrierende Anmelder für
+                            # denselben LichtLoot-Raid.
+                            if (
+                                followup_target_channel_id
+                                and followup_target_channel_id != channel_id
+                            ):
                                 posted = await post_raid_announcement_by_id(
                                     payload.get("raidId") or payload.get("id"),
                                     channel_id,
@@ -6955,9 +6962,11 @@ async def po_queue_loop():
                             combined_payload = {
                                 **followup,
                                 "guildSlug": queue_guild_slug,
-                                "sourceChannelId": clean(followup.get("sourceChannelId") or channel_id),
-                                "targetChannelId": followup_target_channel_id,
-                                "channelId": followup_target_channel_id,
+                                "sourceChannelId": channel_id,
+                                "targetChannelId": channel_id,
+                                "channelId": channel_id,
+                                "messageId": clean(raid.get("discordMessageId")),
+                                "discordMessageId": clean(raid.get("discordMessageId")),
                                 "restoreArchived": "true",
                                 "forceNewMessage": "false",
                                 "lichtlootRaidId": clean(
@@ -7915,14 +7924,42 @@ async def restart_all_active_signup_posts():
                     continue
                 paired_with_raid_post = False
                 payload_raid_id = payload_lichtloot_raid_id(payload)
+                if not payload_raid_id:
+                    # Alte automatische P0-Aufträge besitzen teilweise nur
+                    # eine datumsbasierte Post-ID. Ordne sie einmalig dem
+                    # eindeutig passenden aktiven Raid zu, statt dafür einen
+                    # zweiten künstlichen Raid anzulegen.
+                    post_date, post_time = po_schedule_from_post_key(payload)
+                    payload_raid = normalize_raid(payload.get("raid") or payload.get("title"))
+                    matching_raids = [
+                        raid for raid in current_raids
+                        if normalize_raid(raid.get("raid") or raid.get("raidName")) == payload_raid
+                        and (not post_date or clean(raid.get("raidDate") or raid.get("date")) == post_date)
+                        and (not post_time or normalize_post_time(raid.get("raidTime") or raid.get("time")) == post_time)
+                    ]
+                    if len(matching_raids) == 1:
+                        matched_raid = matching_raids[0]
+                        payload = payload_with_lichtloot_id_from_sources(payload, matched_raid)
+                        canonical_date = clean(matched_raid.get("raidDate") or matched_raid.get("date"))
+                        canonical_time = clean(matched_raid.get("raidTime") or matched_raid.get("time"))
+                        if canonical_date:
+                            payload["date"] = canonical_date
+                            payload["raidDate"] = canonical_date
+                        if canonical_time:
+                            payload["time"] = canonical_time
+                            payload["raidTime"] = canonical_time
+                        payload_raid_id = payload_lichtloot_raid_id(payload)
+                        print(
+                            "Alten automatischen P0-Anmelder eindeutig einem Raid zugeordnet: "
+                            f"{clean(payload.get('postKey'))} -> {payload_raid_id}"
+                        )
                 for raid in current_raids:
                     if not payload_raid_id or clean(raid.get("raidId") or raid.get("id")) != payload_raid_id:
                         continue
                     channel_id = clean(raid.get("discordChannelId") or raid.get("discord_channel_id"))
                     message_id = clean(raid.get("discordMessageId") or raid.get("discord_message_id"))
                     if (
-                        payload.get("combineRaidAndPo") is True
-                        and channel_id and message_id
+                        channel_id and message_id
                         and channel_id == payload_target_channel_id(payload)
                     ):
                         helper = await get_raid_helper_for_refresh(raid)
