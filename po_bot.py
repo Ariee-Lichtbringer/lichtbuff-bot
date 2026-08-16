@@ -6544,20 +6544,69 @@ def combined_raid_snapshot(payload):
     return raid if isinstance(raid, dict) and raid else None
 
 
+def embed_character_count(embed):
+    footer_text = clean(getattr(getattr(embed, "footer", None), "text", ""))
+    return sum([
+        len(clean(getattr(embed, "title", ""))),
+        len(clean(getattr(embed, "description", ""))),
+        len(footer_text),
+        *(
+            len(clean(field.name)) + len(clean(field.value))
+            for field in getattr(embed, "fields", []) or []
+        ),
+    ])
+
+
+def fit_combined_embeds(raid_embed, po_embed, limit=5800):
+    """Hält die gesamte Discord-Nachricht sicher unter dem 6000-Zeichen-Limit."""
+    overflow = embed_character_count(raid_embed) + embed_character_count(po_embed) - limit
+    suffix = "\n… weitere Teilnehmer in der Webansicht."
+    while overflow > 0:
+        candidates = [
+            (index, clean(field.value))
+            for index, field in enumerate(getattr(raid_embed, "fields", []) or [])
+            if len(clean(field.value)) > len(suffix) + 80
+            and clean(field.name) not in {"Raidlead", "Tag / Datum", "Uhrzeit", "Prio-PIN", "Link"}
+        ]
+        if not candidates:
+            break
+        index, value = max(candidates, key=lambda candidate: len(candidate[1]))
+        remove_count = min(overflow, max(1, len(value) - len(suffix) - 80))
+        next_value = value[:len(value) - remove_count - len(suffix)].rstrip(" ,\n") + suffix
+        field = raid_embed.fields[index]
+        raid_embed.set_field_at(index, name=field.name, value=next_value, inline=field.inline)
+        overflow = embed_character_count(raid_embed) + embed_character_count(po_embed) - limit
+    if overflow > 0:
+        description = clean(getattr(raid_embed, "description", ""))
+        raid_embed.description = description[:max(0, len(description) - overflow)] or None
+    return [raid_embed, po_embed]
+
+
 def po_message_parts(payload, entries, p0plus_labels, items):
     po_embed = make_embed(payload, entries, p0plus_labels)
     raid = combined_raid_snapshot(payload)
     if not raid:
         return [po_embed], PoView(payload, items, entries)
     raid = {**raid, "signupPostId": raid_signup_post_id(raid)}
-    raid_embed = build_raid_announcement_embed(raid)
+    # In der gemeinsamen Nachricht werden lange Regeln, Ankündigungstexte
+    # und Worldbuff-Hinweise nicht wiederholt. Sie bleiben über den ohnehin
+    # vorhandenen Link erreichbar; so passen Raid- und P0-Liste zuverlässig
+    # in Discords gemeinsames 6000-Zeichen-Limit für alle Embeds.
+    compact_raid = {
+        **raid,
+        "description": "Raidanmeldung und P0-Übersicht für diesen Termin.",
+        "announcementMessage": "",
+        "announcement_message": "",
+        "showWorldbuffs": False,
+    }
+    raid_embed = build_raid_announcement_embed(compact_raid)
     helper = {
         "raid": raid,
         "signups": payload.get("combinedRaidSignups") or [],
         "externalSignups": payload.get("combinedRaidExternalSignups") or [],
     }
     add_raid_signup_roster_fields(raid_embed, helper)
-    return [raid_embed, po_embed], CombinedRaidPoView(raid, payload, items, entries)
+    return fit_combined_embeds(raid_embed, po_embed), CombinedRaidPoView(raid, payload, items, entries)
 
 
 async def refresh_po_message(client, payload):
@@ -6670,47 +6719,6 @@ async def post_or_update_from_queue(client, payload):
     normalized = payload_with_lichtloot_id_from_sources(normalized, stored)
     normalized = await asyncio.to_thread(ensure_payload_lichtloot_raid, normalized)
 
-    # Zentrale Ein-Post-Garantie: Unabhängig davon, ob der Auftrag als
-    # raid_announcement-Folgepost, p0_post oder Refresh ankommt, darf im
-    # selben Channel niemals ein zweiter P0-Anmelder entstehen. Existiert am
-    # kanonischen Raid bereits eine Discord-Nachricht, wird ausschließlich
-    # diese zum kombinierten Raid-/P0-Anmelder erweitert.
-    canonical_raid_id = payload_lichtloot_raid_id(normalized)
-    if canonical_raid_id:
-        try:
-            canonical_helper = await get_raid_helper_for_refresh(normalized)
-            canonical_raid = dict((canonical_helper or {}).get("raid") or {})
-            canonical_channel_id = clean(
-                canonical_raid.get("discordChannelId")
-                or canonical_raid.get("discord_channel_id")
-            )
-            canonical_message_id = clean(
-                canonical_raid.get("discordMessageId")
-                or canonical_raid.get("discord_message_id")
-            )
-            if (
-                canonical_helper
-                and canonical_helper.get("success")
-                and canonical_channel_id == str(target_channel_id)
-                and canonical_message_id
-            ):
-                canonical_helper = preserve_raidhelper_signups(canonical_helper, normalized)
-                normalized.update({
-                    "messageId": canonical_message_id,
-                    "discordMessageId": canonical_message_id,
-                    "combinedRaidSnapshot": canonical_raid,
-                    "combinedRaidSignups": canonical_helper.get("signups") or [],
-                    "combinedRaidExternalSignups": canonical_helper.get("externalSignups") or [],
-                    "forceNewMessage": "false",
-                    "forceRepost": "false",
-                })
-                previous_message_id = canonical_message_id
-                force_new_message = False
-        except Exception as error:
-            print(
-                "Zentrale P0-Ein-Post-Prüfung konnte den Raid nicht laden "
-                f"({canonical_raid_id}): {error}"
-            )
     if force_new_message and not previous_message_id:
         previous_message_id = await find_existing_message_id(client, normalized)
     elif not normalized.get("messageId"):
@@ -7025,16 +7033,12 @@ async def po_queue_loop():
                                 or followup.get("sourceChannelId")
                                 or channel_id
                             )
-                            # Nur bei bewusst unterschiedlichen Zielchannels
-                            # bleiben Raid- und P0-Anmelder getrennt. Liegen
-                            # beide im selben Channel, wird der bestehende
-                            # Raidanmelder um den P0-Bereich ergänzt. Andernfalls
-                            # entstehen zwei konkurrierende Anmelder für
-                            # denselben LichtLoot-Raid.
-                            if (
-                                followup_target_channel_id
-                                and followup_target_channel_id != channel_id
-                            ):
+                            # Raid- und P0-Anmelder sind zwei bewusst getrennte
+                            # Nachrichten. Das ist insbesondere für 40er-Raids
+                            # nötig, weil Discord über alle Embeds einer
+                            # Nachricht höchstens 6000 Zeichen erlaubt. Beide
+                            # Posts tragen dennoch dieselbe kanonische Raid-ID.
+                            if followup_target_channel_id:
                                 posted = await post_raid_announcement_by_id(
                                     payload.get("raidId") or payload.get("id"),
                                     channel_id,
@@ -7698,26 +7702,17 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                     payload_raid_id = payload_lichtloot_raid_id(payload)
 
                 if paired_raid:
-                    paired_channel_id = clean(
-                        paired_raid.get("discordChannelId") or paired_raid.get("discord_channel_id")
-                    )
                     paired_message_id = clean(
                         paired_raid.get("discordMessageId") or paired_raid.get("discord_message_id")
                     )
-                    if paired_channel_id == channel_id and paired_message_id:
-                        helper = await get_raid_helper_for_refresh(paired_raid)
-                        if helper and helper.get("success"):
-                            helper = preserve_raidhelper_signups(helper, payload)
-                            payload.update({
-                                "targetChannelId": channel_id,
-                                "channelId": channel_id,
-                                "messageId": paired_message_id,
-                                "discordMessageId": paired_message_id,
-                                "combinedRaidSnapshot": helper.get("raid") or paired_raid,
-                                "combinedRaidSignups": helper.get("signups") or [],
-                                "combinedRaidExternalSignups": helper.get("externalSignups") or [],
-                            })
-                            paired_with_raid_post = True
+                    # Frühere kombinierte Posts wieder sauber in genau einen
+                    # Raidanmelder und genau einen P0-Anmelder aufteilen.
+                    if original_message_id == paired_message_id or combined_raid_snapshot(payload):
+                        payload["messageId"] = ""
+                        payload["discordMessageId"] = ""
+                        payload.pop("combinedRaidSnapshot", None)
+                        payload.pop("combinedRaidSignups", None)
+                        payload.pop("combinedRaidExternalSignups", None)
 
                 po_raid_identity = payload_raid_id or clean(payload.get("postKey"))
                 if po_raid_identity in seen_po_raids:
@@ -7742,13 +7737,16 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                     or payload.get("sourceChannelId")
                 )
                 message_id = clean(payload.get("messageId") or payload.get("discordMessageId"))
-                if payload_channel_id != channel_id or not message_id or message_id in seen_messages:
+                if payload_channel_id != channel_id or (message_id and message_id in seen_messages):
                     continue
                 if payload_guild_slug(payload) != guild_slug:
                     continue
-                seen_messages.add(message_id)
+                if message_id:
+                    seen_messages.add(message_id)
                 try:
-                    if paired_with_raid_post:
+                    if not message_id:
+                        await post_or_update_from_queue(client, payload)
+                    elif paired_with_raid_post:
                         # post_or_update speichert die neue gemeinsame
                         # Message-ID zusätzlich im lokalen/API-Zustand.
                         await post_or_update_from_queue(client, payload)
@@ -8113,17 +8111,15 @@ async def restart_all_active_signup_posts():
                         channel_id and message_id
                         and channel_id == payload_target_channel_id(payload)
                     ):
-                        helper = await get_raid_helper_for_refresh(raid)
-                        if helper and helper.get("success"):
-                            helper = preserve_raidhelper_signups(helper, payload)
-                            payload.update({
-                                "messageId": message_id,
-                                "discordMessageId": message_id,
-                                "combinedRaidSnapshot": helper.get("raid") or raid,
-                                "combinedRaidSignups": helper.get("signups") or [],
-                                "combinedRaidExternalSignups": helper.get("externalSignups") or [],
-                            })
-                            paired_with_raid_post = True
+                        payload_message_id = clean(
+                            payload.get("messageId") or payload.get("discordMessageId")
+                        )
+                        if payload_message_id == message_id or combined_raid_snapshot(payload):
+                            payload["messageId"] = ""
+                            payload["discordMessageId"] = ""
+                            payload.pop("combinedRaidSnapshot", None)
+                            payload.pop("combinedRaidSignups", None)
+                            payload.pop("combinedRaidExternalSignups", None)
                     break
                 post_identity = (
                     clean(payload.get("postKey") or payload.get("poPostKey")),
