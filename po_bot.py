@@ -1813,7 +1813,7 @@ def raid_signup_post_id(raid, preferred=""):
 
 
 async def remove_legacy_raid_signup_duplicates(raid):
-    """Entfernt alte Raidanmelder, die irrtümlich eine P0-Post-ID tragen."""
+    """Entfernt jeden weiteren Raidanmelder neben der kanonischen Message-ID."""
     channel_id = clean(raid.get("discordChannelId") or raid.get("discord_channel_id"))
     canonical_message_id = clean(raid.get("discordMessageId") or raid.get("discord_message_id"))
     if not channel_id:
@@ -1823,15 +1823,14 @@ async def remove_legacy_raid_signup_duplicates(raid):
         return 0
     wanted_raid = normalize_raid(raid.get("raid") or raid.get("raidName") or "").lower()
     wanted_date = clean(raid.get("raidDate") or raid.get("date"))
+    wanted_time = normalize_post_time(raid.get("raidTime") or raid.get("time"))
     removed = 0
     async for candidate in channel.history(limit=150):
         if not client.user or candidate.author.id != client.user.id or not candidate.embeds:
             continue
         if canonical_message_id and str(candidate.id) == canonical_message_id:
             continue
-        legacy_id = signup_post_id_from_message(candidate)
-        if "-po-anmelder-" not in legacy_id.casefold() and "-p0-anmelder-" not in legacy_id.casefold():
-            continue
+        duplicate_id = signup_post_id_from_message(candidate)
         embed = candidate.embeds[0]
         field_names = {clean(field.name).lower() for field in embed.fields}
         if not ({"slots", "gesamt angemeldet", "fest angemeldet", "rollenverteilung"} & field_names):
@@ -1841,9 +1840,15 @@ async def remove_legacy_raid_signup_duplicates(raid):
         field_text = " ".join(clean(field.value) for field in embed.fields)
         if wanted_date and wanted_date not in field_text and format_raid_announcement_date(wanted_date) not in field_text:
             continue
+        if wanted_time and wanted_time not in field_text:
+            continue
         await candidate.delete()
         removed += 1
-        print(f"Alten Raidanmelder mit P0-Post-ID entfernt: {legacy_id} -> {candidate.id}")
+        print(
+            "Weiteren Raidanmelder desselben LichtLoot-Raids entfernt: "
+            f"{duplicate_id or 'ohne Footer-ID'} -> {candidate.id}; "
+            f"kanonisch={canonical_message_id}"
+        )
     return removed
 
 
@@ -3553,6 +3558,39 @@ def ensure_payload_lichtloot_raid(payload):
     # zweiter Raid mit der P0-Post-ID entstehen.
     if payload_lichtloot_raid_id(payload) or payload_lichtloot_raid_pin(payload):
         return payload
+
+    # Ein P0-Payload ohne gespeicherte ID bedeutet nicht, dass kein Raid
+    # existiert. Besonders alte bzw. über die LichtLoot-Webseite aktualisierte
+    # Posts enthalten oft nur Post-ID, Raidtyp, Datum und Uhrzeit. Vor jeder
+    # Neuanlage muss deshalb der bereits vorhandene Raid gesucht werden. Sonst
+    # entstehen für einen Termin eine zweite Raid-ID und eine neue Prio-PIN.
+    raid_date, raid_time = payload_raid_schedule(payload)
+    try:
+        existing = api_get({
+            "action": "getRaidHelper",
+            "guild": payload_guild_slug(payload),
+            "guildSlug": payload_guild_slug(payload),
+            "raid": normalize_raid(payload.get("raid") or payload.get("raidName")),
+            "raidDate": canonical_raid_date(raid_date) or raid_date,
+            "raidTime": normalize_post_time(raid_time),
+            "t": int(time.time() * 1000),
+        })
+        existing_raid = dict(existing.get("raid") or {}) if existing.get("success") else {}
+        existing_raid_id = payload_lichtloot_raid_id(existing_raid)
+        existing_raid_pin = payload_lichtloot_raid_pin(existing_raid)
+        if existing_raid_id or existing_raid_pin:
+            print(
+                "P0-Anmelder mit vorhandenem Raid verknüpft statt neuen Raid anzulegen: "
+                f"{clean(payload.get('postKey'))} -> {existing_raid_id or existing_raid_pin}"
+            )
+            return payload_with_lichtloot_id_from_sources(payload, existing_raid)
+    except Exception as error:
+        raise RuntimeError(
+            "Vorhandener Raid konnte vor der P0-Zuordnung nicht sicher geprüft werden; "
+            "zur Vermeidung einer doppelten Raid-ID wird kein neuer Raid angelegt "
+            f"({clean(payload.get('postKey'))}): {error}"
+        ) from error
+
     prio_pin = generated_pin(payload.get("postKey") or payload.get("raid") or "po", 3)
     lead_pin = generated_pin((payload.get("postKey") or "") + "-lead", 4)
     result = api_post({
