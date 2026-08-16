@@ -1436,11 +1436,7 @@ def build_raid_announcement_embed(raid):
     if announcement_message and announcement_message not in description:
         description = f"{description}\n\n{announcement_message}"
     embed = discord.Embed(title=raid_name.upper(), description=description[:3900], color=0x7c3aed)
-    shared_post_id = clean(raid.get("signupPostId") or raid.get("postKey") or raid.get("postId"))
-    if not shared_post_id:
-        raid_id = clean(raid.get("raidId") or raid.get("id") or raid.get("playerPin") or raid.get("prioPin"))
-        raid_key = normalize_raid(raid.get("raid") or raid.get("raidName")).lower()
-        shared_post_id = clean(f"{raid_key}-raid-anmelder-{raid_id}".strip("-"))
+    shared_post_id = raid_signup_post_id(raid)
     if shared_post_id:
         embed.set_footer(text=f"Post-ID: {shared_post_id}")
     embed.add_field(name="Raidlead", value=clean(raid.get("createdBy") or raid.get("erstelltVon") or "Gildenleitung"), inline=True)
@@ -1782,12 +1778,29 @@ def raid_signup_class_options():
 
 def raid_signup_source(interaction, origin_channel_id=None, origin_message_id=None):
     message = getattr(interaction, "message", None)
+    post_id = signup_post_id_from_message(message)
+    if post_id:
+        return f"LichtLootPost:{post_id}"
+    return f"DiscordSignup:{origin_channel_id or interaction.channel_id}:{origin_message_id or getattr(message, 'id', '')}"
+
+
+def signup_post_id_from_message(message):
     for embed in getattr(message, "embeds", []) or []:
         footer_text = clean(getattr(getattr(embed, "footer", None), "text", ""))
         post_id_match = re.search(r"(?:^|\s)Post-ID:\s*(\S+)", footer_text, re.IGNORECASE)
         if post_id_match:
-            return f"LichtLootPost:{clean(post_id_match.group(1))}"
-    return f"DiscordSignup:{origin_channel_id or interaction.channel_id}:{origin_message_id or getattr(message, 'id', '')}"
+            return clean(post_id_match.group(1))
+    return ""
+
+
+def raid_signup_post_id(raid, preferred=""):
+    raid = raid or {}
+    stored = clean(preferred or raid.get("signupPostId") or raid.get("postKey") or raid.get("postId"))
+    if stored:
+        return stored
+    raid_id = clean(raid.get("raidId") or raid.get("id") or raid.get("playerPin") or raid.get("prioPin"))
+    raid_key = normalize_raid(raid.get("raid") or raid.get("raidName")).lower()
+    return clean(f"{raid_key}-raid-anmelder-{raid_id}".strip("-"))
 
 
 def add_raid_signup_roster_fields(embed, helper):
@@ -2393,6 +2406,7 @@ async def refresh_raid_signup_message(interaction, raid, origin_channel_id=None,
                 "raidId": raid_lookup_id,
                 "discordChannelId": active_channel_id,
                 "discordMessageId": active_message_id,
+                "signupPostId": signup_post_id_from_message(getattr(interaction, "message", None)),
             })
             raid = dict(raid or {})
             raid["discordChannelId"] = active_channel_id
@@ -2519,7 +2533,8 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None, f
                 "guildSlug": payload_guild_slug(raid),
                 "raidId": clean(raid.get("raidId") or raid.get("id") or raid_id),
                 "discordChannelId": channel_id,
-                "discordMessageId": existing_message_id
+                "discordMessageId": existing_message_id,
+                "signupPostId": raid_signup_post_id(raid, payload.get("postKey")),
             })
             print(f"Bestehender Raidanmelder aktualisiert: {raid_id} in {channel_id}/{existing_message_id}")
             return True
@@ -2543,7 +2558,8 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None, f
             "guildSlug": payload_guild_slug(raid),
             "raidId": clean(raid.get("raidId") or raid.get("id") or raid_id),
             "discordChannelId": channel_id,
-            "discordMessageId": str(message.id)
+            "discordMessageId": str(message.id),
+            "signupPostId": raid_signup_post_id(raid, payload.get("postKey"))
         })
         # Nach der Umstellung auf die neue Message-ID erneut laden: Der erste
         # Snapshot kann noch alte Raid-Helper-Zeilen enthalten haben. Der
@@ -6708,6 +6724,7 @@ async def po_queue_loop():
                                 "raidId": clean(raid.get("raidId") or payload.get("raidId")),
                                 "discordChannelId": channel_id,
                                 "discordMessageId": clean(normalized.get("messageId")),
+                                "signupPostId": clean(normalized.get("postKey") or normalized.get("postId")),
                             })
                             await resolve_queue_item(item.get("rowNumber"))
                             print(
@@ -7109,6 +7126,7 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                             "raidId": raid_id,
                             "discordChannelId": channel_id,
                             "discordMessageId": str(candidate.id),
+                            "signupPostId": signup_post_id_from_message(candidate),
                         })
                 except Exception as error:
                     print(f"Raidanmelder im aktuellen Channel konnten nicht vorab zugeordnet werden: {error}")
@@ -7174,6 +7192,7 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                                     "raidId": clean(raid.get("raidId") or raid.get("id")),
                                     "discordChannelId": raid_channel_id,
                                     "discordMessageId": str(own_message.id),
+                                    "signupPostId": signup_post_id_from_message(own_message) or raid_signup_post_id(raid),
                                 })
                                 refreshed = await refresh_raid_signup_message_by_id(
                                     clean(raid.get("raidId") or raid.get("id")),
