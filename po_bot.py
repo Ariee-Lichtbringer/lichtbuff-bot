@@ -342,9 +342,9 @@ def normalize_raid(value):
     text = re.sub(r"[^A-Z0-9]+", "", clean(value).upper())
     if text in {"ZGMITTWOCH", "ZULGURUBMITTWOCH"}:
         return "ZG-MITTWOCH"
-    if text in {"ZGPRIME", "ZULGURUBPRIME"}:
+    if text in {"ZGPRIME", "ZULGURUBPRIME"} or text.startswith("ZGRAIDPRIME"):
         return "ZG-PRIME"
-    if text in {"ZGLATE", "ZULGURUBLATE"}:
+    if text in {"ZGLATE", "ZULGURUBLATE"} or text.startswith("ZGRAIDLATE") or text.startswith("ZGLATENIGHT"):
         return "ZG-LATE"
     if text in {"MOLTENCORE"} or text.startswith("MOLTENCORE"):
         return "MC"
@@ -1810,6 +1810,41 @@ def raid_signup_post_id(raid, preferred=""):
     raid_id = clean(raid.get("raidId") or raid.get("id") or raid.get("playerPin") or raid.get("prioPin"))
     raid_key = normalize_raid(raid.get("raid") or raid.get("raidName")).lower()
     return clean(f"{raid_key}-raid-anmelder-{raid_id}".strip("-"))
+
+
+async def remove_legacy_raid_signup_duplicates(raid):
+    """Entfernt alte Raidanmelder, die irrtümlich eine P0-Post-ID tragen."""
+    channel_id = clean(raid.get("discordChannelId") or raid.get("discord_channel_id"))
+    canonical_message_id = clean(raid.get("discordMessageId") or raid.get("discord_message_id"))
+    if not channel_id:
+        return 0
+    channel = await fetch_accessible_channel(client, channel_id)
+    if channel is None:
+        return 0
+    wanted_raid = normalize_raid(raid.get("raid") or raid.get("raidName") or "").lower()
+    wanted_date = clean(raid.get("raidDate") or raid.get("date"))
+    removed = 0
+    async for candidate in channel.history(limit=150):
+        if not client.user or candidate.author.id != client.user.id or not candidate.embeds:
+            continue
+        if canonical_message_id and str(candidate.id) == canonical_message_id:
+            continue
+        legacy_id = signup_post_id_from_message(candidate)
+        if "-po-anmelder-" not in legacy_id.casefold() and "-p0-anmelder-" not in legacy_id.casefold():
+            continue
+        embed = candidate.embeds[0]
+        field_names = {clean(field.name).lower() for field in embed.fields}
+        if not ({"slots", "gesamt angemeldet", "fest angemeldet", "rollenverteilung"} & field_names):
+            continue
+        if normalize_raid(clean(embed.title)).lower() != wanted_raid:
+            continue
+        field_text = " ".join(clean(field.value) for field in embed.fields)
+        if wanted_date and wanted_date not in field_text and format_raid_announcement_date(wanted_date) not in field_text:
+            continue
+        await candidate.delete()
+        removed += 1
+        print(f"Alten Raidanmelder mit P0-Post-ID entfernt: {legacy_id} -> {candidate.id}")
+    return removed
 
 
 def add_raid_signup_roster_fields(embed, helper):
@@ -4065,6 +4100,28 @@ async def load_entries(payload):
         if not entry.get("configOnly")
         and (clean(entry.get("player")) or clean(entry.get("item") or entry.get("itemName")))
     ]
+    # P0-Einträge, die direkt auf der LichtLoot-Raidseite verwaltet werden,
+    # liegen raidbezogen vor und müssen über die gemeinsame Raid-ID in den
+    # separaten Discord-P0-Anmelder übernommen werden.
+    raid_id = payload_lichtloot_raid_id(payload)
+    if raid_id:
+        try:
+            raid_result = await asyncio.to_thread(api_get, {
+                "action": "getP0DiscordSignups",
+                "queueToken": QUEUE_TOKEN,
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
+                "raidId": raid_id,
+                "status": "all",
+                "t": int(time.time() * 1000),
+            })
+            raid_entries = [
+                entry for entry in (raid_result.get("entries") or [])
+                if clean(entry.get("player")) and clean(entry.get("item") or entry.get("itemName"))
+            ]
+            entries = merge_po_entries(entries, raid_entries)
+        except Exception as error:
+            print(f"Raidbezogene LichtLoot-P0-Einträge konnten nicht geladen werden ({raid_id}): {error}")
     # Sobald die Datenbank erfolgreich geantwortet hat, ist ihre Liste
     # vollständig und verbindlich. Insbesondere darf ein dort gelöschter
     # Eintrag nicht aus dem alten Discord-Snapshot wieder ergänzt werden.
@@ -4108,6 +4165,13 @@ def message_matches_post_key(message, post_key):
 
 
 def message_is_po_signup(message):
+    component_ids = {
+        clean(getattr(item, "custom_id", "")).casefold()
+        for row in (getattr(message, "components", None) or [])
+        for item in (getattr(row, "children", None) or [])
+    }
+    if any(component_id.startswith("po-") for component_id in component_ids):
+        return True
     for embed in getattr(message, "embeds", []) or []:
         title = clean(getattr(embed, "title", "")).casefold()
         if "po-anmelder" in title or "p0-anmelder" in title:
@@ -4121,22 +4185,31 @@ async def find_existing_message_id(client, payload):
     except Exception as error:
         print(f"PO-Anmelder bestehende Nachricht konnte nicht gesucht werden ({payload.get('postKey')}): {error}")
         entries = []
+    target_channel_id = payload_target_channel_id(payload)
+    channel = await fetch_accessible_channel(client, target_channel_id) if target_channel_id else None
     for entry in entries:
         message_id = clean(entry.get("discordMessageId") or entry.get("mainMessageId"))
-        if message_id:
-            return message_id
-    target_channel_id = payload_target_channel_id(payload)
+        if not message_id or channel is None:
+            continue
+        try:
+            candidate = await channel.fetch_message(int(message_id))
+            if message_is_po_signup(candidate):
+                return message_id
+        except (discord.NotFound, discord.Forbidden, ValueError):
+            continue
     post_key = clean(payload.get("postKey"))
     raid_id = payload_lichtloot_raid_id(payload)
     identifiers = [value for value in (post_key, raid_id) if value]
     if not target_channel_id or not identifiers:
         return ""
     try:
-        channel = await fetch_accessible_channel(client, target_channel_id)
+        channel = channel or await fetch_accessible_channel(client, target_channel_id)
         if channel is None:
             raise RuntimeError(f"Channel nicht erreichbar: {target_channel_id}")
         async for message in channel.history(limit=100):
-            if any(message_matches_post_key(message, identifier) for identifier in identifiers):
+            if message_is_po_signup(message) and any(
+                message_matches_post_key(message, identifier) for identifier in identifiers
+            ):
                 print(f"PO-Anmelder bestehende Discord-Nachricht gefunden: {post_key} -> {message.id}")
                 return str(message.id)
     except Exception as error:
@@ -6534,7 +6607,13 @@ async def post_or_update_from_queue(client, payload):
     if normalized.get("messageId"):
         try:
             message = await channel.fetch_message(int(normalized["messageId"]))
-            if banner:
+            if not message_is_po_signup(message):
+                print(
+                    "Gespeicherte P0-Message-ID zeigt auf einen Raidanmelder; "
+                    f"P0-Anmelder wird separat erstellt ({post_key}/{message.id})."
+                )
+                message = None
+            elif banner:
                 await message.edit(embeds=embeds, attachments=[banner], view=view)
             else:
                 await message.edit(embeds=embeds, attachments=[], view=view)
@@ -7259,14 +7338,13 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                             raid_id = clean(raid.get("raidId") or raid.get("id"))
                             matches = duplicate_raid_messages.setdefault(raid_id, [])
                             matches.append(candidate)
-                            # Der ursprüngliche kombinierte Raid-/P0-Anmelder
-                            # hat Vorrang. Bei gleicher Bauart bleibt der
-                            # ältere Post bestehen; ein später erzeugtes
-                            # Duplikat darf die Ziel-ID nicht überschreiben.
+                            # Der Post mit der kanonischen Raid-ID hat Vorrang.
+                            # Ein alter Raidanmelder mit irrtümlicher
+                            # P0-Post-ID ist nur eine Dublette.
                             preferred = min(
                                 matches,
                                 key=lambda message: (
-                                    0 if len(getattr(message, "embeds", []) or []) > 1 else 1,
+                                    0 if signup_post_id_from_message(message) == raid_id else 1,
                                     int(message.id),
                                 ),
                             )
@@ -7657,6 +7735,13 @@ async def restart_all_active_signup_posts():
                 for raid in result.get("allRaids") or result.get("raids") or []:
                     channel_id = clean(raid.get("discordChannelId") or raid.get("discord_channel_id"))
                     message_id = clean(raid.get("discordMessageId") or raid.get("discord_message_id"))
+                    if channel_id:
+                        try:
+                            await remove_legacy_raid_signup_duplicates(raid)
+                        except Exception as error:
+                            errors.append(
+                                f"Alte Raidanmelder-Dublette für {clean(raid.get('raidName') or raid.get('raidId'))}: {error}"
+                            )
                     raid_helper_enabled = (
                         raid.get("raidHelperEnabled") is True
                         or clean(raid.get("raidHelperEnabled") or raid.get("raidhelperEnabled")).lower()
@@ -7762,10 +7847,11 @@ async def restart_all_active_signup_posts():
                     continue
                 seen_po_posts.add(post_identity)
                 try:
-                    if paired_with_raid_post:
-                        await post_or_update_from_queue(client, payload)
-                    else:
-                        await restore_po_view_fast(client, payload)
+                    # Auch getrennte P0-Anmelder vollständig prüfen. Eine
+                    # alte gespeicherte Message-ID kann auf einen vollständigen
+                    # Raidanmelder zeigen und muss dann durch einen echten
+                    # P0-Anmelder ersetzt werden.
+                    await post_or_update_from_queue(client, payload)
                     po_views += 1
                 except discord.NotFound:
                     payload["messageId"] = ""
