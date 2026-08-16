@@ -3393,8 +3393,9 @@ def payload_with_saved_lichtloot_id(payload):
 
 def normalize_post_date(value):
     text = clean(value)
-    if re.match(r"^\d{4}-\d{2}-\d{2}$", text):
-        year, month, day = text.split("-")
+    iso_date = canonical_raid_date(text)
+    if iso_date:
+        year, month, day = iso_date.split("-")
         return f"{day}.{month}.{year}"
     return text
 
@@ -4232,6 +4233,28 @@ def message_matches_post_key(message, post_key):
     return False
 
 
+def message_matches_po_raid(message, payload):
+    """Erkennt alte P0-Posts desselben Raids auch ohne kanonische Raid-ID."""
+    raid_pin = payload_lichtloot_raid_pin(payload or {})
+    if not raid_pin:
+        return False
+    text = "\n".join(
+        clean(value)
+        for embed in (getattr(message, "embeds", []) or [])
+        for value in [
+            getattr(embed, "title", ""),
+            getattr(embed, "description", ""),
+            getattr(getattr(embed, "footer", None), "text", ""),
+            *(field.value for field in getattr(embed, "fields", []) or []),
+        ]
+    )
+    return bool(re.search(
+        rf"(?:Prio-PIN|ID)\s*:\s*`?{re.escape(raid_pin)}`?(?:\s|$)",
+        text,
+        re.IGNORECASE,
+    ))
+
+
 def message_is_po_signup(message):
     component_ids = {
         clean(getattr(item, "custom_id", "")).casefold()
@@ -4312,8 +4335,9 @@ async def deduplicate_po_messages(client, channel, payload, preferred_message=No
             async for candidate in candidate_channel.history(limit=250):
                 if getattr(getattr(candidate, "author", None), "id", None) != getattr(client.user, "id", None):
                     continue
-                if message_is_po_signup(candidate) and any(
-                    message_matches_post_key(candidate, identifier) for identifier in identifiers
+                if message_is_po_signup(candidate) and (
+                    any(message_matches_post_key(candidate, identifier) for identifier in identifiers)
+                    or message_matches_po_raid(candidate, payload)
                 ):
                     matches.append(candidate)
         except (discord.Forbidden, discord.NotFound):
@@ -8073,7 +8097,28 @@ async def restart_all_active_signup_posts():
                     continue
                 paired_with_raid_post = False
                 payload_raid_id = payload_lichtloot_raid_id(payload)
-                if not payload_raid_id:
+                matched_raid = next(
+                    (
+                        raid for raid in current_raids
+                        if payload_raid_id
+                        and clean(raid.get("raidId") or raid.get("id")) == payload_raid_id
+                    ),
+                    None,
+                )
+                if matched_raid is None:
+                    # Mehrere alte P0-Auftraege koennen unterschiedliche
+                    # Post- oder sogar alte Raid-IDs besitzen. Die von
+                    # LichtLoot vergebene Prio-PIN ist pro aktivem Raid
+                    # eindeutig und verbindet sie wieder mit demselben Raid.
+                    payload_pin = payload_lichtloot_raid_pin(payload)
+                    pin_matches = [
+                        raid for raid in current_raids
+                        if payload_pin and payload_lichtloot_raid_pin(raid) == payload_pin
+                    ]
+                    if len(pin_matches) == 1:
+                        matched_raid = pin_matches[0]
+
+                if matched_raid is None:
                     # Alte automatische P0-Aufträge besitzen teilweise nur
                     # eine datumsbasierte Post-ID. Ordne sie einmalig dem
                     # eindeutig passenden aktiven Raid zu, statt dafür einen
@@ -8083,25 +8128,51 @@ async def restart_all_active_signup_posts():
                     matching_raids = [
                         raid for raid in current_raids
                         if normalize_raid(raid.get("raid") or raid.get("raidName")) == payload_raid
-                        and (not post_date or clean(raid.get("raidDate") or raid.get("date")) == post_date)
+                        and (
+                            not post_date
+                            or canonical_raid_date(raid.get("raidDate") or raid.get("date"))
+                            == canonical_raid_date(post_date)
+                        )
                         and (not post_time or normalize_post_time(raid.get("raidTime") or raid.get("time")) == post_time)
                     ]
                     if len(matching_raids) == 1:
                         matched_raid = matching_raids[0]
-                        payload = payload_with_lichtloot_id_from_sources(payload, matched_raid)
-                        canonical_date = clean(matched_raid.get("raidDate") or matched_raid.get("date"))
-                        canonical_time = clean(matched_raid.get("raidTime") or matched_raid.get("time"))
-                        if canonical_date:
-                            payload["date"] = canonical_date
-                            payload["raidDate"] = canonical_date
-                        if canonical_time:
-                            payload["time"] = canonical_time
-                            payload["raidTime"] = canonical_time
-                        payload_raid_id = payload_lichtloot_raid_id(payload)
                         print(
                             "Alten automatischen P0-Anmelder eindeutig einem Raid zugeordnet: "
-                            f"{clean(payload.get('postKey'))} -> {payload_raid_id}"
+                            f"{clean(payload.get('postKey'))} -> "
+                            f"{clean(matched_raid.get('raidId') or matched_raid.get('id'))}"
                         )
+
+                if matched_raid is not None:
+                    # Absichtlich überschreiben: Ein veralteter Auftrag darf
+                    # seine frühere Raid-ID nicht gegen LichtLoot durchsetzen.
+                    payload_raid_id = clean(matched_raid.get("raidId") or matched_raid.get("id"))
+                    canonical_pin = payload_lichtloot_raid_pin(matched_raid)
+                    if payload_raid_id:
+                        payload.update({
+                            "lichtlootRaidId": payload_raid_id,
+                            "lichtlootCanonicalRaidId": payload_raid_id,
+                            "raidId": payload_raid_id,
+                        })
+                    if canonical_pin:
+                        payload.update({
+                            "lichtlootPlayerPin": canonical_pin,
+                            "playerPin": canonical_pin,
+                            "raidPin": canonical_pin,
+                            "prioPin": canonical_pin,
+                        })
+                    canonical_date = canonical_raid_date(
+                        matched_raid.get("raidDate") or matched_raid.get("date")
+                    )
+                    canonical_time = normalize_post_time(
+                        matched_raid.get("raidTime") or matched_raid.get("time")
+                    )
+                    if canonical_date:
+                        payload["date"] = canonical_date
+                        payload["raidDate"] = canonical_date
+                    if canonical_time:
+                        payload["time"] = canonical_time
+                        payload["raidTime"] = canonical_time
                 for raid in current_raids:
                     if not payload_raid_id or clean(raid.get("raidId") or raid.get("id")) != payload_raid_id:
                         continue
@@ -8121,11 +8192,13 @@ async def restart_all_active_signup_posts():
                             payload.pop("combinedRaidSignups", None)
                             payload.pop("combinedRaidExternalSignups", None)
                     break
-                post_identity = (
-                    clean(payload.get("postKey") or payload.get("poPostKey")),
-                    clean(payload.get("messageId") or payload.get("discordMessageId")),
+                # Pro kanonischer LichtLoot-Raid-ID wird exakt ein P0-Post
+                # aktualisiert. Alte Post-IDs und Message-IDs dürfen daraus
+                # keine weiteren P0-Anmelder machen.
+                post_identity = payload_raid_id or clean(
+                    payload.get("postKey") or payload.get("poPostKey")
                 )
-                if not any(post_identity) or post_identity in seen_po_posts:
+                if not post_identity or post_identity in seen_po_posts:
                     continue
                 seen_po_posts.add(post_identity)
                 try:
