@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 import re
 import json
 import csv
@@ -319,6 +320,7 @@ intents.message_content = True
 intents.members = True
 
 client = discord.Client(intents=intents)
+command_tree = app_commands.CommandTree(client)
 
 hordenbuff_update_lock = asyncio.Lock()
 hordenbuff_last_update_at = 0
@@ -5794,6 +5796,151 @@ async def handle_ticker_update(message):
         )
 
 
+def set_interaction_guild_context(interaction):
+    guild_slug = guild_slug_for_discord_server(interaction.guild, "")
+    if not guild_slug:
+        raise RuntimeError("Dieser Discord-Server ist keiner LichtLoot-Gilde zugeordnet.")
+    return CURRENT_GUILD_SLUG.set(guild_slug)
+
+
+worldbuff_commands = app_commands.Group(
+    name="worldbuff",
+    description="Worldbuff-Termine und die Worldbuff-Übersicht verwalten",
+)
+
+
+@worldbuff_commands.command(name="aktualisieren", description="Aktualisiert die Worldbuff-Übersicht im festgelegten Channel")
+async def slash_worldbuff_update(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    token = None
+    try:
+        token = set_interaction_guild_context(interaction)
+        count = await asyncio.wait_for(
+            update_worldbuff_post(sync_ticker=True, force_repost=False),
+            timeout=60,
+        )
+        if count:
+            channel_id = get_configured_worldbuff_channel_id()
+            await interaction.followup.send(
+                f"✅ Worldbuff-Liste aktualisiert. Ziel: <#{channel_id}>",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                "⚠️ Worldbuff-Liste wurde nicht aktualisiert. Bitte Worldbuff-Channel und Termine prüfen.",
+                ephemeral=True,
+            )
+    except Exception as error:
+        await interaction.followup.send(f"⚠️ Worldbuff-Update fehlgeschlagen: {error}", ephemeral=True)
+    finally:
+        if token is not None:
+            CURRENT_GUILD_SLUG.reset(token)
+
+
+@worldbuff_commands.command(name="termin", description="Trägt einen neuen Worldbuff-Termin in LichtLoot ein")
+@app_commands.describe(
+    datum="Datum im Format JJJJ-MM-TT",
+    uhrzeit="Uhrzeit im Format HH:MM",
+    buff="Worldbuff für diesen Termin",
+    charakter="Optional: Charakter, der den Buff stellt",
+    notiz="Optionale Notiz zum Termin",
+)
+@app_commands.choices(buff=[
+    app_commands.Choice(name="Hakkar", value="Hakkar"),
+    app_commands.Choice(name="Onyxia", value="Ony"),
+    app_commands.Choice(name="Nefarian", value="Nef"),
+])
+@app_commands.checks.has_permissions(manage_guild=True)
+async def slash_worldbuff_term(
+    interaction: discord.Interaction,
+    datum: str,
+    uhrzeit: str,
+    buff: app_commands.Choice[str],
+    charakter: str = "",
+    notiz: str = "",
+):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    token = None
+    try:
+        token = set_interaction_guild_context(interaction)
+        try:
+            parsed_date = datetime.strptime(datum.strip(), "%Y-%m-%d")
+            parsed_time = datetime.strptime(uhrzeit.strip(), "%H:%M")
+        except ValueError:
+            await interaction.followup.send(
+                "⚠️ Bitte Datum als `JJJJ-MM-TT` und Uhrzeit als `HH:MM` eingeben.",
+                ephemeral=True,
+            )
+            return
+
+        guild_data = GUILD_REGISTRY.get(current_guild_slug()) or {}
+        result = await asyncio.to_thread(lichtloot_post, {
+            "action": "lichtbotCreateWorldbuffTerm",
+            "queueToken": LICHTBOT_QUEUE_TOKEN,
+            "target": "worldbuff",
+            "datum": parsed_date.strftime("%Y-%m-%d"),
+            "uhrzeit": parsed_time.strftime("%H:%M"),
+            "buff": buff.value,
+            "gilde": str(guild_data.get("name") or current_guild_slug()),
+            "charakter": charakter.strip(),
+            "discordName": interaction.user.display_name,
+            "status": "bestätigt" if charakter.strip() else "offen",
+            "note": notiz.strip(),
+        })
+        if not result.get("success"):
+            raise RuntimeError(result.get("error") or "LichtLoot hat den Termin nicht gespeichert.")
+
+        await update_worldbuff_post(sync_ticker=False, force_repost=False)
+        await interaction.followup.send(
+            f"✅ {buff.value} am {parsed_date.strftime('%d.%m.%Y')} um {parsed_time.strftime('%H:%M')} wurde in LichtLoot gespeichert.",
+            ephemeral=True,
+        )
+    except Exception as error:
+        await interaction.followup.send(f"⚠️ Worldbuff-Termin konnte nicht gespeichert werden: {error}", ephemeral=True)
+    finally:
+        if token is not None:
+            CURRENT_GUILD_SLUG.reset(token)
+
+
+@slash_worldbuff_term.error
+async def slash_worldbuff_term_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.MissingPermissions):
+        text = "⚠️ Du benötigst die Discord-Berechtigung ‚Server verwalten‘, um Termine anzulegen."
+    else:
+        text = f"⚠️ Worldbuff-Termin konnte nicht gestartet werden: {error}"
+    if interaction.response.is_done():
+        await interaction.followup.send(text, ephemeral=True)
+    else:
+        await interaction.response.send_message(text, ephemeral=True)
+
+
+command_tree.add_command(worldbuff_commands)
+
+
+@command_tree.command(name="hordenbuff", description="Aktualisiert den Hordenbuff-/Rend-Anmelder")
+async def slash_hordenbuff_update(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    token = None
+    try:
+        token = set_interaction_guild_context(interaction)
+        count = await asyncio.wait_for(update_hordenbuff_post(force=True), timeout=45)
+        if count:
+            await interaction.followup.send(
+                f"✅ Hordenbuff-Anmelder aktualisiert. Posts: {count}",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                "⚠️ Hordenbuff wurde nicht aktualisiert. Bitte Hordenbuff-Channel und kommenden Rend-Termin prüfen.",
+                ephemeral=True,
+            )
+    except Exception as error:
+        await interaction.followup.send(f"⚠️ Hordenbuff-Update fehlgeschlagen: {error}", ephemeral=True)
+    finally:
+        if token is not None:
+            CURRENT_GUILD_SLUG.reset(token)
+
+
 
 
 @client.event
@@ -5801,6 +5948,15 @@ async def on_ready():
     print(f"Bot online als {client.user}")
     await refresh_guild_registry()
     await sync_discord_roles_to_lichtloot()
+    if not hasattr(client, "slash_commands_synced"):
+        client.slash_commands_synced = True
+        for discord_guild in client.guilds:
+            try:
+                command_tree.copy_global_to(guild=discord_guild)
+                synced = await command_tree.sync(guild=discord_guild)
+                print(f"Slash-Befehle fuer {discord_guild.name} synchronisiert: {len(synced)}")
+            except Exception as error:
+                print(f"Slash-Befehle fuer {discord_guild.name} konnten nicht synchronisiert werden: {error}")
     print(f"Überwache Ticker-Channels: {sorted(TICKER_CHANNEL_IDS)}")
     print("Postet Worldbuff-Uebersichten in den gildenabhaengig gespeicherten Worldbuff-Channel.")
     print(f"Hordenbuff-Channels: {sorted(HORDENBUFF_CHANNEL_IDS)}")
