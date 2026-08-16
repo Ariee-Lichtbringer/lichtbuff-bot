@@ -2120,6 +2120,31 @@ def raid_announcement_is_stale(raid):
     return False
 
 
+def po_payload_is_stale(payload):
+    """Vergangene P0-Anmelder duerfen weder restauriert noch neu gepostet werden."""
+    payload = payload or {}
+    snapshots = [
+        payload,
+        payload.get("raidSnapshot") if isinstance(payload.get("raidSnapshot"), dict) else {},
+        payload.get("combinedRaidSnapshot") if isinstance(payload.get("combinedRaidSnapshot"), dict) else {},
+    ]
+    for candidate in snapshots:
+        status = clean(candidate.get("status") or candidate.get("raidStatus")).lower()
+        if status in {
+            "archiviert", "archive", "archived", "gelöscht", "geloescht", "deleted",
+            "abgesagt", "cancelled", "canceled",
+        }:
+            return True
+        raid_date = clean(
+            candidate.get("raidDate") or candidate.get("date") or candidate.get("datum")
+        )[:10]
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raid_date):
+            today = datetime.now(ZoneInfo("Europe/Berlin")).date().isoformat()
+            if raid_date < today:
+                return True
+    return False
+
+
 async def delete_po_post_from_queue(payload):
     payload = payload or {}
     channel_id = clean(
@@ -4149,7 +4174,7 @@ async def load_payloads_from_api_entries():
         source_channel_id = clean(entry.get("sourceChannelId") or target_channel_id)
         if not post_key or not message_id or not target_channel_id:
             continue
-        payloads[post_key] = {
+        restored_payload = {
             "guildSlug": payload_guild_slug(entry),
             "postKey": post_key,
             "raid": normalize_raid(entry.get("raid")),
@@ -4167,6 +4192,13 @@ async def load_payloads_from_api_entries():
             "lichtlootPlayerPin": clean(entry.get("lichtlootPlayerPin") or entry.get("raidPin") or entry.get("prioPin") or entry.get("lichtlootRaidId")),
             "source": "lichtloot_restore",
         }
+        if po_payload_is_stale(restored_payload):
+            print(
+                "Vergangenen P0-Anmelder beim Laden uebersprungen: "
+                f"{post_key} ({restored_payload.get('date') or '-'})"
+            )
+            continue
+        payloads[post_key] = restored_payload
     return list(payloads.values())
 
 
@@ -4190,6 +4222,8 @@ def quick_items_for_payload(payload):
 
 def register_po_view(client, payload, items=None, entries=None):
     payload = payload_with_saved_lichtloot_id(payload)
+    if po_payload_is_stale(payload):
+        return False
     message_id = clean(payload.get("messageId"))
     if not message_id:
         return False
@@ -4207,6 +4241,13 @@ def register_po_view(client, payload, items=None, entries=None):
 
 
 async def restore_po_view_fast(client, payload):
+    if po_payload_is_stale(payload):
+        print(
+            "Vergangenen P0-Anmelder nicht wiederhergestellt: "
+            f"{clean(payload.get('postKey')) or '?'} "
+            f"({clean(payload.get('raidDate') or payload.get('date')) or '-'})"
+        )
+        return [], []
     register_po_view(client, payload, quick_items_for_payload(payload), [])
     try:
         items = await items_for_payload(payload)
@@ -6299,6 +6340,8 @@ def po_message_parts(payload, entries, p0plus_labels, items):
 
 async def refresh_po_message(client, payload):
     payload = payload_with_saved_lichtloot_id(payload)
+    if po_payload_is_stale(payload):
+        raise RuntimeError("Vergangener oder archivierter P0-Anmelder wird nicht aktualisiert.")
     target_channel_id = await resolve_po_target_channel_id(client, payload)
     if not target_channel_id:
         raise RuntimeError("PO-Anmelder ohne Ziel-Channel.")
@@ -6339,6 +6382,8 @@ async def refresh_po_message_safely(client, payload):
 async def post_or_update_from_queue(client, payload):
     payload = dict(payload or {})
     payload["guildSlug"] = payload_guild_slug(payload)
+    if po_payload_is_stale(payload):
+        raise RuntimeError("Vergangener oder archivierter P0-Anmelder wird nicht gepostet.")
     post_key = clean(payload.get("postKey") or payload.get("poPostKey") or payload.get("postId"))
     if not post_key and clean(payload.get("source")).lower() == "p0_review":
         raid_key = normalize_raid(payload.get("raid") or payload.get("raidName"))
@@ -6792,6 +6837,14 @@ async def po_queue_loop():
                         if item_type == "p0_post_refresh":
                             payload["source"] = payload.get("source") or "p0_review"
                             payload["mode"] = payload.get("mode") or "po-anmelder"
+                        if item_type in {"po_post", "p0_post_refresh"} and po_payload_is_stale(payload):
+                            await resolve_queue_item(item.get("rowNumber"))
+                            print(
+                                "Vergangenen P0-Anmelder erledigt markiert, nicht gepostet: "
+                                f"{current_guild_slug()}:{payload.get('postKey') or item.get('rowNumber')} "
+                                f"datum={clean(payload.get('raidDate') or payload.get('date')) or '-'}"
+                            )
+                            continue
                         if mode not in {"signup", "anmelder", "po_signup", "po-anmelder"} and item_type != "p0_post_refresh":
                             await resolve_queue_item(item.get("rowNumber"))
                             print(f"Alter PO-Post-Auftrag uebersprungen und erledigt markiert: {payload.get('postKey') or item.get('rowNumber')}")
