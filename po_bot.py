@@ -1436,6 +1436,13 @@ def build_raid_announcement_embed(raid):
     if announcement_message and announcement_message not in description:
         description = f"{description}\n\n{announcement_message}"
     embed = discord.Embed(title=raid_name.upper(), description=description[:3900], color=0x7c3aed)
+    shared_post_id = clean(raid.get("signupPostId") or raid.get("postKey") or raid.get("postId"))
+    if not shared_post_id:
+        raid_id = clean(raid.get("raidId") or raid.get("id") or raid.get("playerPin") or raid.get("prioPin"))
+        raid_key = normalize_raid(raid.get("raid") or raid.get("raidName")).lower()
+        shared_post_id = clean(f"{raid_key}-raid-anmelder-{raid_id}".strip("-"))
+    if shared_post_id:
+        embed.set_footer(text=f"Post-ID: {shared_post_id}")
     embed.add_field(name="Raidlead", value=clean(raid.get("createdBy") or raid.get("erstelltVon") or "Gildenleitung"), inline=True)
     embed.add_field(
         name="Tag / Datum",
@@ -1774,7 +1781,13 @@ def raid_signup_class_options():
 
 
 def raid_signup_source(interaction, origin_channel_id=None, origin_message_id=None):
-    return f"DiscordSignup:{origin_channel_id or interaction.channel_id}:{origin_message_id or getattr(interaction.message, 'id', '')}"
+    message = getattr(interaction, "message", None)
+    for embed in getattr(message, "embeds", []) or []:
+        footer_text = clean(getattr(getattr(embed, "footer", None), "text", ""))
+        post_id_match = re.search(r"(?:^|\s)Post-ID:\s*(\S+)", footer_text, re.IGNORECASE)
+        if post_id_match:
+            return f"LichtLootPost:{clean(post_id_match.group(1))}"
+    return f"DiscordSignup:{origin_channel_id or interaction.channel_id}:{origin_message_id or getattr(message, 'id', '')}"
 
 
 def add_raid_signup_roster_fields(embed, helper):
@@ -6250,6 +6263,12 @@ def po_message_parts(payload, entries, p0plus_labels, items):
     raid = combined_raid_snapshot(payload)
     if not raid:
         return [po_embed], PoView(payload, items, entries)
+    raid = {
+        **raid,
+        # Ein kombinierter Discord-Post hat genau eine gemeinsame ID. Der
+        # Raid- und der P0-Teil zeigen und verwenden deshalb denselben postKey.
+        "signupPostId": clean(payload.get("postKey") or payload.get("poPostKey") or payload.get("postId")),
+    }
     raid_embed = build_raid_announcement_embed(raid)
     helper = {
         "raid": raid,
@@ -7039,6 +7058,7 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                 # Channels über Raidtyp + Datum zuordnen. Das repariert auch
                 # historisch falsche gespeicherte Channel-/Message-IDs.
                 discovered_messages = {}
+                duplicate_raid_messages = {}
                 try:
                     channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
                     async for candidate in channel.history(limit=100):
@@ -7058,19 +7078,38 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                             if raid_date and raid_date not in field_text and format_raid_announcement_date(raid_date) not in field_text:
                                 continue
                             raid_id = clean(raid.get("raidId") or raid.get("id"))
-                            discovered_messages[raid_id] = candidate
-                            raid["discordChannelId"] = channel_id
-                            raid["discordMessageId"] = str(candidate.id)
-                            await asyncio.to_thread(api_post, {
-                                "action": "lichtbotSetRaidDiscordMessage",
-                                "queueToken": QUEUE_TOKEN,
-                                "guild": guild_slug,
-                                "guildSlug": guild_slug,
-                                "raidId": raid_id,
-                                "discordChannelId": channel_id,
-                                "discordMessageId": str(candidate.id),
-                            })
+                            matches = duplicate_raid_messages.setdefault(raid_id, [])
+                            matches.append(candidate)
+                            # Der ursprüngliche kombinierte Raid-/P0-Anmelder
+                            # hat Vorrang. Bei gleicher Bauart bleibt der
+                            # ältere Post bestehen; ein später erzeugtes
+                            # Duplikat darf die Ziel-ID nicht überschreiben.
+                            preferred = min(
+                                matches,
+                                key=lambda message: (
+                                    0 if len(getattr(message, "embeds", []) or []) > 1 else 1,
+                                    int(message.id),
+                                ),
+                            )
+                            discovered_messages[raid_id] = preferred
                             break
+
+                    for raid in active_raids:
+                        raid_id = clean(raid.get("raidId") or raid.get("id"))
+                        candidate = discovered_messages.get(raid_id)
+                        if candidate is None:
+                            continue
+                        raid["discordChannelId"] = channel_id
+                        raid["discordMessageId"] = str(candidate.id)
+                        await asyncio.to_thread(api_post, {
+                            "action": "lichtbotSetRaidDiscordMessage",
+                            "queueToken": QUEUE_TOKEN,
+                            "guild": guild_slug,
+                            "guildSlug": guild_slug,
+                            "raidId": raid_id,
+                            "discordChannelId": channel_id,
+                            "discordMessageId": str(candidate.id),
+                        })
                 except Exception as error:
                     print(f"Raidanmelder im aktuellen Channel konnten nicht vorab zugeordnet werden: {error}")
 
@@ -7088,6 +7127,20 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                         )
                         if refreshed is True:
                             raid_refreshed += 1
+                            raid_id = clean(raid.get("raidId") or raid.get("id"))
+                            preferred = discovered_messages.get(raid_id)
+                            for duplicate in duplicate_raid_messages.get(raid_id, []):
+                                if preferred is None or duplicate.id == preferred.id:
+                                    continue
+                                try:
+                                    await duplicate.delete()
+                                    print(f"Doppelten Raidanmelder entfernt: {raid_id} -> {duplicate.id}")
+                                except discord.NotFound:
+                                    pass
+                                except Exception as error:
+                                    errors.append(
+                                        f"Doppelter Raidanmelder {duplicate.id} konnte nicht entfernt werden: {error}"
+                                    )
                         elif refreshed in {"foreign_message", "missing_message"}:
                             old_message = None
                             try:
