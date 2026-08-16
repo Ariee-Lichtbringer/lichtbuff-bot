@@ -3521,7 +3521,10 @@ def generated_pin(seed, length):
 
 def ensure_payload_lichtloot_raid(payload):
     payload = payload_with_saved_lichtloot_id(payload)
-    if payload_lichtloot_raid_pin(payload):
+    # Eine vorhandene kanonische Raid-ID ist bindend. Fehlt in einem alten
+    # Refresh-Payload nur die Prio-PIN, darf daraus niemals ein künstlicher
+    # zweiter Raid mit der P0-Post-ID entstehen.
+    if payload_lichtloot_raid_id(payload) or payload_lichtloot_raid_pin(payload):
         return payload
     prio_pin = generated_pin(payload.get("postKey") or payload.get("raid") or "po", 3)
     lead_pin = generated_pin((payload.get("postKey") or "") + "-lead", 4)
@@ -6504,6 +6507,15 @@ async def refresh_po_message(client, payload):
     if channel is None:
         raise RuntimeError(f"PO-Anmelder Ziel-Channel nicht erreichbar: {target_channel_id}")
     message = await channel.fetch_message(int(payload["messageId"]))
+    if not message_is_po_signup(message):
+        print(
+            "P0-Refresh verweist auf einen Raidanmelder; "
+            f"separater P0-Anmelder wird erstellt ({payload.get('postKey')}/{message.id})."
+        )
+        payload["messageId"] = ""
+        payload["discordMessageId"] = ""
+        await post_or_update_from_queue(client, payload)
+        return
     items = await items_for_payload(payload)
     entries = await load_entries(payload)
     p0plus_labels = await load_p0plus_labels(payload.get("raid") or "")
@@ -6629,7 +6641,13 @@ async def post_or_update_from_queue(client, payload):
         if force_new_message and previous_message_id and previous_message_id != normalized["messageId"]:
             try:
                 previous_message = await channel.fetch_message(int(previous_message_id))
-                await previous_message.delete()
+                if message_is_po_signup(previous_message):
+                    await previous_message.delete()
+                else:
+                    print(
+                        "Alte P0-Message-ID verweist auf einen Raidanmelder; "
+                        f"Nachricht wird nicht als P0 gelöscht ({post_key}/{previous_message_id})."
+                    )
             except Exception as error:
                 print(
                     f"Alter PO-Anmelder konnte nach dem Neuposten nicht entfernt werden "
@@ -7809,6 +7827,65 @@ async def restart_all_active_signup_posts():
                 payloads.extend(
                     payload for payload in load_state().values() if isinstance(payload, dict)
                 )
+
+            # Bereits auf der LichtLoot-Raidseite vorhandene P0-Anmeldungen
+            # müssen auch dann einen Discord-P0-Anmelder bekommen, wenn aus
+            # dem alten kombinierten System noch keine po_post_entries-
+            # Konfiguration existiert.
+            known_raid_ids = {
+                payload_lichtloot_raid_id(payload)
+                for payload in payloads
+                if isinstance(payload, dict) and payload_lichtloot_raid_id(payload)
+            }
+            for raid in current_raids:
+                raid_id = clean(raid.get("raidId") or raid.get("id"))
+                if not raid_id or raid_id in known_raid_ids:
+                    continue
+                try:
+                    p0_result = await asyncio.to_thread(api_get, {
+                        "action": "getP0DiscordSignups",
+                        "queueToken": QUEUE_TOKEN,
+                        "guild": guild_slug,
+                        "guildSlug": guild_slug,
+                        "raidId": raid_id,
+                        "status": "all",
+                        "t": int(time.time() * 1000),
+                    })
+                    p0_entries = list(p0_result.get("entries") or [])
+                except Exception as error:
+                    errors.append(f"P0-Zuordnung für Raid {raid_id}: {error}")
+                    continue
+                if not p0_entries:
+                    continue
+                latest_entry = p0_entries[0]
+                target_channel_id = clean(
+                    latest_entry.get("discordChannelId")
+                    or raid.get("discordChannelId")
+                    or raid.get("discord_channel_id")
+                )
+                if not target_channel_id:
+                    errors.append(f"P0-Anmelder {raid_id}: Discord-Zielchannel fehlt.")
+                    continue
+                raid_key = normalize_raid(raid.get("raid") or raid.get("raidName")).lower()
+                payloads.append({
+                    "guildSlug": normalize_guild_slug(guild_slug),
+                    "postKey": f"{raid_key}-po-anmelder-{raid_id}",
+                    "source": "p0_review",
+                    "mode": "po-anmelder",
+                    "title": f"{display_raid(raid_key)} P0-Anmelder",
+                    "raid": raid_key,
+                    "raidDate": clean(raid.get("raidDate") or raid.get("date")),
+                    "raidTime": clean(raid.get("raidTime") or raid.get("time")),
+                    "targetChannelId": target_channel_id,
+                    "sourceChannelId": target_channel_id,
+                    "messageId": clean(latest_entry.get("discordMessageId")),
+                    "discordMessageId": clean(latest_entry.get("discordMessageId")),
+                    "lichtlootRaidId": raid_id,
+                    "raidId": raid_id,
+                    "lichtlootPlayerPin": clean(raid.get("playerPin") or raid.get("prioPin")),
+                    "raidPin": clean(raid.get("playerPin") or raid.get("prioPin")),
+                })
+                known_raid_ids.add(raid_id)
 
             seen_po_posts = set()
             for raw_payload in payloads:
