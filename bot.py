@@ -399,14 +399,14 @@ async def refresh_guild_registry():
         if not isinstance(layout, dict):
             layout = {}
         for configured_key in (
-            "worldbuffChannelId", "worldbuffReplacementChannelId", "worldbuffBackupChannelId",
+            "worldbuffChannelId", "worldbuffBackupChannelId",
             "hordenbuffChannelId", "p0PlusBackupChannelId", "logSourceChannelId", "logAnalysisChannelId"
         ):
             channel_id = clean_channel_id_value(layout.get(configured_key))
             if channel_id:
                 numeric_channel_id = int(channel_id)
                 configured_channel_slugs[numeric_channel_id] = slug_value
-                if configured_key in ("worldbuffChannelId", "worldbuffReplacementChannelId"):
+                if configured_key == "worldbuffChannelId":
                     TICKER_CHANNEL_IDS.add(numeric_channel_id)
                 if configured_key == "hordenbuffChannelId":
                     HORDENBUFF_CHANNEL_IDS.add(numeric_channel_id)
@@ -597,7 +597,7 @@ def ticker_channel_ids_for_current_guild():
     guild_slug = current_guild_slug()
     channel_ids = set()
     layout = current_guild_layout()
-    for key in ("worldbuffChannelId", "worldbuffReplacementChannelId"):
+    for key in ("worldbuffChannelId",):
         configured_channel_id = clean_channel_id_value(layout.get(key))
         if configured_channel_id:
             channel_ids.add(int(configured_channel_id))
@@ -698,13 +698,12 @@ def worldbuff_replacement_channel_ids(target, payload=None):
     direct_channel_id = clean_channel_id_value(
         payload.get("targetChannelId")
         or payload.get("channelId")
-        or payload.get("worldbuffReplacementChannelId")
     )
     if direct_channel_id:
         return [int(direct_channel_id)]
 
     configured_channel_id = clean_channel_id_value(
-        current_guild_layout().get("worldbuffReplacementChannelId") or get_configured_worldbuff_channel_id()
+        get_configured_worldbuff_channel_id()
     )
     return [int(configured_channel_id)] if configured_channel_id else []
 
@@ -730,7 +729,7 @@ def get_configured_worldbuff_channel_id():
     guild_slug = current_guild_slug()
     layout = current_guild_layout()
     configured_channel_id = clean_channel_id_value(
-        layout.get("worldbuffChannelId") or layout.get("worldbuffReplacementChannelId")
+        layout.get("worldbuffChannelId")
     )
     if configured_channel_id:
         return configured_channel_id
