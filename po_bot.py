@@ -2156,8 +2156,8 @@ def raid_announcement_is_stale(raid):
         "abgesagt", "cancelled", "canceled",
     }:
         return True
-    raid_date = clean(raid.get("raidDate") or raid.get("date") or raid.get("datum"))[:10]
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raid_date):
+    raid_date = canonical_raid_date(raid.get("raidDate") or raid.get("date") or raid.get("datum"))
+    if raid_date:
         today = datetime.now(ZoneInfo("Europe/Berlin")).date().isoformat()
         if raid_date < today:
             return True
@@ -2179,10 +2179,10 @@ def po_payload_is_stale(payload):
             "abgesagt", "cancelled", "canceled",
         }:
             return True
-        raid_date = clean(
+        raid_date = canonical_raid_date(
             candidate.get("raidDate") or candidate.get("date") or candidate.get("datum")
-        )[:10]
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raid_date):
+        )
+        if raid_date:
             today = datetime.now(ZoneInfo("Europe/Berlin")).date().isoformat()
             if raid_date < today:
                 return True
@@ -3392,6 +3392,33 @@ def normalize_post_date(value):
         year, month, day = text.split("-")
         return f"{day}.{month}.{year}"
     return text
+
+
+def canonical_raid_date(value):
+    """Normalisiert API-, deutsche und alte JavaScript-Datumswerte auf ISO."""
+    text = clean(value)
+    iso_match = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", text)
+    if iso_match:
+        return "-".join(iso_match.groups())
+    german_match = re.search(r"\b(\d{2})\.(\d{2})\.(\d{4})\b", text)
+    if german_match:
+        day, month, year = german_match.groups()
+        return f"{year}-{month}-{day}"
+    js_match = re.search(
+        r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+"
+        r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+"
+        r"(\d{1,2})\s+(\d{4})\b",
+        text,
+        re.IGNORECASE,
+    )
+    if js_match:
+        month_name, day, year = js_match.groups()
+        month = {
+            "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+            "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+        }[month_name.lower()]
+        return f"{year}-{month:02d}-{int(day):02d}"
+    return ""
 
 
 def normalize_post_time(value):
@@ -6604,6 +6631,48 @@ async def post_or_update_from_queue(client, payload):
     }
     normalized = payload_with_lichtloot_id_from_sources(normalized, stored)
     normalized = await asyncio.to_thread(ensure_payload_lichtloot_raid, normalized)
+
+    # Zentrale Ein-Post-Garantie: Unabhängig davon, ob der Auftrag als
+    # raid_announcement-Folgepost, p0_post oder Refresh ankommt, darf im
+    # selben Channel niemals ein zweiter P0-Anmelder entstehen. Existiert am
+    # kanonischen Raid bereits eine Discord-Nachricht, wird ausschließlich
+    # diese zum kombinierten Raid-/P0-Anmelder erweitert.
+    canonical_raid_id = payload_lichtloot_raid_id(normalized)
+    if canonical_raid_id:
+        try:
+            canonical_helper = await get_raid_helper_for_refresh(normalized)
+            canonical_raid = dict((canonical_helper or {}).get("raid") or {})
+            canonical_channel_id = clean(
+                canonical_raid.get("discordChannelId")
+                or canonical_raid.get("discord_channel_id")
+            )
+            canonical_message_id = clean(
+                canonical_raid.get("discordMessageId")
+                or canonical_raid.get("discord_message_id")
+            )
+            if (
+                canonical_helper
+                and canonical_helper.get("success")
+                and canonical_channel_id == str(target_channel_id)
+                and canonical_message_id
+            ):
+                canonical_helper = preserve_raidhelper_signups(canonical_helper, normalized)
+                normalized.update({
+                    "messageId": canonical_message_id,
+                    "discordMessageId": canonical_message_id,
+                    "combinedRaidSnapshot": canonical_raid,
+                    "combinedRaidSignups": canonical_helper.get("signups") or [],
+                    "combinedRaidExternalSignups": canonical_helper.get("externalSignups") or [],
+                    "forceNewMessage": "false",
+                    "forceRepost": "false",
+                })
+                previous_message_id = canonical_message_id
+                force_new_message = False
+        except Exception as error:
+            print(
+                "Zentrale P0-Ein-Post-Prüfung konnte den Raid nicht laden "
+                f"({canonical_raid_id}): {error}"
+            )
     if force_new_message and not previous_message_id:
         previous_message_id = await find_existing_message_id(client, normalized)
     elif not normalized.get("messageId"):
@@ -7552,18 +7621,45 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                 errors.append(f"PO-Anmelder konnten nicht vollständig geladen werden: {error}")
 
             seen_messages = set()
+            seen_po_raids = set()
             for raw_payload in payloads:
                 payload = dict(raw_payload or {})
                 paired_raid = None
                 paired_with_raid_post = False
                 payload_raid_id = payload_lichtloot_raid_id(payload)
+                payload_raid_pin = payload_lichtloot_raid_pin(payload)
                 for candidate in current_raids:
                     candidate_raid_id = clean(candidate.get("raidId") or candidate.get("id"))
                     if payload_raid_id and candidate_raid_id == payload_raid_id:
                         paired_raid = candidate
                         break
 
-                if paired_raid and payload.get("combineRaidAndPo") is True:
+                if paired_raid is None and payload_raid_pin:
+                    pin_matches = [
+                        candidate for candidate in current_raids
+                        if payload_lichtloot_raid_pin(candidate) == payload_raid_pin
+                    ]
+                    if len(pin_matches) == 1:
+                        paired_raid = pin_matches[0]
+
+                if paired_raid is None:
+                    post_date, post_time = po_schedule_from_post_key(payload)
+                    payload_raid = normalize_raid(payload.get("raid") or payload.get("title"))
+                    schedule_matches = [
+                        candidate for candidate in current_raids
+                        if normalize_raid(candidate.get("raid") or candidate.get("raidName")) == payload_raid
+                        and (not post_date or canonical_raid_date(candidate.get("raidDate") or candidate.get("date")) == post_date)
+                        and (not post_time or normalize_post_time(candidate.get("raidTime") or candidate.get("time")) == post_time)
+                    ]
+                    if len(schedule_matches) == 1:
+                        paired_raid = schedule_matches[0]
+
+                original_message_id = clean(payload.get("messageId") or payload.get("discordMessageId"))
+                if paired_raid:
+                    payload = payload_with_lichtloot_id_from_sources(payload, paired_raid)
+                    payload_raid_id = payload_lichtloot_raid_id(payload)
+
+                if paired_raid:
                     paired_channel_id = clean(
                         paired_raid.get("discordChannelId") or paired_raid.get("discord_channel_id")
                     )
@@ -7584,6 +7680,23 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                                 "combinedRaidExternalSignups": helper.get("externalSignups") or [],
                             })
                             paired_with_raid_post = True
+
+                po_raid_identity = payload_raid_id or clean(payload.get("postKey"))
+                if po_raid_identity in seen_po_raids:
+                    if original_message_id and original_message_id != clean(payload.get("messageId")):
+                        try:
+                            duplicate_channel = await fetch_accessible_channel(client, channel_id)
+                            duplicate = await duplicate_channel.fetch_message(int(original_message_id))
+                            if message_is_po_signup(duplicate):
+                                await duplicate.delete()
+                                print(
+                                    "Zweiten P0-Anmelder desselben Raids entfernt: "
+                                    f"{po_raid_identity} -> {original_message_id}"
+                                )
+                        except (discord.NotFound, discord.Forbidden, ValueError):
+                            pass
+                    continue
+                seen_po_raids.add(po_raid_identity)
 
                 payload_channel_id = clean(
                     payload.get("targetChannelId")
