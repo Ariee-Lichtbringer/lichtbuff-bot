@@ -5583,13 +5583,15 @@ async def enrich_calendar_events_with_signups(events, guild_slug):
                 if helper_max:
                     event["maxPlayers"] = helper_max
         except Exception as error:
-            # Raids ohne LichtLoot-Anmelder behalten den vom Kalender
-            # übergebenen Wert. Das betrifft derzeit vor allem andere Raids
-            # als ZG und AQ20.
             print(
                 "Kalender-Anmeldungen konnten nicht geladen werden "
                 f"({clean(event.get('name') or event.get('raid'))}): {error}"
             )
+            # Den vorhandenen Discord-Post bei einem vorübergehenden API-Fehler
+            # nicht mit einer unvollständigen Kalenderfassung überschreiben.
+            raise RuntimeError(
+                "Kalender-Anmeldungen konnten nicht vollständig geladen werden."
+            ) from error
         enriched.append(event)
         await asyncio.sleep(0.1)
     return enriched
