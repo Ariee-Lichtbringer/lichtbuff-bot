@@ -2153,6 +2153,35 @@ def raid_signup_row_count(helper):
     return len((helper or {}).get("signups") or []) + len((helper or {}).get("externalSignups") or [])
 
 
+def raid_signup_fixed_count(helper):
+    """Zaehlt fuer den Raidkalender ausschliesslich feste Anmeldungen."""
+    rows = list((helper or {}).get("signups") or []) + list((helper or {}).get("externalSignups") or [])
+    excluded_statuses = {
+        "absent", "abwesend", "abgemeldet", "cancelled", "canceled", "declined",
+        "bench", "bank",
+        "late", "spät", "spaet",
+        "tentative", "vorläufig", "vorlaeufig",
+    }
+    multi_roles = {"multi", "multichar", "multi-char", "multi char"}
+    return sum(
+        1 for row in rows
+        if clean(row.get("status")).lower() not in excluded_statuses
+        and clean(row.get("role")).lower() not in multi_roles
+    )
+
+
+def raid_signup_calendar_status_counts(helper):
+    """Liefert die getrennten Zusatzstatus fuer die kompakte Kalenderanzeige."""
+    rows = list((helper or {}).get("signups") or []) + list((helper or {}).get("externalSignups") or [])
+    statuses = [clean(row.get("status")).lower() for row in rows]
+    return {
+        "bank": sum(status in {"bench", "bank"} for status in statuses),
+        "absent": sum(status in {"absent", "abwesend", "abgemeldet", "cancelled", "canceled", "declined"} for status in statuses),
+        "late": sum(status in {"late", "spät", "spaet"} for status in statuses),
+        "tentative": sum(status in {"tentative", "vorläufig", "vorlaeufig"} for status in statuses),
+    }
+
+
 def raid_announcement_is_stale(raid):
     raid = raid or {}
     status = clean(raid.get("status") or raid.get("raidStatus")).lower()
@@ -5544,7 +5573,11 @@ async def enrich_calendar_events_with_signups(events, guild_slug):
         try:
             helper = await get_raid_helper_for_refresh(lookup)
             if helper and helper.get("success"):
-                event["signups"] = raid_signup_row_count(helper)
+                # Die Kalenderbelegung zeigt nur feste Anmeldungen. Bank,
+                # Abwesenheit, verspätet, vorläufig und Multi Char bleiben
+                # im Raidanmelder sichtbar, belegen aber keinen Raidplatz.
+                event["signups"] = raid_signup_fixed_count(helper)
+                event["signupStatusCounts"] = raid_signup_calendar_status_counts(helper)
                 raid = helper.get("raid") if isinstance(helper.get("raid"), dict) else {}
                 helper_max = clean(raid.get("maxPlayers") or raid.get("max_players"))
                 if helper_max:
@@ -5616,7 +5649,19 @@ async def publish_raid_calendar(payload):
             links = f"[💬 Raid-Channel]({discord_link})"
             if prio_url:
                 links += f" · [{custom_emoji('beutelilia', '🟣')} Prios eintragen]({prio_url})"
-            lines.append(f"{time_label} · 👥 `{count_text}` · {raid_icon} **{name}**{relative}\n└ {links}")
+            status_counts = event.get("signupStatusCounts") if isinstance(event.get("signupStatusCounts"), dict) else {}
+            status_parts = [
+                ("🪑 Bank", int(status_counts.get("bank") or 0)),
+                ("🚫 Abwesend", int(status_counts.get("absent") or 0)),
+                ("🕒 Verspätet", int(status_counts.get("late") or 0)),
+                ("⚖️ Vorläufig", int(status_counts.get("tentative") or 0)),
+            ]
+            status_line = " · ".join(f"{label} **{value}**" for label, value in status_parts if value)
+            status_line = f"└ {status_line}\n" if status_line else ""
+            lines.append(
+                f"{time_label} · 👥 Fest `{count_text}` · {raid_icon} **{name}**{relative}\n"
+                f"{status_line}└ {links}"
+            )
         embed.add_field(name=field_name, value="\n\n".join(lines)[:1024] or "–", inline=False)
     embed.set_footer(text="Europe/Berlin · Automatisch erstellt und aktualisiert durch LichtLoot")
     state = load_state()
