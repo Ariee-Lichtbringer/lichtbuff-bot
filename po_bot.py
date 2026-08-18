@@ -5465,10 +5465,9 @@ async def delete_entry(payload, entry, user):
     })
     if not result.get("success"):
         raise RuntimeError(result.get("error") or "PO-Eintrag konnte nicht gelöscht werden.")
-    if int(result.get("deleted") or 0) < 1:
-        raise RuntimeError(
-            "Der PO-Eintrag wurde nicht gefunden. Der Anmelder wird neu geladen; bitte danach erneut prüfen."
-        )
+    # Idempotent löschen: Wurde die Prio zuvor bereits auf LichtLoot entfernt,
+    # ist `deleted == 0` kein Fehler. Der Aufrufer aktualisiert trotzdem genau
+    # den bestehenden Discord-Anmelder und entfernt so dessen alten Snapshot.
     return result
 
 
@@ -6898,24 +6897,16 @@ async def refresh_po_message(client, payload):
     if channel is None:
         raise RuntimeError(f"PO-Anmelder Ziel-Channel nicht erreichbar: {target_channel_id}")
     if combined_raid_snapshot(payload):
-        payload = dict(payload)
-        payload.pop("combinedRaidSnapshot", None)
-        payload.pop("combinedRaidSignups", None)
-        payload.pop("combinedRaidExternalSignups", None)
-        payload["messageId"] = ""
-        payload["discordMessageId"] = ""
-        await post_or_update_from_queue(client, payload)
-        return
+        raise RuntimeError(
+            "Der gespeicherte P0-Verweis zeigt auf einen alten kombinierten Anmelder; "
+            "bei einer Aktualisierung wird kein neuer Post erzeugt."
+        )
     message = await channel.fetch_message(int(payload["messageId"]))
     if not message_is_po_signup(message):
-        print(
-            "P0-Refresh verweist auf einen Raidanmelder; "
-            f"separater P0-Anmelder wird erstellt ({payload.get('postKey')}/{message.id})."
+        raise RuntimeError(
+            "P0-Refresh verweist nicht auf den bestehenden P0-Anmelder; "
+            f"es wird kein neuer Post erzeugt ({payload.get('postKey')}/{message.id})."
         )
-        payload["messageId"] = ""
-        payload["discordMessageId"] = ""
-        await post_or_update_from_queue(client, payload)
-        return
     items = await items_for_payload(payload)
     entries = await load_entries(payload)
     p0plus_labels = await load_p0plus_labels(payload.get("raid") or "")
@@ -6956,6 +6947,7 @@ async def post_or_update_from_queue(client, payload):
     update_existing_only = source in {
         "lichtloot_prio_saved", "raidlead_prio_saved",
         "player_prio_deleted", "raidlead_prio_deleted", "guild_prio_deleted",
+        "po_entry_delete", "po_entry_deleted", "po_entry_delete_already_missing",
     }
     if not post_key and clean(payload.get("source")).lower() == "p0_review":
         raid_key = normalize_raid(payload.get("raid") or payload.get("raidName"))
@@ -6980,7 +6972,7 @@ async def post_or_update_from_queue(client, payload):
     state_key = po_post_state_key(payload)
     stored = state.get(state_key) or state.get(post_key) or {}
     legacy_combined = bool(combined_raid_snapshot(stored) or combined_raid_snapshot(payload))
-    if legacy_combined:
+    if legacy_combined and not update_existing_only:
         update_existing_only = False
     force_new_message = clean(
         payload.get("forceNewMessage") or payload.get("forceRepost")
@@ -8139,12 +8131,11 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                         await refresh_po_message(client, payload)
                     po_refreshed += 1
                 except discord.NotFound:
-                    # Ein aktiver P0-Anmelder darf nach dem Löschen seiner
-                    # Discord-Nachricht nicht dauerhaft verschwinden.
-                    payload["messageId"] = ""
-                    payload["discordMessageId"] = ""
-                    await post_or_update_from_queue(client, payload)
-                    po_refreshed += 1
+                    errors.append(
+                        f"PO {clean(payload.get('title') or payload.get('postKey'))}: "
+                        "Gespeicherter P0-Anmelder nicht gefunden; es wurde kein neuer Post erstellt."
+                    )
+                    continue
                 except Exception as error:
                     errors.append(f"PO {clean(payload.get('title') or payload.get('postKey'))}: {error}")
                     continue
