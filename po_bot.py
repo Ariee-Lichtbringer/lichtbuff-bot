@@ -7343,7 +7343,15 @@ async def po_queue_loop():
                                     "targetChannelId": followup_target_channel_id,
                                     "channelId": followup_target_channel_id,
                                     "restoreArchived": "true",
-                                    "forceNewMessage": "false",
+                                    # Bei einer ausdrücklich angeforderten
+                                    # Neuerstellung wurden Raid- und P0-Post
+                                    # zuvor manuell gelöscht. Beide Verweise
+                                    # müssen gemeinsam ersetzt werden.
+                                    "forceNewMessage": clean(
+                                        followup.get("forceNewMessage")
+                                        or payload.get("forceNewMessage")
+                                        or payload.get("forceRepost")
+                                    ) or "false",
                                     "lichtlootRaidId": clean(
                                         followup.get("lichtlootRaidId")
                                         or raid.get("raidId")
