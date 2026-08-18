@@ -5583,30 +5583,28 @@ def make_embed(payload, entries, p0plus_labels=None, description_limit=5200):
                 status = "❌"
             else:
                 status = custom_emoji('beuteorange', '🟠')
-            block_lines.append(f"{status} `{player[:22]}`")
+            points = p0plus_points_for_entry(row, p0plus_labels)
+            points_suffix = f" · **{points}**" if points else ""
+            block_lines.append(f"{status} `{player[:22]}`{points_suffix}")
         point_holders = {}
-        for points_row in sorted(
-            p0plus_players_for_item(item_name, p0plus_labels),
-            key=lambda value: slug(value.get("player")),
-        ):
+        for points_row in p0plus_players_for_item(item_name, p0plus_labels):
             player = clean(points_row.get("player"))
             if not player:
                 continue
             key = po_player_key(player)
-            current = point_holders.get(key)
             try:
-                points_value = float(clean(points_row.get("points")).replace(",", "."))
-                current_value = float(clean((current or {}).get("points")).replace(",", ".")) if current else float("-inf")
+                numeric_points = float(clean(points_row.get("points")).replace(",", "."))
             except ValueError:
-                points_value, current_value = 0, -1
-            if current is None or points_value > current_value:
-                point_holders[key] = points_row
-        if point_holders:
-            point_parts = [
-                f"{clean(row.get('player'))} **{clean(row.get('points'))}**"
-                for _, row in sorted(point_holders.items(), key=lambda item: item[0])
-            ]
-            block_lines.append("**P0+-Stand:** " + " · ".join(point_parts))
+                numeric_points = 0
+            current = point_holders.get(key)
+            if current is None or numeric_points > current[0]:
+                point_holders[key] = (numeric_points, player, clean(points_row.get("points")))
+        top_three = sorted(point_holders.values(), key=lambda value: (-value[0], value[1].lower()))[:3]
+        if top_three:
+            block_lines.append(
+                "**Top 3 P0+:** "
+                + " · ".join(f"{player} **{points}**" for _, player, points in top_three)
+            )
         item_blocks.append((f"{item_icon(item_name)} {item_label}", "\n".join(block_lines)))
 
     # Zwei echte Discord-Spalten: Die Itemblöcke werden höhenbalanciert auf
@@ -5640,6 +5638,9 @@ def make_embed(payload, entries, p0plus_labels=None, description_limit=5200):
                 value=value,
                 inline=True,
             )
+        # Discord ordnet sonst bei mehreren Feldpaaren drei Itemspalten in
+        # dieselbe Zeile. Das unsichtbare dritte Feld erzwingt zwei Spalten.
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
     return embed
 
 
@@ -6675,12 +6676,95 @@ class PoLuckSelect(discord.ui.Select):
             await interaction.followup.send(f"⚠️ Kleeblatt ging nicht: `{error}`", ephemeral=True)
 
 
+class PoPointsItemSelect(discord.ui.Select):
+    def __init__(self, payload, items, labels):
+        self.payload = payload
+        self.items = list(items or [])[:25]
+        self.labels = labels or {}
+        options = [
+            discord.SelectOption(label=po_item_name_value(item)[:100], value=str(index), emoji="🏆")
+            for index, item in enumerate(self.items)
+        ]
+        super().__init__(
+            custom_id=f"po-points-item:{payload['postKey'][:55]}",
+            placeholder="Item für vollständigen P0+-Stand wählen",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction):
+        item = self.items[int(self.values[0])]
+        item_name = po_item_name_value(item)
+        rows = p0plus_players_for_item(item_name, self.labels)
+        deduplicated = {}
+        for row in rows:
+            player = clean(row.get("player"))
+            if not player:
+                continue
+            key = po_player_key(player)
+            try:
+                numeric_points = float(clean(row.get("points")).replace(",", "."))
+            except ValueError:
+                numeric_points = 0
+            current = deduplicated.get(key)
+            if current is None or numeric_points > current[0]:
+                deduplicated[key] = (numeric_points, player, clean(row.get("points")))
+        ranking = sorted(deduplicated.values(), key=lambda value: (-value[0], value[1].lower()))
+        if not ranking:
+            await interaction.response.send_message(
+                f"Für **{item_name}** gibt es noch keine P0+-Punkte.", ephemeral=True
+            )
+            return
+        lines = [f"**P0+-Punktestand · {item_name}**"]
+        lines.extend(
+            f"`{index:>2}.` **{player}** · {points}"
+            for index, (_, player, points) in enumerate(ranking, 1)
+        )
+        await interaction.response.send_message("\n".join(lines)[:1900], ephemeral=True)
+
+
+class PoPointsItemView(discord.ui.View):
+    def __init__(self, payload, items, labels):
+        super().__init__(timeout=180)
+        self.add_item(PoPointsItemSelect(payload, items, labels))
+
+
+class PoPointsButton(discord.ui.Button):
+    def __init__(self, payload, items):
+        super().__init__(
+            custom_id=f"po-points:{payload['postKey'][:70]}",
+            label="Alle P0+-Punkte",
+            emoji="🏆",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+        self.payload = payload
+        self.items = list(items or [])
+
+    async def callback(self, interaction):
+        labels = await load_p0plus_labels(self.payload.get("raid") or "")
+        point_items = [
+            item for item in self.items
+            if p0plus_players_for_item(po_item_name_value(item), labels)
+        ][:25]
+        if not point_items:
+            await interaction.response.send_message("Für diesen Raid gibt es noch keine P0+-Punkte.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "Wähle das Item, dessen vollständigen P0+-Punktestand du sehen möchtest.",
+            view=PoPointsItemView(self.payload, point_items, labels),
+            ephemeral=True,
+        )
+
+
 class PoView(discord.ui.View):
     def __init__(self, payload, items, entries=None):
         super().__init__(timeout=None)
         self.add_item(PoSearchButton(payload))
         self.add_item(PoDeleteButton(payload))
         self.add_item(PoRejectButton(payload))
+        self.add_item(PoPointsButton(payload, items))
         self.add_item(PoReviewSelect(payload, entries or []))
 
 
@@ -6695,6 +6779,7 @@ class CombinedRaidPoView(discord.ui.View):
             PoSearchButton(payload),
             PoDeleteButton(payload),
             PoRejectButton(payload),
+            PoPointsButton(payload, items),
         ]:
             component.row = 3
             self.add_item(component)
