@@ -5492,7 +5492,23 @@ async def luck_entry(payload, entry, user):
     return result
 
 
-def make_embed(payload, entries, p0plus_labels=None, description_limit=3900):
+def p0plus_points_for_entry(entry, p0plus_labels):
+    """Liest den Punktestand eines Spielers aus der itembezogenen P0+-Liste."""
+    item_name = po_entry_item_name(entry)
+    player_name = clean(entry.get("player"))
+    label = clean((p0plus_labels or {}).get(slug(item_name)))
+    if not label or not player_name:
+        return ""
+    wanted_player = slug(player_name)
+    for part in label.split(","):
+        value = clean(part)
+        match = re.match(r"^(.*?)\s+(-?\d+(?:[.,]\d+)?)$", value)
+        if match and slug(match.group(1)) == wanted_player:
+            return format_points(match.group(2))
+    return ""
+
+
+def make_embed(payload, entries, p0plus_labels=None, description_limit=5200):
     payload = payload_with_saved_lichtloot_id(payload)
     embed = discord.Embed(
         title=f"📋 {display_raid(payload.get('raid') or '')} PO-Anmelder",
@@ -5514,38 +5530,31 @@ def make_embed(payload, entries, p0plus_labels=None, description_limit=3900):
     if custom_link:
         header_lines.extend([f"🔗 **Link:** {custom_link}", ""])
 
-    grouped = {}
-    for entry in entries:
-        grouped.setdefault(po_entry_item_group_key(entry), []).append(entry)
-
-    if not grouped:
+    if not entries:
         embed.description = "\n".join(header_lines + ["**Anmeldungen (0)**", "Noch keine PO-Anmeldung vorhanden."])[:description_limit]
         return embed
 
-    lines = header_lines + [f"**Anmeldungen ({len(entries)})**"]
+    lines = header_lines + [f"**Anmeldungen ({len(entries)}) · nach Items**"]
     p0plus_labels = p0plus_labels or {}
-    for item_key in sorted(grouped.keys(), key=lambda value: po_entry_item_display(grouped[value][0]).lower()):
+    grouped = {}
+    for entry in entries:
+        grouped.setdefault(po_entry_item_group_key(entry), []).append(entry)
+    for item_key in sorted(grouped, key=lambda value: po_entry_item_display(grouped[value][0]).lower()):
         rows = grouped[item_key]
         item_name = po_entry_item_name(rows[0])
-        item_label_base = po_entry_item_display(rows[0])
-        p0_label = p0plus_labels.get(slug(item_name))
-        item_label = f"{item_label_base} ({p0_label})" if p0_label else item_label_base
-        lines.append("")
-        lines.append(f"{item_icon(item_name)} **{item_label}**")
-        players = []
+        item_label = po_entry_item_display(rows[0]) or item_name or "–"
+        lines.extend(["", f"{item_icon(item_name)} **{item_label}**", "Spieler · Status · P0+-Punkte"])
         for row in sorted(rows, key=lambda entry: clean(entry.get("player")).lower()):
-            class_name = class_display_name(row.get("className") or row.get("Klasse"))
-            icon = class_icon(class_name)
+            player = clean(row.get("player")) or "–"
             approval_status = clean(row.get("approvalStatus")).lower()
-            status_icon = (
-                f" {custom_emoji('Beutegrun', '🟢')}"
-                if row.get("approved") or approval_status == "approved"
-                else " ❌"
-                if approval_status == "rejected"
-                else f" {custom_emoji('beuteorange', '🟠')}"
-            )
-            players.append(f"{icon} {clean(row.get('player'))}{status_icon}")
-        lines.append(", ".join(players) or "-")
+            if row.get("approved") or approval_status == "approved":
+                status = f"{custom_emoji('Beutegrun', '🟢')} frei"
+            elif approval_status == "rejected":
+                status = "❌ abgelehnt"
+            else:
+                status = f"{custom_emoji('beuteorange', '🟠')} offen"
+            points = p0plus_points_for_entry(row, p0plus_labels) or "–"
+            lines.append(f"**{player}** · {status} · **{points}**")
 
     description = "\n".join(lines)
     if len(description) > description_limit:
@@ -6696,7 +6705,7 @@ def po_message_parts(payload, entries, p0plus_labels, items):
 
 async def edit_po_signup_message(message, payload, entries, p0plus_labels, view, banner=None):
     """Aktualisiert einen P0-Anmelder und fängt auch alte, zu große Embeds ab."""
-    limits = (3900, 2600, 1800)
+    limits = (5200, 3900, 2600)
     last_error = None
     for description_limit in limits:
         embed = make_embed(payload, entries, p0plus_labels, description_limit=description_limit)
