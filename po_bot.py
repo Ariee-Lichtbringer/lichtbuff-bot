@@ -5492,7 +5492,7 @@ async def luck_entry(payload, entry, user):
     return result
 
 
-def make_embed(payload, entries, p0plus_labels=None):
+def make_embed(payload, entries, p0plus_labels=None, description_limit=3900):
     payload = payload_with_saved_lichtloot_id(payload)
     embed = discord.Embed(
         title=f"📋 {display_raid(payload.get('raid') or '')} PO-Anmelder",
@@ -5519,7 +5519,7 @@ def make_embed(payload, entries, p0plus_labels=None):
         grouped.setdefault(po_entry_item_group_key(entry), []).append(entry)
 
     if not grouped:
-        embed.description = "\n".join(header_lines + ["**Anmeldungen (0)**", "Noch keine PO-Anmeldung vorhanden."])[:3900]
+        embed.description = "\n".join(header_lines + ["**Anmeldungen (0)**", "Noch keine PO-Anmeldung vorhanden."])[:description_limit]
         return embed
 
     lines = header_lines + [f"**Anmeldungen ({len(entries)})**"]
@@ -5547,7 +5547,11 @@ def make_embed(payload, entries, p0plus_labels=None):
             players.append(f"{icon} {clean(row.get('player'))}{status_icon}")
         lines.append(", ".join(players) or "-")
 
-    embed.description = "\n".join(lines)[:3900]
+    description = "\n".join(lines)
+    if len(description) > description_limit:
+        suffix = "\n\n… weitere P0-Anmeldungen sind auf LichtLoot sichtbar."
+        description = description[:max(0, description_limit - len(suffix))].rstrip(" ,\n") + suffix
+    embed.description = description
     return embed
 
 
@@ -6690,6 +6694,25 @@ def po_message_parts(payload, entries, p0plus_labels, items):
     return [po_embed], PoView(payload, items, entries)
 
 
+async def edit_po_signup_message(message, payload, entries, p0plus_labels, view, banner=None):
+    """Aktualisiert einen P0-Anmelder und fängt auch alte, zu große Embeds ab."""
+    limits = (3900, 2600, 1800)
+    last_error = None
+    for description_limit in limits:
+        embed = make_embed(payload, entries, p0plus_labels, description_limit=description_limit)
+        try:
+            if banner:
+                await message.edit(embeds=[embed], attachments=[banner], view=view)
+            else:
+                await message.edit(embeds=[embed], attachments=[], view=view)
+            return
+        except discord.HTTPException as error:
+            last_error = error
+            if getattr(error, "code", None) != 50035:
+                raise
+    raise last_error or RuntimeError("P0-Anmelder konnte nicht aktualisiert werden.")
+
+
 async def refresh_po_message(client, payload):
     payload = payload_with_saved_lichtloot_id(payload)
     if po_payload_is_stale(payload):
@@ -6733,12 +6756,9 @@ async def refresh_po_message(client, payload):
                 "combinedRaidSignups": helper.get("signups") or [],
                 "combinedRaidExternalSignups": helper.get("externalSignups") or [],
             }
-    embeds, view = po_message_parts(payload, entries, p0plus_labels, items)
+    _, view = po_message_parts(payload, entries, p0plus_labels, items)
     banner, _ = raid_banner_file(combined_raid_snapshot(payload) or {})
-    if banner:
-        await message.edit(embeds=embeds, attachments=[banner], view=view)
-    else:
-        await message.edit(embeds=embeds, attachments=[], view=view)
+    await edit_po_signup_message(message, payload, entries, p0plus_labels, view, banner)
     message = await deduplicate_po_messages(client, channel, payload, message)
     payload["messageId"] = str(message.id)
     payload["discordMessageId"] = str(message.id)
@@ -6760,7 +6780,10 @@ async def post_or_update_from_queue(client, payload):
         raise RuntimeError("Vergangener oder archivierter P0-Anmelder wird nicht gepostet.")
     post_key = clean(payload.get("postKey") or payload.get("poPostKey") or payload.get("postId"))
     source = clean(payload.get("source")).lower()
-    update_existing_only = source in {"lichtloot_prio_saved", "raidlead_prio_saved"}
+    update_existing_only = source in {
+        "lichtloot_prio_saved", "raidlead_prio_saved",
+        "player_prio_deleted", "raidlead_prio_deleted", "guild_prio_deleted",
+    }
     if not post_key and clean(payload.get("source")).lower() == "p0_review":
         raid_key = normalize_raid(payload.get("raid") or payload.get("raidName"))
         raid_id = clean(payload.get("raidId") or payload.get("id") or payload.get("raidPin") or payload.get("prioPin"))
@@ -6843,10 +6866,10 @@ async def post_or_update_from_queue(client, payload):
                     f"P0-Anmelder wird separat erstellt ({post_key}/{message.id})."
                 )
                 message = None
-            elif banner:
-                await message.edit(embeds=embeds, attachments=[banner], view=view)
             else:
-                await message.edit(embeds=embeds, attachments=[], view=view)
+                await edit_po_signup_message(
+                    message, normalized, entries, p0plus_labels, view, banner
+                )
         except Exception as error:
             action = "wird gesucht" if update_existing_only else "wird neu gepostet"
             print(f"PO-Anmelder {action}, alte Nachricht nicht nutzbar ({post_key}): {error}")
@@ -6859,10 +6882,10 @@ async def post_or_update_from_queue(client, payload):
                     message = await channel.fetch_message(int(found_message_id))
                     if not message_is_po_signup(message):
                         message = None
-                    elif banner:
-                        await message.edit(embeds=embeds, attachments=[banner], view=view)
                     else:
-                        await message.edit(embeds=embeds, attachments=[], view=view)
+                        await edit_po_signup_message(
+                            message, normalized, entries, p0plus_labels, view, banner
+                        )
                 except Exception as error:
                     print(f"Gefundener P0-Anmelder konnte nicht aktualisiert werden ({post_key}/{found_message_id}): {error}")
                     message = None
