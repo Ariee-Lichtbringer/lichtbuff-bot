@@ -2393,21 +2393,25 @@ async def edit_raid_message_preserving_po(message, raid, helper):
         return
 
     helper = preserve_raidhelper_signups(helper, po_payload)
-    po_payload["combinedRaidSnapshot"] = raid
-    po_payload["combinedRaidSignups"] = list((helper or {}).get("signups") or [])
-    po_payload["combinedRaidExternalSignups"] = list((helper or {}).get("externalSignups") or [])
-    state[state_key] = po_payload
-    save_state(state)
-    items = await items_for_payload(po_payload)
-    entries = await load_entries(po_payload)
-    p0plus_labels = await load_p0plus_labels(po_payload.get("raid") or "")
-    embeds, view = po_message_parts(po_payload, entries, p0plus_labels, items)
+    # Einen alten kombinierten Post beim nächsten Refresh in zwei Nachrichten
+    # aufteilen: Diese Nachricht bleibt der Raidanmelder, der P0-Anmelder wird
+    # anschließend mit eigener Message-ID erstellt.
+    raid_embed = build_raid_announcement_embed(raid)
+    add_raid_signup_roster_fields(raid_embed, helper)
     banner, _ = raid_banner_file(raid)
     if banner:
-        await message.edit(embeds=embeds, attachments=[banner], view=view)
+        await message.edit(embed=raid_embed, attachments=[banner], view=RaidSignupView(raid))
     else:
-        await message.edit(embeds=embeds, attachments=[], view=view)
-    register_po_view(client, po_payload, items, entries)
+        await message.edit(embed=raid_embed, attachments=[], view=RaidSignupView(raid))
+
+    po_payload.pop("combinedRaidSnapshot", None)
+    po_payload.pop("combinedRaidSignups", None)
+    po_payload.pop("combinedRaidExternalSignups", None)
+    po_payload["messageId"] = ""
+    po_payload["discordMessageId"] = ""
+    state[state_key] = po_payload
+    save_state(state)
+    await post_or_update_from_queue(client, po_payload)
 
 
 async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id=None, payload=None):
@@ -4046,12 +4050,20 @@ def format_points(value):
 
 async def load_p0plus_labels(raid):
     raid_key = normalize_raid(raid)
-    cached = p0plus_cache.get(raid_key)
+    guild_slug = current_guild_slug()
+    cache_key = f"{guild_slug}:{raid_key}"
+    cached = p0plus_cache.get(cache_key)
     now = time.time()
     if cached and now - cached[0] < P0PLUS_CACHE_SECONDS:
         return cached[1]
     try:
-        result = await asyncio.to_thread(api_get, {"action": "getP0Plus", "raid": raid_key, "t": int(now)})
+        result = await asyncio.to_thread(api_get, {
+            "action": "getP0Plus",
+            "guild": guild_slug,
+            "guildSlug": guild_slug,
+            "raid": raid_key,
+            "t": int(now),
+        })
     except Exception as error:
         print(f"P0/P0+ Punkte konnten nicht geladen werden ({raid_key}): {error}")
         return {}
@@ -4073,7 +4085,7 @@ async def load_p0plus_labels(raid):
         for item_key, players in grouped.items()
         if players
     }
-    p0plus_cache[raid_key] = (now, labels)
+    p0plus_cache[cache_key] = (now, labels)
     return labels
 
 
@@ -6453,11 +6465,16 @@ class PoDeleteEntrySelect(discord.ui.Select):
         try:
             entry = self.entries[int(self.values[0])]
             can_delete_all = await reviewer_allowed(interaction.user)
-            is_own_entry = str(entry.get("discordUserId") or entry.get("discord_user_id") or "").strip() == str(interaction.user.id)
+            action_payload = payload_for_interaction(self.payload, interaction)
+            linked_characters = await load_po_linked_characters(interaction.user.id, action_payload)
+            linked_names = {slug(row.get("name")) for row in linked_characters if row.get("name")}
+            is_own_entry = (
+                str(entry.get("discordUserId") or entry.get("discord_user_id") or "").strip() == str(interaction.user.id)
+                or slug(entry.get("player")) in linked_names
+            )
             if not can_delete_all and not is_own_entry:
                 await interaction.followup.send("⚠️ Du kannst nur deinen eigenen PO-Eintrag löschen.", ephemeral=True)
                 return
-            action_payload = payload_for_interaction(self.payload, interaction)
             await delete_entry(action_payload, entry, interaction.user)
             # Die Datenbank ist nach der Löschung verbindlich. Der direkte
             # Refresh aktualisiert den Post sofort; der zusätzlich von
@@ -6503,12 +6520,25 @@ class PoDeleteButton(discord.ui.Button):
 
     async def callback(self, interaction):
         await interaction.response.defer(ephemeral=True)
+        if po_payload_is_stale(self.payload):
+            await interaction.followup.send(
+                "ℹ️ Dieser P0-Anmelder gehört zu einem vergangenen oder archivierten Raid. "
+                "Dort gibt es keinen aktiven P0-Eintrag mehr zu löschen. Bitte nutze den P0-Anmelder des aktuellen Raids.",
+                ephemeral=True,
+            )
+            return
         user_id = str(interaction.user.id)
-        all_entries = await fresh_entries_for_payload(self.payload)
+        action_payload = payload_for_interaction(self.payload, interaction)
+        all_entries = await fresh_entries_for_payload(action_payload)
         can_delete_all = await reviewer_allowed(interaction.user)
+        linked_characters = await load_po_linked_characters(interaction.user.id, action_payload)
+        linked_names = {slug(row.get("name")) for row in linked_characters if row.get("name")}
         entries = all_entries if can_delete_all else [
             entry for entry in all_entries
-            if str(entry.get("discordUserId") or entry.get("discord_user_id") or "").strip() == user_id
+            if (
+                str(entry.get("discordUserId") or entry.get("discord_user_id") or "").strip() == user_id
+                or slug(entry.get("player")) in linked_names
+            )
         ]
         if not po_entry_options(entries):
             await interaction.followup.send(
@@ -6518,7 +6548,7 @@ class PoDeleteButton(discord.ui.Button):
             return
         await interaction.followup.send(
             "Wähle den PO-Eintrag aus, den du löschen möchtest." if can_delete_all else "Wähle deinen PO-Eintrag aus, den du löschen möchtest.",
-            view=PoDeleteEntryView(self.payload, entries),
+            view=PoDeleteEntryView(action_payload, entries),
             ephemeral=True,
         )
 
@@ -6655,29 +6685,9 @@ def fit_combined_embeds(raid_embed, po_embed, limit=5800):
 
 def po_message_parts(payload, entries, p0plus_labels, items):
     po_embed = make_embed(payload, entries, p0plus_labels)
-    raid = combined_raid_snapshot(payload)
-    if not raid:
-        return [po_embed], PoView(payload, items, entries)
-    raid = {**raid, "signupPostId": raid_signup_post_id(raid)}
-    # In der gemeinsamen Nachricht werden lange Regeln, Ankündigungstexte
-    # und Worldbuff-Hinweise nicht wiederholt. Sie bleiben über den ohnehin
-    # vorhandenen Link erreichbar; so passen Raid- und P0-Liste zuverlässig
-    # in Discords gemeinsames 6000-Zeichen-Limit für alle Embeds.
-    compact_raid = {
-        **raid,
-        "description": "Raidanmeldung und P0-Übersicht für diesen Termin.",
-        "announcementMessage": "",
-        "announcement_message": "",
-        "showWorldbuffs": False,
-    }
-    raid_embed = build_raid_announcement_embed(compact_raid)
-    helper = {
-        "raid": raid,
-        "signups": payload.get("combinedRaidSignups") or [],
-        "externalSignups": payload.get("combinedRaidExternalSignups") or [],
-    }
-    add_raid_signup_roster_fields(raid_embed, helper)
-    return fit_combined_embeds(raid_embed, po_embed), CombinedRaidPoView(raid, payload, items, entries)
+    # Raid- und P0-Anmelder bleiben immer zwei Discord-Nachrichten. Discord
+    # zählt alle Embeds einer Nachricht gemeinsam gegen das 6000-Zeichen-Limit.
+    return [po_embed], PoView(payload, items, entries)
 
 
 async def refresh_po_message(client, payload):
@@ -6691,6 +6701,15 @@ async def refresh_po_message(client, payload):
     channel = await fetch_accessible_channel(client, target_channel_id)
     if channel is None:
         raise RuntimeError(f"PO-Anmelder Ziel-Channel nicht erreichbar: {target_channel_id}")
+    if combined_raid_snapshot(payload):
+        payload = dict(payload)
+        payload.pop("combinedRaidSnapshot", None)
+        payload.pop("combinedRaidSignups", None)
+        payload.pop("combinedRaidExternalSignups", None)
+        payload["messageId"] = ""
+        payload["discordMessageId"] = ""
+        await post_or_update_from_queue(client, payload)
+        return
     message = await channel.fetch_message(int(payload["messageId"]))
     if not message_is_po_signup(message):
         print(
@@ -6764,10 +6783,13 @@ async def post_or_update_from_queue(client, payload):
     state = load_state()
     state_key = po_post_state_key(payload)
     stored = state.get(state_key) or state.get(post_key) or {}
+    legacy_combined = bool(combined_raid_snapshot(stored) or combined_raid_snapshot(payload))
+    if legacy_combined:
+        update_existing_only = False
     force_new_message = clean(
         payload.get("forceNewMessage") or payload.get("forceRepost")
     ).lower() in {"1", "true", "yes", "ja"}
-    previous_message_id = clean(
+    previous_message_id = "" if legacy_combined else clean(
         stored.get("messageId") or payload.get("messageId") or payload.get("discordMessageId")
     )
     raid_date, raid_time = payload_raid_schedule(payload, stored)
@@ -6787,10 +6809,18 @@ async def post_or_update_from_queue(client, payload):
         "channelId": str(target_channel_id),
         "messageId": "" if force_new_message else previous_message_id,
     }
+    # Alte kombinierte Posts dürfen beim Laden des gespeicherten Zustands nicht
+    # erneut entstehen. Der P0-Anmelder wird als eigene Nachricht gespeichert.
+    normalized.pop("combinedRaidSnapshot", None)
+    normalized.pop("combinedRaidSignups", None)
+    normalized.pop("combinedRaidExternalSignups", None)
     normalized = payload_with_lichtloot_id_from_sources(normalized, stored)
     normalized = await asyncio.to_thread(ensure_payload_lichtloot_raid, normalized)
 
-    if force_new_message and not previous_message_id:
+    if legacy_combined:
+        normalized["messageId"] = ""
+        normalized["discordMessageId"] = ""
+    elif force_new_message and not previous_message_id:
         previous_message_id = await find_existing_message_id(client, normalized)
     elif not normalized.get("messageId"):
         normalized["messageId"] = await find_existing_message_id(client, normalized)
@@ -6807,7 +6837,7 @@ async def post_or_update_from_queue(client, payload):
     if normalized.get("messageId"):
         try:
             message = await channel.fetch_message(int(normalized["messageId"]))
-            if not message_is_po_signup(message) and not combined_raid_snapshot(normalized):
+            if not message_is_po_signup(message):
                 print(
                     "Gespeicherte P0-Message-ID zeigt auf einen Raidanmelder; "
                     f"P0-Anmelder wird separat erstellt ({post_key}/{message.id})."
@@ -6827,7 +6857,7 @@ async def post_or_update_from_queue(client, payload):
             if found_message_id:
                 try:
                     message = await channel.fetch_message(int(found_message_id))
-                    if not message_is_po_signup(message) and not combined_raid_snapshot(normalized):
+                    if not message_is_po_signup(message):
                         message = None
                     elif banner:
                         await message.edit(embeds=embeds, attachments=[banner], view=view)
