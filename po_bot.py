@@ -5508,10 +5508,25 @@ def p0plus_points_for_entry(entry, p0plus_labels):
     return ""
 
 
+def p0plus_players_for_item(item_name, p0plus_labels):
+    """Liefert alle bekannten P0+-Punktestände eines Items, nicht nur Raidanmelder."""
+    label = clean((p0plus_labels or {}).get(slug(item_name)))
+    players = []
+    for part in label.split(",") if label else []:
+        value = clean(part)
+        match = re.match(r"^(.*?)\s+(-?\d+(?:[.,]\d+)?)$", value)
+        if not match:
+            continue
+        player = clean(match.group(1))
+        if player:
+            players.append({"player": player, "points": format_points(match.group(2))})
+    return players
+
+
 def make_embed(payload, entries, p0plus_labels=None, description_limit=5200):
     payload = payload_with_saved_lichtloot_id(payload)
     embed = discord.Embed(
-        title=f"📋 {display_raid(payload.get('raid') or '')} PO-Anmelder",
+        title=f"📋 {display_raid(payload.get('raid') or '')} P0-Anmelder",
         color=discord.Color.gold(),
     )
     raid_id = payload_lichtloot_raid_id(payload)
@@ -5521,46 +5536,92 @@ def make_embed(payload, entries, p0plus_labels=None, description_limit=5200):
     elif post_id:
         embed.set_footer(text=f"Post-ID: {post_id}")
 
-    note = po_post_note(payload)
-    header_lines = build_fixed_po_header(payload)
-    if note:
-        header_lines = note.splitlines() + [""] + header_lines
-        header_lines.append("")
+    raid_name = display_raid(payload.get("raid") or "")
+    raid_date, raid_time = payload_raid_schedule(payload)
+    date_label = format_raid_announcement_date(raid_date) if raid_date else "–"
+    time_label = normalize_post_time(raid_time) or "–"
+    raid_pin = payload_lichtloot_raid_pin(payload) or "–"
+    header_lines = [f"**Raid:** {raid_name} · {date_label} · {time_label} Uhr"]
     custom_link = configured_discord_link(payload)
-    if custom_link:
-        header_lines.extend([f"🔗 **Link:** {custom_link}", ""])
+    prio_link = custom_link or lichtloot_prio_url(payload)
 
     if not entries:
         embed.description = "\n".join(header_lines + ["**Anmeldungen (0)**", "Noch keine PO-Anmeldung vorhanden."])[:description_limit]
         return embed
 
-    lines = header_lines + [f"**Anmeldungen ({len(entries)}) · nach Items**"]
+    header_lines.append(
+        f"**{len(entries)} P0-Anmeldungen** · PIN `{raid_pin}`"
+        + (f" · [P1–P3 eintragen]({prio_link})" if prio_link else "")
+    )
+    embed.description = "\n".join(header_lines)
     p0plus_labels = p0plus_labels or {}
     grouped = {}
     for entry in entries:
-        grouped.setdefault(po_entry_item_group_key(entry), []).append(entry)
+        # Alte Datensätze können dasselbe Item einmal mit und einmal ohne
+        # Item-ID enthalten. Für die Anzeige zählt ausschließlich der Name.
+        grouped.setdefault(slug(po_entry_item_name(entry)), []).append(entry)
+    item_blocks = []
     for item_key in sorted(grouped, key=lambda value: po_entry_item_display(grouped[value][0]).lower()):
         rows = grouped[item_key]
         item_name = po_entry_item_name(rows[0])
         item_label = po_entry_item_display(rows[0]) or item_name or "–"
-        lines.extend(["", f"{item_icon(item_name)} **{item_label}**", "Spieler · Status · P0+-Punkte"])
+        block_lines = ["`P0  Spieler             P0+`"]
+        shown_players = set()
         for row in sorted(rows, key=lambda entry: clean(entry.get("player")).lower()):
             player = clean(row.get("player")) or "–"
+            shown_players.add(slug(player))
             approval_status = clean(row.get("approvalStatus")).lower()
             if row.get("approved") or approval_status == "approved":
-                status = f"{custom_emoji('Beutegrun', '🟢')} frei"
+                status = custom_emoji('Beutegrun', '🟢')
             elif approval_status == "rejected":
-                status = "❌ abgelehnt"
+                status = "❌"
             else:
-                status = f"{custom_emoji('beuteorange', '🟠')} offen"
+                status = custom_emoji('beuteorange', '🟠')
             points = p0plus_points_for_entry(row, p0plus_labels) or "–"
-            lines.append(f"**{player}** · {status} · **{points}**")
+            block_lines.append(f"{status} `{player[:18]:<18} {points:>4}`")
+        for points_row in sorted(
+            p0plus_players_for_item(item_name, p0plus_labels),
+            key=lambda value: slug(value.get("player")),
+        ):
+            player = clean(points_row.get("player"))
+            if not player or slug(player) in shown_players:
+                continue
+            # Diese Spieler besitzen Punkte auf dem Item, haben für diesen
+            # Raid aber aktuell keinen P0-Eintrag. Daher kein Lootbag-Status.
+            block_lines.append(f"▫️ `{player[:18]:<18} {clean(points_row.get('points')):>4}`")
+        item_blocks.append((f"{item_icon(item_name)} {item_label}", "\n".join(block_lines)))
 
-    description = "\n".join(lines)
-    if len(description) > description_limit:
-        suffix = "\n\n… weitere P0-Anmeldungen sind auf LichtLoot sichtbar."
-        description = description[:max(0, description_limit - len(suffix))].rstrip(" ,\n") + suffix
-    embed.description = description
+    # Zwei echte Discord-Spalten: Die Itemblöcke werden höhenbalanciert auf
+    # zwei Inline-Felder verteilt. Dadurch bleibt der Post kurz und lesbar.
+    columns = [[], []]
+    column_lengths = [0, 0]
+    for item_title, item_value in item_blocks:
+        index = 0 if column_lengths[0] <= column_lengths[1] else 1
+        block = f"**{item_title}**\n{item_value}"
+        columns[index].append(block)
+        column_lengths[index] += len(block)
+    packed_columns = []
+    for blocks in columns:
+        chunks = []
+        current = ""
+        for block in blocks:
+            addition = ("\n\n" if current else "") + block
+            if current and len(current) + len(addition) > 1000:
+                chunks.append(current)
+                current = block
+            else:
+                current += addition
+        if current:
+            chunks.append(current)
+        packed_columns.append(chunks)
+    for row_index in range(max(len(column) for column in packed_columns)):
+        for column_index in range(2):
+            value = packed_columns[column_index][row_index] if row_index < len(packed_columns[column_index]) else "\u200b"
+            embed.add_field(
+                name="Items" if row_index == 0 and column_index == 0 else "\u200b",
+                value=value,
+                inline=True,
+            )
     return embed
 
 
