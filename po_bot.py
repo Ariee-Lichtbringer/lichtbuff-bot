@@ -7904,7 +7904,23 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                 original_message_id = clean(payload.get("messageId") or payload.get("discordMessageId"))
                 if paired_raid:
                     payload = payload_with_lichtloot_id_from_sources(payload, paired_raid)
-                    payload_raid_id = payload_lichtloot_raid_id(payload)
+                    # Bei alten Posts darf eine bereits gespeicherte, aber
+                    # falsche Raid-ID nicht Vorrang vor der eindeutigen
+                    # Zuordnung über Prio-PIN/Termin behalten. Alle
+                    # kanonischen Felder werden auf den aktiven Raid gesetzt.
+                    canonical_raid_id = clean(paired_raid.get("raidId") or paired_raid.get("id"))
+                    canonical_raid_pin = payload_lichtloot_raid_pin(paired_raid)
+                    if canonical_raid_id:
+                        payload["raidId"] = canonical_raid_id
+                        payload["lichtlootRaidId"] = canonical_raid_id
+                        payload["lichtlootCanonicalRaidId"] = canonical_raid_id
+                    if canonical_raid_pin:
+                        payload["raidPin"] = canonical_raid_pin
+                        payload["prioPin"] = canonical_raid_pin
+                        payload["lichtlootPlayerPin"] = canonical_raid_pin
+                    payload["guild"] = guild_slug
+                    payload["guildSlug"] = guild_slug
+                    payload_raid_id = canonical_raid_id or payload_lichtloot_raid_id(payload)
 
                 if paired_raid:
                     paired_message_id = clean(
