@@ -7786,6 +7786,78 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
             except Exception as error:
                 errors.append(f"PO-Anmelder konnten nicht vollständig geladen werden: {error}")
 
+            # Sehr alte P0-Anmelder besitzen teils nur noch eine lokale oder
+            # falsche Gilden-/Raid-Zuordnung. Solche Posts würden vom Refresh
+            # vollständig übergangen. Eigene P0-Nachrichten im aktuellen
+            # Channel werden deshalb einmalig über Raidtyp und Datum dem
+            # eindeutigen aktiven Raid zugeordnet und anschließend mit der
+            # kanonischen Raid-ID gespeichert.
+            known_po_message_ids = {
+                clean(payload.get("messageId") or payload.get("discordMessageId"))
+                for payload in payloads
+                if isinstance(payload, dict)
+                and payload_guild_slug(payload) == guild_slug
+            }
+            try:
+                channel = await fetch_accessible_channel(client, channel_id)
+                async for candidate in channel.history(limit=100):
+                    candidate_id = str(candidate.id)
+                    if (
+                        candidate_id in known_po_message_ids
+                        or not client.user
+                        or candidate.author.id != client.user.id
+                        or not message_is_po_signup(candidate)
+                    ):
+                        continue
+                    embed = candidate.embeds[0] if candidate.embeds else None
+                    title = clean(getattr(embed, "title", ""))
+                    description = clean(getattr(embed, "description", ""))
+                    raid_key = normalize_raid(title).lower()
+                    date_match = re.search(r"\b(\d{2})\.(\d{2})\.(\d{4})\b", description)
+                    post_date = (
+                        f"{date_match.group(3)}-{date_match.group(2)}-{date_match.group(1)}"
+                        if date_match else ""
+                    )
+                    matches = [
+                        raid for raid in current_raids
+                        if normalize_raid(raid.get("raid") or raid.get("raidName")).lower() == raid_key
+                        and clean(raid.get("discordChannelId") or raid.get("discord_channel_id")) == channel_id
+                        and (
+                            not post_date
+                            or canonical_raid_date(raid.get("raidDate") or raid.get("date")) == post_date
+                        )
+                    ]
+                    if len(matches) != 1:
+                        continue
+                    matched_raid = matches[0]
+                    raid_id = clean(matched_raid.get("raidId") or matched_raid.get("id"))
+                    migrated_payload = payload_with_lichtloot_id_from_sources({
+                        "guild": guild_slug,
+                        "guildSlug": guild_slug,
+                        "postKey": f"{raid_key}-po-anmelder-{raid_id}",
+                        "raid": raid_key,
+                        "title": f"{display_raid(raid_key)} P0-Anmelder",
+                        "sourceChannelId": channel_id,
+                        "targetChannelId": channel_id,
+                        "channelId": channel_id,
+                        "messageId": candidate_id,
+                        "discordMessageId": candidate_id,
+                        "date": clean(matched_raid.get("raidDate") or matched_raid.get("date")),
+                        "raidDate": clean(matched_raid.get("raidDate") or matched_raid.get("date")),
+                        "time": clean(matched_raid.get("raidTime") or matched_raid.get("time")),
+                        "raidTime": clean(matched_raid.get("raidTime") or matched_raid.get("time")),
+                        "mode": "signup",
+                        "source": "legacy_channel_refresh",
+                    }, matched_raid)
+                    payloads.append(migrated_payload)
+                    known_po_message_ids.add(candidate_id)
+                    print(
+                        "Alten P0-Anmelder im Channel mit aktivem Raid verknüpft: "
+                        f"{guild_slug}:{candidate_id} -> {raid_id}"
+                    )
+            except Exception as error:
+                errors.append(f"Alte P0-Anmelder konnten nicht zugeordnet werden: {error}")
+
             seen_messages = set()
             seen_po_raids = set()
             for raw_payload in payloads:
