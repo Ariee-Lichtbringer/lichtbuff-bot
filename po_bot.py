@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import unicodedata
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
@@ -5523,6 +5524,11 @@ def p0plus_players_for_item(item_name, p0plus_labels):
     return players
 
 
+def po_player_key(value):
+    normalized = unicodedata.normalize("NFKD", clean(value))
+    return re.sub(r"[^a-z0-9]+", "", normalized.encode("ascii", "ignore").decode("ascii").lower())
+
+
 def make_embed(payload, entries, p0plus_labels=None, description_limit=5200):
     payload = payload_with_saved_lichtloot_id(payload)
     embed = discord.Embed(
@@ -5565,11 +5571,11 @@ def make_embed(payload, entries, p0plus_labels=None, description_limit=5200):
         rows = grouped[item_key]
         item_name = po_entry_item_name(rows[0])
         item_label = po_entry_item_display(rows[0]) or item_name or "–"
-        block_lines = ["`P0  Spieler             P0+`"]
+        block_lines = []
         shown_players = set()
         for row in sorted(rows, key=lambda entry: clean(entry.get("player")).lower()):
             player = clean(row.get("player")) or "–"
-            shown_players.add(slug(player))
+            shown_players.add(po_player_key(player))
             approval_status = clean(row.get("approvalStatus")).lower()
             if row.get("approved") or approval_status == "approved":
                 status = custom_emoji('Beutegrun', '🟢')
@@ -5577,18 +5583,30 @@ def make_embed(payload, entries, p0plus_labels=None, description_limit=5200):
                 status = "❌"
             else:
                 status = custom_emoji('beuteorange', '🟠')
-            points = p0plus_points_for_entry(row, p0plus_labels) or "–"
-            block_lines.append(f"{status} `{player[:18]:<18} {points:>4}`")
+            block_lines.append(f"{status} `{player[:22]}`")
+        point_holders = {}
         for points_row in sorted(
             p0plus_players_for_item(item_name, p0plus_labels),
             key=lambda value: slug(value.get("player")),
         ):
             player = clean(points_row.get("player"))
-            if not player or slug(player) in shown_players:
+            if not player:
                 continue
-            # Diese Spieler besitzen Punkte auf dem Item, haben für diesen
-            # Raid aber aktuell keinen P0-Eintrag. Daher kein Lootbag-Status.
-            block_lines.append(f"▫️ `{player[:18]:<18} {clean(points_row.get('points')):>4}`")
+            key = po_player_key(player)
+            current = point_holders.get(key)
+            try:
+                points_value = float(clean(points_row.get("points")).replace(",", "."))
+                current_value = float(clean((current or {}).get("points")).replace(",", ".")) if current else float("-inf")
+            except ValueError:
+                points_value, current_value = 0, -1
+            if current is None or points_value > current_value:
+                point_holders[key] = points_row
+        if point_holders:
+            point_parts = [
+                f"{clean(row.get('player'))} **{clean(row.get('points'))}**"
+                for _, row in sorted(point_holders.items(), key=lambda item: item[0])
+            ]
+            block_lines.append("**P0+-Stand:** " + " · ".join(point_parts))
         item_blocks.append((f"{item_icon(item_name)} {item_label}", "\n".join(block_lines)))
 
     # Zwei echte Discord-Spalten: Die Itemblöcke werden höhenbalanciert auf
