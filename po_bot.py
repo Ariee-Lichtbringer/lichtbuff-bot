@@ -17,6 +17,13 @@ from io import BytesIO
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from lichtloot_core.raid_rules import (
+    canonical_raid_date as core_canonical_raid_date,
+    normalize_raid as core_normalize_raid,
+    payload_is_stale as core_payload_is_stale,
+    raid_is_stale as core_raid_is_stale,
+)
+
 import discord
 from discord import app_commands
 
@@ -325,6 +332,10 @@ item_emoji_cache = {}
 # Nachricht geschrieben und bleiben dort bis zum nächsten Refresh stehen.
 emoji_cache_ready = asyncio.Event()
 startup_restore_ready = asyncio.Event()
+# Nur ein manueller Anmelder-Refresh darf gleichzeitig Nachrichten und
+# gespeicherte Message-IDs verändern. Discord-Interaktionen werden vorher
+# bestätigt und warten danach geordnet auf diese Sperre.
+signup_refresh_lock = asyncio.Lock()
 RAID_SIGNUP_DM_CACHE = {}
 p0plus_cache = {}
 P0PLUS_CACHE_SECONDS = int(os.getenv("PO_BOT_P0PLUS_CACHE_SECONDS", "60") or "60")
@@ -340,29 +351,7 @@ def clean(value):
 
 
 def normalize_raid(value):
-    # Discord-Titel enthalten je nach Vorlage Leerzeichen, Bindestriche oder
-    # Apostrophe (z. B. AHN'QIRAJ 20). Für die Raid-Zuordnung werden nur
-    # Buchstaben und Zahlen berücksichtigt.
-    text = re.sub(r"[^A-Z0-9]+", "", clean(value).upper())
-    if text in {"ZGMITTWOCH", "ZULGURUBMITTWOCH"}:
-        return "ZG-MITTWOCH"
-    if text in {"ZGPRIME", "ZULGURUBPRIME"} or text.startswith("ZGRAIDPRIME"):
-        return "ZG-PRIME"
-    if text in {"ZGLATE", "ZULGURUBLATE"} or text.startswith("ZGRAIDLATE") or text.startswith("ZGLATENIGHT"):
-        return "ZG-LATE"
-    if text in {"MOLTENCORE"} or text.startswith("MOLTENCORE"):
-        return "MC"
-    if text in {"BLACKWINGLAIR"} or text.startswith("BLACKWINGLAIR"):
-        return "BWL"
-    if text in {"AQ", "AHNQIRAJ", "AHNQIRAJ40"}:
-        return "AQ40"
-    if text in {"AQ20", "AHNQIRAJ20", "RUINSOFAHNQIRAJ"} or text.startswith("AQ20") or text.startswith("AHNQIRAJ20"):
-        return "AQ20"
-    if text in {"ZULGURUB", "ZG20"} or text.startswith("ZGRAID") or text.startswith("ZG20") or text.startswith("ZULGURUB"):
-        return "ZG"
-    if text in {"NAXXRAMAS"} or text.startswith("NAXXRAMAS"):
-        return "NAXX"
-    return text or "RAID"
+    return core_normalize_raid(value)
 
 
 def display_raid(value):
@@ -2204,70 +2193,12 @@ def raid_signup_calendar_status_counts(helper):
 
 
 def raid_announcement_is_stale(raid):
-    raid = raid or {}
-    status = clean(raid.get("status") or raid.get("raidStatus")).lower()
-    if status in {
-        "archiviert", "archive", "archived", "gelöscht", "geloescht", "deleted",
-        "abgesagt", "cancelled", "canceled",
-    }:
-        return True
-    raid_date = canonical_raid_date(raid.get("raidDate") or raid.get("date") or raid.get("datum"))
-    if raid_date:
-        raid_kind = normalize_raid(raid.get("raid") or raid.get("raidName") or raid.get("raidType")).lower()
-        raid_time = normalize_post_time(raid.get("raidTime") or raid.get("time") or raid.get("uhrzeit"))
-        now = datetime.now(ZoneInfo("Europe/Berlin"))
-        if raid_kind in {"aq20", "zg"} and raid_time:
-            try:
-                starts_at = datetime.strptime(
-                    f"{raid_date} {raid_time}", "%Y-%m-%d %H:%M"
-                ).replace(tzinfo=ZoneInfo("Europe/Berlin"))
-                return now >= starts_at + timedelta(hours=2)
-            except ValueError:
-                pass
-        if raid_date < now.date().isoformat():
-            return True
-    return False
+    return core_raid_is_stale(raid)
 
 
 def po_payload_is_stale(payload):
     """Vergangene P0-Anmelder duerfen weder restauriert noch neu gepostet werden."""
-    payload = payload or {}
-    snapshots = [
-        payload,
-        payload.get("raidSnapshot") if isinstance(payload.get("raidSnapshot"), dict) else {},
-        payload.get("combinedRaidSnapshot") if isinstance(payload.get("combinedRaidSnapshot"), dict) else {},
-    ]
-    for candidate in snapshots:
-        status = clean(candidate.get("status") or candidate.get("raidStatus")).lower()
-        if status in {
-            "archiviert", "archive", "archived", "gelöscht", "geloescht", "deleted",
-            "abgesagt", "cancelled", "canceled",
-        }:
-            return True
-        raid_date = canonical_raid_date(
-            candidate.get("raidDate") or candidate.get("date") or candidate.get("datum")
-        )
-        if raid_date:
-            raid_kind = normalize_raid(
-                candidate.get("raid") or candidate.get("raidName") or candidate.get("raidType")
-            ).lower()
-            raid_time = normalize_post_time(
-                candidate.get("raidTime") or candidate.get("time") or candidate.get("uhrzeit")
-            )
-            now = datetime.now(ZoneInfo("Europe/Berlin"))
-            if raid_kind in {"aq20", "zg"} and raid_time:
-                try:
-                    starts_at = datetime.strptime(
-                        f"{raid_date} {raid_time}", "%Y-%m-%d %H:%M"
-                    ).replace(tzinfo=ZoneInfo("Europe/Berlin"))
-                    if now >= starts_at + timedelta(hours=2):
-                        return True
-                    continue
-                except ValueError:
-                    pass
-            if raid_date < now.date().isoformat():
-                return True
-    return False
+    return core_payload_is_stale(payload)
 
 
 async def delete_po_post_from_queue(payload):
@@ -3501,30 +3432,7 @@ def normalize_post_date(value):
 
 
 def canonical_raid_date(value):
-    """Normalisiert API-, deutsche und alte JavaScript-Datumswerte auf ISO."""
-    text = clean(value)
-    iso_match = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", text)
-    if iso_match:
-        return "-".join(iso_match.groups())
-    german_match = re.search(r"\b(\d{2})\.(\d{2})\.(\d{4})\b", text)
-    if german_match:
-        day, month, year = german_match.groups()
-        return f"{year}-{month}-{day}"
-    js_match = re.search(
-        r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+"
-        r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+"
-        r"(\d{1,2})\s+(\d{4})\b",
-        text,
-        re.IGNORECASE,
-    )
-    if js_match:
-        month_name, day, year = js_match.groups()
-        month = {
-            "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
-            "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
-        }[month_name.lower()]
-        return f"{year}-{month:02d}-{int(day):02d}"
-    return ""
+    return core_canonical_raid_date(value)
 
 
 def normalize_post_time(value):
@@ -3684,6 +3592,8 @@ def save_po_signup_prio(payload, player, class_name, item, player_login="", item
     login = clean(player_login)
     class_name = class_display_name(class_name)
     post_key = clean((payload or {}).get("postKey") or (payload or {}).get("poPostKey") or (payload or {}).get("postId"))
+    raw_raid_date = payload.get("date") or payload.get("raidDate") or payload.get("datum") or ""
+    raid_date = canonical_raid_date(raw_raid_date)
     # Ob eine Freigabe nötig ist, entscheidet die API anhand des gewählten
     # Items. Bei ZG/AQ20 sind normale PO-Items frei; nur markierte PO+-Items
     # benötigen die raidbezogene PO+-Freigabe.
@@ -3704,7 +3614,9 @@ def save_po_signup_prio(payload, player, class_name, item, player_login="", item
         "spielerLogin": login,
         "player": player,
         "raid": payload.get("raid") or "",
-        "raidDate": payload.get("date") or payload.get("raidDate") or payload.get("datum") or "",
+        # Alte Discord-Payloads enthalten teils Date.toString()-Werte. An der
+        # API-Grenze wird ausschließlich ein ISO-Datum gesendet.
+        "raidDate": raid_date,
         "raidTime": payload.get("time") or payload.get("raidTime") or payload.get("uhrzeit") or "",
         "server": clean(payload.get("server")),
         "className": class_name,
@@ -5975,8 +5887,14 @@ async def submit_po_entry(interaction, payload, item_name, class_name, char_name
         prio_result = {"success": False, "error": str(error)}
     if prio_result and not prio_result.get("success"):
         detail = po_signup_error_message(prio_result.get("error") or "unbekannt", saved_player)
+        rollback_error = ""
+        try:
+            await delete_entry(payload, saved_entry, interaction.user)
+        except Exception as error:
+            rollback_error = clean(error)
         await interaction.followup.send(
-            f"⚠️ Discord-Eintrag ist gespeichert, aber {'PO+' if is_po_plus_item else 'PO'} konnte nicht gespeichert werden: {detail}",
+            f"⚠️ Deine {'P0+' if is_po_plus_item else 'P0'} wurde nicht gespeichert: {detail}"
+            + (f"\nAuch der unvollständige Zwischeneintrag konnte nicht entfernt werden: {rollback_error}" if rollback_error else ""),
             ephemeral=True,
         )
         return
@@ -8291,10 +8209,11 @@ async def anmelder_refresh(interaction, was: str = "alle"):
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
         await asyncio.wait_for(emoji_cache_ready.wait(), timeout=20)
-        result = await asyncio.wait_for(
-            refresh_signup_posts_in_channel(interaction, was),
-            timeout=120,
-        )
+        async with signup_refresh_lock:
+            result = await asyncio.wait_for(
+                refresh_signup_posts_in_channel(interaction, was),
+                timeout=120,
+            )
         raid_count = int(result.get("raid") or 0)
         replaced = int(result.get("replaced") or 0)
         po_count = int(result.get("po") or 0)
@@ -8380,21 +8299,22 @@ async def alleraidanmelder_refreshen(interaction):
         totals = {"raid": 0, "replaced": 0, "po": 0, "skipped": 0}
         errors = []
         processed_channels = 0
-        for channel_id in sorted(channel_ids):
-            try:
-                channel = await fetch_accessible_channel(client, channel_id)
-                if getattr(channel, "guild", None) is None or channel.guild.id != interaction.guild.id:
-                    continue
-                channel_result = await asyncio.wait_for(
-                    refresh_signup_posts_in_channel(interaction, "alle", channel_id),
-                    timeout=120,
-                )
-                processed_channels += 1
-                for key in totals:
-                    totals[key] += int(channel_result.get(key) or 0)
-                errors.extend(channel_result.get("errors") or [])
-            except Exception as error:
-                errors.append(f"Channel {channel_id}: {clean(error) or type(error).__name__}")
+        async with signup_refresh_lock:
+            for channel_id in sorted(channel_ids):
+                try:
+                    channel = await fetch_accessible_channel(client, channel_id)
+                    if getattr(channel, "guild", None) is None or channel.guild.id != interaction.guild.id:
+                        continue
+                    channel_result = await asyncio.wait_for(
+                        refresh_signup_posts_in_channel(interaction, "alle", channel_id),
+                        timeout=120,
+                    )
+                    processed_channels += 1
+                    for key in totals:
+                        totals[key] += int(channel_result.get(key) or 0)
+                    errors.extend(channel_result.get("errors") or [])
+                except Exception as error:
+                    errors.append(f"Channel {channel_id}: {clean(error) or type(error).__name__}")
 
         text = (
             f"✅ Gildenweit aktualisiert: **{totals['raid']} Raidanmelder** und "
@@ -8777,7 +8697,8 @@ async def anmelder_neustart(interaction):
 
     await interaction.response.defer(ephemeral=True, thinking=True)
     await emoji_cache_ready.wait()
-    result = await restart_all_active_signup_posts()
+    async with signup_refresh_lock:
+        result = await restart_all_active_signup_posts()
     text = (
         "✅ Wiederherstellung abgeschlossen: "
         f"**{int(result.get('raidViews') or 0)} Raid-Buttons** neu verbunden, "
