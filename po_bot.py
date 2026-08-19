@@ -1473,6 +1473,60 @@ class P0ReviewView(discord.ui.View):
         self.add_item(select)
 
 
+class P0PointsSearchModal(discord.ui.Modal, title="P0+-Punkte suchen"):
+    search = discord.ui.TextInput(
+        label="Charakter oder Item",
+        placeholder="z. B. Ariee oder Brust",
+        min_length=2,
+        max_length=100,
+    )
+
+    def __init__(self, bot: "PoBotV2", guild: GuildIdentity) -> None:
+        super().__init__()
+        self.bot = bot
+        self.guild_identity = guild
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            query = clean(self.search.value)
+            query_key = _emoji_key(query)
+            all_points = await self.bot.api.get_p0_points(self.guild_identity)
+            matches = [
+                row for row in all_points
+                if query_key in _emoji_key(row.get("player"))
+                or query_key in _emoji_key(row.get("item"))
+            ]
+            if not matches:
+                await interaction.followup.send(
+                    f'🔎 Keine P0+-Punkte für „{query}“ gefunden.',
+                    ephemeral=True,
+                )
+                return
+
+            lines: list[str] = []
+            hidden = 0
+            current_length = len(query) + 40
+            for row in matches:
+                line = (
+                    f"{_item_icon(clean(row.get('item')))} **{clean(row.get('item'))}** · "
+                    f"**{float(row.get('points') or row.get('count') or 0):g} P0+** · "
+                    f"{clean(row.get('player'))}"
+                )
+                if len(lines) >= 30 or current_length + len(line) + 1 > 1700:
+                    hidden += 1
+                    continue
+                lines.append(line)
+                current_length += len(line) + 1
+
+            result = f'🏆 **P0+-Suche: „{query}“**\n' + "\n".join(lines)
+            if hidden:
+                result += f"\n… und {hidden} weitere Treffer. Bitte genauer suchen."
+            await interaction.followup.send(result, ephemeral=True)
+        except Exception as error:
+            await interaction.followup.send(f"⚠️ P0+-Suche fehlgeschlagen: {error}", ephemeral=True)
+
+
 class CombinedSignupView(discord.ui.View):
     def __init__(
         self,
@@ -1650,31 +1704,9 @@ class CombinedSignupView(discord.ui.View):
     async def p0_reject(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self.open_p0_review(interaction, "rejected")
 
-    @discord.ui.button(label="🏆 Alle P0+-Punkte", style=discord.ButtonStyle.secondary, custom_id="p0v2:p0_points", row=2)
+    @discord.ui.button(label="🏆 P0+-Punkte suchen", style=discord.ButtonStyle.secondary, custom_id="p0v2:p0_points", row=2)
     async def p0_points(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        all_points = await self.bot.api.get_p0_points(self.guild_identity)
-        if not all_points:
-            await interaction.followup.send("🏆 Aktuell sind keine P0+-Punkte gespeichert.", ephemeral=True)
-            return
-        lines = [
-            f"{_item_icon(clean(row.get('item')))} **{clean(row.get('item'))}** · "
-            f"**{float(row.get('points') or row.get('count') or 0):g} P0+** · {clean(row.get('player'))}"
-            for row in all_points
-        ]
-        chunks = []
-        current = "🏆 **Alle P0+-Punkte · Items · Charaktere**\n"
-        for line in lines:
-            if len(current) + len(line) + 1 > 1900:
-                chunks.append(current)
-                current = line
-            else:
-                current += ("\n" if current else "") + line
-        if current:
-            chunks.append(current)
-        await interaction.followup.send(chunks[0], ephemeral=True)
-        for chunk in chunks[1:]:
-            await interaction.followup.send(chunk, ephemeral=True)
+        await interaction.response.send_modal(P0PointsSearchModal(self.bot, self.guild_identity))
 
 
 CLASS_LABELS = {
