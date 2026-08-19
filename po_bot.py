@@ -906,7 +906,10 @@ class PoBotV2(discord.Client):
             try:
                 result = await self.api.get(
                     "lichtbotGetQueueAllGuilds",
-                    types="raid_announcement,po_post,p0_post_refresh",
+                    types=(
+                        "raid_announcement,po_post,p0_post_refresh,"
+                        "raid_announcement_delete,po_post_delete"
+                    ),
                     limit="20",
                 )
                 for item in list(result.get("items") or []):
@@ -919,6 +922,20 @@ class PoBotV2(discord.Client):
                         print(f"V2 Queue übersprungen: unbekannte Gilde {guild_slug}.")
                         continue
                     try:
+                        if queue_type in {"raid_announcement_delete", "po_post_delete"}:
+                            await self.delete_queued_post(guild, payload)
+                            await self.api.post(
+                                "lichtbotResolveQueue",
+                                guild=guild.guild_slug,
+                                guildId=guild.guild_id,
+                                guildSlug=guild.guild_slug,
+                                rowNumber=row_number,
+                            )
+                            print(
+                                f"V2 Queue-Löschung verarbeitet: "
+                                f"{guild.guild_id}/{row_number}"
+                            )
+                            continue
                         raid_id = required(
                             payload.get("raidId") or payload.get("lichtlootRaidId"),
                             "raid_id",
@@ -948,9 +965,62 @@ class PoBotV2(discord.Client):
                         print(f"V2 Queue verarbeitet: {guild.guild_id}/{raid_id} -> {row_number}")
                     except Exception as error:
                         print(f"V2 Queue fehlgeschlagen ({guild.guild_id}/{row_number}): {error}")
+                        terminal_error = any(
+                            marker in clean(error).casefold()
+                            for marker in (
+                                "raid wurde nicht gefunden",
+                                "gespeicherte discord-post fehlt",
+                                "pflichtfeld fehlt: raid_id",
+                            )
+                        )
+                        if terminal_error:
+                            await self.api.post(
+                                "lichtbotResolveQueue",
+                                guild=guild.guild_slug,
+                                guildId=guild.guild_id,
+                                guildSlug=guild.guild_slug,
+                                rowNumber=row_number,
+                            )
+                            print(
+                                f"V2 Queue verworfen (nicht mehr ausführbar): "
+                                f"{guild.guild_id}/{row_number}"
+                            )
             except Exception as error:
                 print(f"V2 Queue konnte nicht geladen werden: {error}")
             await asyncio.sleep(5)
+
+    async def delete_queued_post(
+        self, guild: GuildIdentity, payload: dict[str, Any]
+    ) -> None:
+        channel_id = clean(
+            payload.get("targetChannelId")
+            or payload.get("discordChannelId")
+            or payload.get("channelId")
+            or payload.get("sourceChannelId")
+        )
+        message_id = clean(payload.get("discordMessageId") or payload.get("messageId"))
+        if not channel_id or not message_id:
+            # Es existiert kein gespeicherter Discord-Post mehr. Der
+            # Löschauftrag ist damit bereits erfüllt und darf beendet werden.
+            return
+        discord_guild = self.get_guild(int(guild.discord_guild_id))
+        if discord_guild is None:
+            raise RuntimeError("Der konfigurierte Discord-Server ist nicht erreichbar.")
+        channel = discord_guild.get_channel(int(channel_id))
+        if channel is None:
+            try:
+                channel = await discord_guild.fetch_channel(int(channel_id))
+            except discord.NotFound:
+                return
+        if not hasattr(channel, "fetch_message"):
+            return
+        try:
+            message = await channel.fetch_message(int(message_id))
+        except discord.NotFound:
+            return
+        if self.user is not None and message.author.id != self.user.id:
+            raise RuntimeError("Der gespeicherte Post gehört nicht zu diesem Bot.")
+        await message.delete()
 
     async def refresh_emoji_cache(self) -> None:
         emojis = []
@@ -1620,94 +1690,74 @@ class CombinedSignupView(discord.ui.View):
 
     @discord.ui.button(label="P0 eintragen", style=discord.ButtonStyle.success, custom_id="p0v2:p0_signup", row=2)
     async def p0_signup(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        linked, context = await asyncio.gather(
-            self.bot.api.get_linked_characters(self.guild_identity, interaction.user.id),
-            self.bot.api.get_p0_context(self.guild_identity, self.raid_id),
-        )
-        if not linked:
-            await interaction.response.send_modal(
-                P0SignupModal(
-                    self.bot,
-                    self.guild_identity,
-                    self.raid_id,
-                    interaction.channel_id,
-                    interaction.message.id,
-                )
-            )
-            return
-        items = list(context.get("items") or [])
-        if not items:
-            await interaction.response.send_message("⚠️ Für diesen Raid ist keine P0-Lootliste konfiguriert.", ephemeral=True)
-            return
-        await interaction.response.send_message(
-            "Wähle deinen LichtLoot-Charakter und anschließend das P0-Item:",
-            view=P0SignupSelectionView(
+        # Discord erwartet die erste Antwort innerhalb von drei Sekunden.
+        # Das Modal wird deshalb sofort geöffnet; Verknüpfung, Charaktere und
+        # Lootliste werden erst beim Absenden des Modals über die API geladen.
+        await interaction.response.send_modal(
+            P0SignupModal(
                 self.bot,
                 self.guild_identity,
                 self.raid_id,
                 interaction.channel_id,
                 interaction.message.id,
-                linked,
-                items,
-                interaction.user.id,
-                interaction.user.display_name,
-            ),
-            ephemeral=True,
+            )
         )
 
     @discord.ui.button(label="P0-Eintrag löschen", style=discord.ButtonStyle.danger, custom_id="p0v2:p0_delete", row=2)
     async def p0_delete(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        linked = await self.bot.api.get_linked_characters(self.guild_identity, interaction.user.id)
         await interaction.response.send_modal(
             P0DeleteModal(
                 self.bot,
                 self.guild_identity,
                 self.raid_id,
-                default_character=clean(linked[0].get("name")) if linked else "",
             )
         )
 
     async def open_p0_review(self, interaction: discord.Interaction, status: str) -> None:
-        allowed = await self.bot.api.can_review_p0(
-            self.guild_identity,
-            interaction.user.id,
-            interaction.user.display_name,
-            interaction.user.name,
-            [clean(role.id) for role in getattr(interaction.user, "roles", [])],
-            [clean(role.name) for role in getattr(interaction.user, "roles", [])],
-        )
-        if not allowed:
-            await interaction.response.send_message(
-                "⚠️ Deine Rolle ist auf der Gildenleitungsseite nicht für die P0-Prüfung freigegeben.",
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            allowed = await self.bot.api.can_review_p0(
+                self.guild_identity,
+                interaction.user.id,
+                interaction.user.display_name,
+                interaction.user.name,
+                [clean(role.id) for role in getattr(interaction.user, "roles", [])],
+                [clean(role.name) for role in getattr(interaction.user, "roles", [])],
+            )
+            if not allowed:
+                await interaction.followup.send(
+                    "⚠️ Deine Rolle ist auf der Gildenleitungsseite nicht für die P0-Prüfung freigegeben.",
+                    ephemeral=True,
+                )
+                return
+            context, legacy_entries = await asyncio.gather(
+                self.bot.api.get_p0_context(self.guild_identity, self.raid_id),
+                self.bot.api.get_p0_entries(self.guild_identity, self.raid_id),
+            )
+            combined = [
+                {**dict(row), "entrySource": "signup"}
+                for row in list(context.get("signups") or [])
+            ] + list(legacy_entries)
+            entries = []
+            seen: set[tuple[str, str]] = set()
+            for row in combined:
+                entry_id = clean(row.get("id") or row.get("signupId"))
+                source = clean(row.get("entrySource")) or "signup"
+                key = (source, entry_id)
+                if not entry_id or key in seen or clean(row.get("approvalStatus")).lower() == status:
+                    continue
+                seen.add(key)
+                entries.append(row)
+            if not entries:
+                await interaction.followup.send("ℹ️ Kein passender P0-Eintrag vorhanden.", ephemeral=True)
+                return
+            await interaction.followup.send(
+                "P0-Eintrag auswählen:",
+                view=P0ReviewView(P0ReviewSelect(self.bot, self.guild_identity, self.raid_id, entries, status)),
                 ephemeral=True,
             )
-            return
-        context, legacy_entries = await asyncio.gather(
-            self.bot.api.get_p0_context(self.guild_identity, self.raid_id),
-            self.bot.api.get_p0_entries(self.guild_identity, self.raid_id),
-        )
-        combined = [
-            {**dict(row), "entrySource": "signup"}
-            for row in list(context.get("signups") or [])
-        ] + list(legacy_entries)
-        entries = []
-        seen: set[tuple[str, str]] = set()
-        for row in combined:
-            entry_id = clean(row.get("id") or row.get("signupId"))
-            source = clean(row.get("entrySource")) or "signup"
-            key = (source, entry_id)
-            if not entry_id or key in seen or clean(row.get("approvalStatus")).lower() == status:
-                continue
-            seen.add(key)
-            entries.append(row)
-        if not entries:
-            await interaction.response.send_message("ℹ️ Kein passender P0-Eintrag vorhanden.", ephemeral=True)
-            return
-        await interaction.response.send_message(
-            "P0-Eintrag auswählen:",
-            view=P0ReviewView(P0ReviewSelect(self.bot, self.guild_identity, self.raid_id, entries, status)),
-            ephemeral=True,
-        )
+        except Exception as error:
+            await interaction.followup.send(f"⚠️ P0-Prüfung fehlgeschlagen: {error}", ephemeral=True)
 
     @discord.ui.button(label="P0 freigeben", style=discord.ButtonStyle.success, custom_id="p0v2:p0_approve", row=2)
     async def p0_approve(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
