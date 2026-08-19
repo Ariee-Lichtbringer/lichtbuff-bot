@@ -906,10 +906,11 @@ class PoBotV2(discord.Client):
             try:
                 result = await self.api.get(
                     "lichtbotGetQueueAllGuilds",
-                    types="raid_announcement,p0_post_refresh",
+                    types="raid_announcement,po_post,p0_post_refresh",
                     limit="20",
                 )
                 for item in list(result.get("items") or []):
+                    queue_type = clean(item.get("type")).lower()
                     guild_slug = clean(item.get("guildSlug") or item.get("guild")).lower()
                     guild = self.identities.by_slug.get(guild_slug)
                     payload = dict(item.get("payload") or {})
@@ -918,12 +919,24 @@ class PoBotV2(discord.Client):
                         print(f"V2 Queue übersprungen: unbekannte Gilde {guild_slug}.")
                         continue
                     try:
-                        force_new = clean(payload.get("forceNewMessage")).lower() in {"1", "true", "yes", "ja"}
+                        raid_id = required(
+                            payload.get("raidId") or payload.get("lichtlootRaidId"),
+                            "raid_id",
+                        )
+                        force_new = (
+                            queue_type == "po_post"
+                            or clean(payload.get("forceNewMessage")).lower() in {"1", "true", "yes", "ja"}
+                        )
                         await self.create_or_replace_post(
                             guild,
-                            required(payload.get("raidId"), "raid_id"),
+                            raid_id,
                             force_replace=force_new,
-                            channel_id_override=clean(payload.get("channelId") or payload.get("discordChannelId")),
+                            channel_id_override=clean(
+                                payload.get("channelId")
+                                or payload.get("discordChannelId")
+                                or payload.get("targetChannelId")
+                                or payload.get("sourceChannelId")
+                            ),
                         )
                         await self.api.post(
                             "lichtbotResolveQueue",
@@ -932,7 +945,7 @@ class PoBotV2(discord.Client):
                             guildSlug=guild.guild_slug,
                             rowNumber=row_number,
                         )
-                        print(f"V2 Queue verarbeitet: {guild.guild_id}/{payload.get('raidId')} -> {row_number}")
+                        print(f"V2 Queue verarbeitet: {guild.guild_id}/{raid_id} -> {row_number}")
                     except Exception as error:
                         print(f"V2 Queue fehlgeschlagen ({guild.guild_id}/{row_number}): {error}")
             except Exception as error:
