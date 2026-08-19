@@ -367,6 +367,7 @@ class LichtLootApi:
         discord_name: str,
         discord_username: str,
         discord_role_ids: list[str],
+        discord_role_names: list[str],
     ) -> bool:
         result = await self.get(
             "lichtbotCanReviewPoPost",
@@ -377,6 +378,7 @@ class LichtLootApi:
             discordName=clean(discord_name),
             discordUsername=clean(discord_username),
             discordRoleIds=json.dumps(discord_role_ids),
+            discordRoleNames=json.dumps(discord_role_names),
         )
         return bool(result.get("allowed"))
 
@@ -1507,6 +1509,7 @@ class CombinedSignupView(discord.ui.View):
             interaction.user.display_name,
             interaction.user.name,
             [clean(role.id) for role in getattr(interaction.user, "roles", [])],
+            [clean(role.name) for role in getattr(interaction.user, "roles", [])],
         )
         if not allowed:
             await interaction.response.send_message(
