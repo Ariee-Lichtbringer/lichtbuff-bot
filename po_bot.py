@@ -4433,6 +4433,26 @@ async def deduplicate_po_messages(client, channel, payload, preferred_message=No
             pass
         except Exception as error:
             print(f"Doppelter PO-Anmelder konnte nicht entfernt werden ({post_key}/{duplicate.id}): {error}")
+            try:
+                obsolete = discord.Embed(
+                    title="⚠️ Veralteter Anmelder",
+                    description=(
+                        "Dieser Anmelder ist nicht mehr aktiv. Bitte verwendet den aktuellen "
+                        "kombinierten Raid- und P0-Anmelder in diesem Channel."
+                    ),
+                    color=0x6B7280,
+                )
+                obsolete.set_footer(text=f"Veraltete Nachricht: {duplicate.id}")
+                await duplicate.edit(embeds=[obsolete], attachments=[], view=None)
+                print(
+                    "Nicht löschbaren P0-Anmelder deaktiviert: "
+                    f"{post_key} -> Channel {duplicate.channel.id}, Nachricht {duplicate.id}"
+                )
+            except Exception as edit_error:
+                print(
+                    "Doppelter P0-Anmelder konnte weder gelöscht noch deaktiviert werden "
+                    f"({post_key}/{duplicate.id}): {edit_error}"
+                )
     PO_GUILDWIDE_DEDUP_DONE.add(dedup_key)
     return keep
 
@@ -4441,10 +4461,13 @@ async def remember_po_message(payload):
     message_id = clean(payload.get("messageId"))
     if not message_id:
         return
+    guild_slug = payload_guild_slug(payload)
     try:
         await asyncio.to_thread(api_post, {
             "action": "lichtbotSetPoPostMessage",
             "queueToken": QUEUE_TOKEN,
+            "guild": guild_slug,
+            "guildSlug": guild_slug,
             "postKey": payload["postKey"],
             "sourceChannelId": payload_source_channel_id(payload),
             "targetChannelId": payload_target_channel_id(payload),
@@ -6846,40 +6869,53 @@ def combined_raid_snapshot(payload):
 
 
 def embed_character_count(embed):
+    def discord_length(value):
+        # Discord zählt UTF-16-Codeeinheiten. Emojis benötigen dadurch meist
+        # zwei Zeichen, obwohl Python sie als ein Zeichen meldet.
+        return len(clean(value).encode("utf-16-le")) // 2
+
     footer_text = clean(getattr(getattr(embed, "footer", None), "text", ""))
     return sum([
-        len(clean(getattr(embed, "title", ""))),
-        len(clean(getattr(embed, "description", ""))),
-        len(footer_text),
+        discord_length(getattr(embed, "title", "")),
+        discord_length(getattr(embed, "description", "")),
+        discord_length(footer_text),
         *(
-            len(clean(field.name)) + len(clean(field.value))
+            discord_length(field.name) + discord_length(field.value)
             for field in getattr(embed, "fields", []) or []
         ),
     ])
 
 
-def fit_combined_embeds(raid_embed, po_embed, limit=5800):
+def fit_combined_embeds(raid_embed, po_embed, limit=5000):
     """Hält die gesamte Discord-Nachricht sicher unter dem 6000-Zeichen-Limit."""
     overflow = embed_character_count(raid_embed) + embed_character_count(po_embed) - limit
-    suffix = "\n… weitere Teilnehmer in der Webansicht."
+    suffix = "\n… weitere Einträge in der Webansicht."
     while overflow > 0:
         candidates = [
-            (index, clean(field.value))
-            for index, field in enumerate(getattr(raid_embed, "fields", []) or [])
-            if len(clean(field.value)) > len(suffix) + 80
+            (embed, index, clean(field.value))
+            for embed in (po_embed, raid_embed)
+            for index, field in enumerate(getattr(embed, "fields", []) or [])
+            if len(clean(field.value)) > len(suffix) + 40
             and clean(field.name) not in {"Raidlead", "Tag / Datum", "Uhrzeit", "Prio-PIN", "Link"}
         ]
         if not candidates:
             break
-        index, value = max(candidates, key=lambda candidate: len(candidate[1]))
-        remove_count = min(overflow, max(1, len(value) - len(suffix) - 80))
+        embed, index, value = max(candidates, key=lambda candidate: len(candidate[2]))
+        remove_count = min(overflow, max(1, len(value) - len(suffix) - 40))
         next_value = value[:len(value) - remove_count - len(suffix)].rstrip(" ,\n") + suffix
-        field = raid_embed.fields[index]
-        raid_embed.set_field_at(index, name=field.name, value=next_value, inline=field.inline)
+        field = embed.fields[index]
+        embed.set_field_at(index, name=field.name, value=next_value, inline=field.inline)
         overflow = embed_character_count(raid_embed) + embed_character_count(po_embed) - limit
     if overflow > 0:
-        description = clean(getattr(raid_embed, "description", ""))
-        raid_embed.description = description[:max(0, len(description) - overflow)] or None
+        for embed in (raid_embed, po_embed):
+            if overflow <= 0:
+                break
+            description = clean(getattr(embed, "description", ""))
+            removable = max(0, len(description) - 120)
+            remove_count = min(overflow, removable)
+            if remove_count:
+                embed.description = description[:len(description) - remove_count].rstrip() + "…"
+                overflow = embed_character_count(raid_embed) + embed_character_count(po_embed) - limit
     return [raid_embed, po_embed]
 
 
@@ -6942,6 +6978,7 @@ async def refresh_po_message(client, payload):
     channel_guild_slug = guild_slug_for_discord_server(getattr(channel, "guild", None), "")
     if channel_guild_slug:
         payload["guildSlug"] = channel_guild_slug
+    await ensure_active_linked_raid(payload)
     message = await channel.fetch_message(int(payload["messageId"]))
     if not message_is_po_signup(message) and not combined_raid_snapshot(payload):
         raise RuntimeError(
@@ -6978,6 +7015,21 @@ async def refresh_po_message_safely(client, payload):
         await refresh_po_message(client, payload)
     except Exception as error:
         print(f"PO-Anmelder konnte nach Eintrag nicht aktualisiert werden ({payload.get('postKey')}): {error}")
+
+
+async def ensure_active_linked_raid(payload):
+    """Verhindert, dass lokale P0-Altstände gelöschte Raids restaurieren."""
+    raid_id = payload_lichtloot_raid_id(payload or {})
+    if not raid_id:
+        return None
+    helper = await get_raid_helper_for_refresh(payload)
+    raid = dict(helper.get("raid") or {}) if helper and helper.get("success") else {}
+    if not raid or raid_announcement_is_stale(raid):
+        raise RuntimeError(
+            "Zugehöriger LichtLoot-Raid ist gelöscht, archiviert oder nicht mehr aktiv; "
+            f"P0-Anmelder wird nicht wiederhergestellt ({raid_id})."
+        )
+    return helper
 
 
 async def post_or_update_from_queue(client, payload):
@@ -7042,6 +7094,7 @@ async def post_or_update_from_queue(client, payload):
     }
     normalized = payload_with_lichtloot_id_from_sources(normalized, stored)
     normalized = await asyncio.to_thread(ensure_payload_lichtloot_raid, normalized)
+    await ensure_active_linked_raid(normalized)
 
     if force_new_message and not previous_message_id:
         previous_message_id = await find_existing_message_id(client, normalized)
@@ -7053,6 +7106,12 @@ async def post_or_update_from_queue(client, payload):
         raise RuntimeError(f"PO-Anmelder Ziel-Channel nicht erreichbar: {target_channel_id}")
     channel_guild_slug = guild_slug_for_discord_server(getattr(channel, "guild", None), "")
     if channel_guild_slug:
+        requested_guild_slug = payload_guild_slug(normalized)
+        if requested_guild_slug != channel_guild_slug:
+            raise RuntimeError(
+                "P0-Anmelder verweist auf eine fremde Gilde; Auftrag wird nicht ausgeführt "
+                f"({requested_guild_slug} -> {channel_guild_slug}, Channel {target_channel_id})."
+            )
         normalized["guildSlug"] = channel_guild_slug
     items = await items_for_payload(normalized)
     entries = await load_entries(normalized)
@@ -8071,6 +8130,14 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                     if len(schedule_matches) == 1:
                         paired_raid = schedule_matches[0]
 
+                # Ein P0-Post mit echter LichtLoot-Raid-ID darf nicht als
+                # eigenständiger Post wiederauferstehen, wenn der zugehörige
+                # Raid gelöscht oder archiviert wurde. Nur bewusst ohne
+                # Raid-ID angelegte P0-Anmelder bleiben eigenständig.
+                if paired_raid is None and payload_raid_id:
+                    skipped += 1
+                    continue
+
                 original_message_id = clean(payload.get("messageId") or payload.get("discordMessageId"))
                 if paired_raid:
                     payload = payload_with_lichtloot_id_from_sources(payload, paired_raid)
@@ -8517,6 +8584,10 @@ async def restart_all_active_signup_posts():
                             f"{clean(payload.get('postKey'))} -> "
                             f"{clean(matched_raid.get('raidId') or matched_raid.get('id'))}"
                         )
+
+                if matched_raid is None and payload_raid_id:
+                    skipped += 1
+                    continue
 
                 if matched_raid is not None:
                     # Absichtlich überschreiben: Ein veralteter Auftrag darf
