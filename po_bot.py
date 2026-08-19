@@ -49,6 +49,10 @@ ITEM_EMOJI_ALIASES = {
     "kriegsklinge der hakkari": ["kriegsklinge_der_hakkari"],
     "schneller razzashiraptor": ["schneller_razzashiraptor"],
     "schneller zulianischer tiger": ["schneller_zulianischer_tiger", "schneller_zullianischer_tiger"],
+    "drachenfangzahn-talisman": ["drachenfangzahntalisman", "drachenfangzahn_talisman", "_drachenfangzahntalisman"],
+    "neltharions träne": ["neltharions_trane", "neltharions_traene", "neltharions_trne", "_neltharions_trne"],
+    "halsschmuck des feuerlords": ["halsschmuck_des_feuerlords", "_halsschmuckdesfeuerlords"],
+    "sulfuronblock": ["sulfuronblock", "_sulfuronblock"],
 }
 
 
@@ -72,14 +76,52 @@ def _class_icon(class_key: str, fallback: str) -> str:
     return _emoji(f"classicon_{english}", fallback)
 
 
+def _select_emoji(value: str) -> str | discord.PartialEmoji | None:
+    value = clean(value)
+    if value.startswith("<:") or value.startswith("<a:"):
+        try:
+            return discord.PartialEmoji.from_str(value)
+        except ValueError:
+            return None
+    return value or None
+
+
+def _class_select_emoji(class_name: str) -> str | discord.PartialEmoji | None:
+    class_key = clean(class_name).casefold()
+    fallbacks = {
+        "krieger": "⚔️", "paladin": "🛡️", "jäger": "🏹", "schurke": "🗡️",
+        "priester": "✨", "schamane": "⚡", "magier": "🔥", "hexenmeister": "👿", "druide": "🐾",
+    }
+    return _select_emoji(_class_icon(class_key, fallbacks.get(class_key, "🎮")))
+
+
 def _spec_icon(spec: str, fallback: str = "◆") -> str:
     aliases = {
         "waffen": "waffen", "furor": "fury", "heilung": "heilung", "heilig": "holy_pala",
         "vergeltung": "retri", "feuer": "feuer", "frost": "frost", "arkan": "arkan",
         "schatten": "schatten", "tank": "tank", "combat": "combat", "kampf": "combat",
-        "survival": "survival", "marksman": "marksman", "beastmaster": "beastmaster",
+        "survival": "survival", "überleben": "survival", "marksman": "marksman",
+        "treffsicherheit": "marksman", "beastmaster": "beastmaster", "tierherrschaft": "beastmaster",
+        "disziplin": "disziplin", "gebrechen": "affliction", "dämonologie": "demonology",
+        "damonologie": "demonology", "zerstörung": "destruction", "zerstorung": "destruction",
+        "elementar": "elemental", "verstärkung": "enhancement", "verstarkung": "enhancement",
+        "gleichgewicht": "balance", "wildheit": "feral", "meucheln": "assassination",
+        "täuschung": "subtlety", "tauschung": "subtlety",
     }
     return _emoji(aliases.get(clean(spec).casefold(), clean(spec)), fallback)
+
+
+def _spec_for_row(row: dict[str, Any]) -> str:
+    direct = clean(
+        row.get("specialization")
+        or row.get("specialisation")
+        or row.get("spec")
+        or row.get("skillung")
+    )
+    if direct:
+        return direct
+    match = re.search(r"skillung\s*:\s*([^|,;\n]+)", clean(row.get("note")), re.IGNORECASE)
+    return clean(match.group(1)) if match else ""
 
 
 def clean(value: Any) -> str:
@@ -215,7 +257,7 @@ class LichtLootApi:
 
     async def get_active_raids(self, guild: GuildIdentity) -> list[dict[str, Any]]:
         result = await self.get(
-            "getActiveRaids",
+            "lichtbotGetActiveRaids",
             guild=guild.guild_slug,
             guildId=guild.guild_id,
             guildSlug=guild.guild_slug,
@@ -287,6 +329,28 @@ class LichtLootApi:
         self.require_guild_response(result, guild)
         return list(result.get("characters") or [])
 
+    async def link_discord_account(
+        self,
+        guild: GuildIdentity,
+        *,
+        player_pin: str,
+        character: str,
+        discord_user_id: int | str,
+        discord_name: str,
+    ) -> list[dict[str, Any]]:
+        result = await self.post(
+            "lichtbotLinkDiscordAccount",
+            guild=guild.guild_slug,
+            guildId=guild.guild_id,
+            guildSlug=guild.guild_slug,
+            playerPin=required(player_pin, "player_pin"),
+            character=required(character, "character"),
+            discordUserId=required(discord_user_id, "discord_user_id"),
+            discordName=clean(discord_name),
+        )
+        self.require_guild_response(result, guild)
+        return list(result.get("characters") or [])
+
     async def get_p0_points(self, guild: GuildIdentity) -> list[dict[str, Any]]:
         result = await self.get(
             "getP0Plus",
@@ -295,6 +359,26 @@ class LichtLootApi:
             guildSlug=guild.guild_slug,
         )
         return list(result.get("entries") or [])
+
+    async def can_review_p0(
+        self,
+        guild: GuildIdentity,
+        discord_user_id: int | str,
+        discord_name: str,
+        discord_username: str,
+        discord_role_ids: list[str],
+    ) -> bool:
+        result = await self.get(
+            "lichtbotCanReviewPoPost",
+            guild=guild.guild_slug,
+            guildId=guild.guild_id,
+            guildSlug=guild.guild_slug,
+            discordUserId=required(discord_user_id, "discord_user_id"),
+            discordName=clean(discord_name),
+            discordUsername=clean(discord_username),
+            discordRoleIds=json.dumps(discord_role_ids),
+        )
+        return bool(result.get("allowed"))
 
     async def save_discord_post(
         self,
@@ -626,6 +710,7 @@ class PoBotV2(discord.Client):
             embed=build_combined_embed(guild, helper, p0_context, p0_entries),
             view=CombinedSignupView(self, guild, raid_id, message_id),
         )
+        await self.remove_duplicate_raid_posts(channel, raid_id, message_id)
         return post
 
     async def create_or_replace_post(
@@ -674,6 +759,8 @@ class PoBotV2(discord.Client):
         except Exception:
             await message.delete()
             raise
+        if force_replace:
+            await self.remove_duplicate_raid_posts(channel, raid_id, message.id, purge_legacy=True)
         return DiscordPostIdentity(
             guild_id=guild.guild_id,
             raid_id=identity.raid_id,
@@ -681,6 +768,35 @@ class PoBotV2(discord.Client):
             discord_channel_id=clean(message.channel.id),
             discord_message_id=clean(message.id),
         )
+
+    async def remove_duplicate_raid_posts(
+        self,
+        channel: discord.abc.Messageable,
+        raid_id: str,
+        canonical_message_id: int | str,
+        purge_legacy: bool = False,
+    ) -> None:
+        if not hasattr(channel, "history"):
+            return
+        marker = f"Raid-ID: {raid_id}"
+        removed = 0
+        try:
+            async for candidate in channel.history(limit=100):
+                if clean(candidate.id) == clean(canonical_message_id):
+                    continue
+                if not self.user or candidate.author.id != self.user.id:
+                    continue
+                footer_texts = [clean(embed.footer.text) for embed in candidate.embeds if embed.footer]
+                is_same_v2_post = any(marker in footer for footer in footer_texts)
+                is_legacy_post = purge_legacy and any(footer.startswith("Post-ID:") for footer in footer_texts)
+                if not is_same_v2_post and not is_legacy_post:
+                    continue
+                await candidate.delete()
+                removed += 1
+            if removed:
+                print(f"V2 entfernte {removed} doppelten Post für Raid-ID {raid_id}.")
+        except (discord.Forbidden, discord.HTTPException) as error:
+            print(f"V2 konnte doppelte Posts für Raid-ID {raid_id} nicht bereinigen: {error}")
 
     async def setup_hook(self) -> None:
         await self.identities.refresh()
@@ -859,12 +975,28 @@ class PoBotV2(discord.Client):
             )
 
 
-class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
+CLASS_SPECS = {
+    "krieger": [("Waffen", "dd"), ("Furor", "dd"), ("Schutz", "tank")],
+    "paladin": [("Heilig", "heal"), ("Schutz", "tank"), ("Vergeltung", "dd")],
+    "jäger": [("Tierherrschaft", "dd"), ("Treffsicherheit", "dd"), ("Überleben", "dd")],
+    "schurke": [("Meucheln", "dd"), ("Kampf", "dd"), ("Täuschung", "dd")],
+    "priester": [("Disziplin", "heal"), ("Heilig", "heal"), ("Schatten", "dd")],
+    "schamane": [("Elementar", "dd"), ("Verstärkung", "dd"), ("Wiederherstellung", "heal")],
+    "magier": [("Arkan", "dd"), ("Feuer", "dd"), ("Frost", "dd")],
+    "hexenmeister": [("Gebrechen", "dd"), ("Dämonologie", "dd"), ("Zerstörung", "dd")],
+    "druide": [("Gleichgewicht", "dd"), ("Wildheit", "dd"), ("Wiederherstellung", "heal")],
+}
+CLASS_SPECS.update({
+    english: CLASS_SPECS[german] for english, german in {
+        "warrior": "krieger", "hunter": "jäger", "rogue": "schurke", "priest": "priester",
+        "shaman": "schamane", "mage": "magier", "warlock": "hexenmeister", "druid": "druide",
+    }.items()
+})
+
+
+class RaidSignupModal(discord.ui.Modal, title="LichtLoot-Account verknüpfen"):
     player_pin = discord.ui.TextInput(label="SpielerLogin/PIN (nur beim ersten Mal)", required=False, max_length=40)
     character = discord.ui.TextInput(label="Charakter", max_length=40)
-    role = discord.ui.TextInput(label="Rolle: tank, heal, dd oder flex", default="dd", max_length=10)
-    status = discord.ui.TextInput(label="Status: signed, bench, late, tentative, absent", default="signed", max_length=12)
-    note = discord.ui.TextInput(label="Notiz (optional)", required=False, max_length=100)
 
     def __init__(
         self,
@@ -874,7 +1006,6 @@ class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
         channel_id: int | str,
         message_id: int | str,
         preset_status: str = "signed",
-        default_character: str = "",
     ) -> None:
         super().__init__()
         self.bot = bot
@@ -883,43 +1014,95 @@ class RaidSignupModal(discord.ui.Modal, title="Raid anmelden"):
         self.channel_id = required(channel_id, "discord_channel_id")
         self.message_id = required(message_id, "discord_message_id")
         self.preset_status = required(preset_status, "signup_status").lower()
-        self.remove_item(self.status)
-        if clean(default_character):
-            self.character.default = clean(default_character)
-            self.player_pin.placeholder = "LichtLoot-Account bereits verknüpft"
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            role = clean(str(self.role)).lower()
-            status = self.preset_status
-            if role not in {"tank", "heal", "dd", "flex"}:
-                raise ValueError("Rolle muss tank, heal, dd oder flex sein.")
-            if status not in {"signed", "bench", "late", "tentative", "absent"}:
-                raise ValueError("Status muss signed, bench, late, tentative oder absent sein.")
-            await self.bot.api.save_raid_signup(
+            characters = await self.bot.api.link_discord_account(
                 self.guild_identity,
-                self.raid_id,
                 player_pin=str(self.player_pin),
                 character=str(self.character),
-                role=role,
-                status=status,
-                note=str(self.note),
                 discord_user_id=interaction.user.id,
                 discord_name=interaction.user.display_name,
-                channel_id=self.channel_id,
-                message_id=self.message_id,
+            )
+            await interaction.followup.send(
+                "✅ Account verknüpft. Wähle jetzt den gespeicherten Charakter und seine Skillung:",
+                view=RaidSignupSelectionView(
+                    self.bot, self.guild_identity, self.raid_id, self.channel_id, self.message_id,
+                    characters, self.preset_status, interaction.user.id, interaction.user.display_name,
+                ), ephemeral=True,
+            )
+        except Exception as error:
+            await interaction.followup.send(f"⚠️ Verknüpfung fehlgeschlagen: {error}", ephemeral=True)
+
+
+class RaidCharacterSelect(discord.ui.Select):
+    def __init__(self, parent: "RaidSignupSelectionView", characters: list[dict[str, Any]]) -> None:
+        self.parent_view = parent
+        options = [discord.SelectOption(
+            label=clean(row.get("name"))[:100], value=str(index),
+            description=" · ".join(filter(None, [clean(row.get("className")), clean(row.get("server"))]))[:100] or None,
+            emoji=_class_select_emoji(clean(row.get("className"))), default=index == 0,
+        ) for index, row in enumerate(characters[:25])]
+        super().__init__(placeholder="Gespeicherten LichtLoot-Charakter auswählen", options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        self.parent_view.set_character(int(self.values[0]))
+        await interaction.response.edit_message(view=self.parent_view)
+
+
+class RaidSpecSelect(discord.ui.Select):
+    def __init__(self, parent: "RaidSignupSelectionView", specs: list[tuple[str, str]]) -> None:
+        self.parent_view = parent
+        options = [discord.SelectOption(label=name, value=f"{name}|{role}", emoji=_select_emoji(_spec_icon(name)), default=index == 0) for index, (name, role) in enumerate(specs)]
+        super().__init__(placeholder="Skillung auswählen", options=options, row=1)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        self.parent_view.spec_name, self.parent_view.role = self.values[0].split("|", 1)
+        await interaction.response.defer()
+
+
+class RaidSignupSelectionView(discord.ui.View):
+    def __init__(self, bot: "PoBotV2", guild: GuildIdentity, raid_id: str, channel_id: int | str,
+                 message_id: int | str, characters: list[dict[str, Any]], status: str,
+                 discord_user_id: int | str, discord_name: str) -> None:
+        super().__init__(timeout=180)
+        self.bot, self.guild_identity, self.raid_id = bot, guild, raid_id
+        self.channel_id, self.message_id, self.characters = channel_id, message_id, characters
+        self.status, self.discord_user_id, self.discord_name = status, discord_user_id, discord_name
+        self.add_item(RaidCharacterSelect(self, characters))
+        self.set_character(0)
+
+    def set_character(self, index: int) -> None:
+        self.character_row = self.characters[index]
+        self.character = clean(self.character_row.get("name"))
+        class_key = clean(self.character_row.get("className")).casefold()
+        specs = CLASS_SPECS.get(class_key, [("DD", "dd")])
+        self.spec_name, self.role = specs[0]
+        for child in list(self.children):
+            if isinstance(child, RaidSpecSelect): self.remove_item(child)
+        self.add_item(RaidSpecSelect(self, specs))
+
+    @discord.ui.button(label="Raidanmeldung speichern", style=discord.ButtonStyle.success, row=2)
+    async def submit(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            await self.bot.api.save_raid_signup(
+                self.guild_identity, self.raid_id, player_pin="", character=self.character,
+                role=self.role, status=self.status, note=f"Skillung: {self.spec_name}",
+                discord_user_id=self.discord_user_id, discord_name=self.discord_name,
+                channel_id=self.channel_id, message_id=self.message_id,
             )
             await self.bot.refresh_existing_post(self.guild_identity, self.raid_id)
             await interaction.followup.send("✅ Raidanmeldung gespeichert.", ephemeral=True)
+            self.stop()
         except Exception as error:
             await interaction.followup.send(f"⚠️ Raidanmeldung fehlgeschlagen: {error}", ephemeral=True)
 
 
-class P0SignupModal(discord.ui.Modal, title="P0 eintragen"):
+class P0SignupModal(discord.ui.Modal, title="LichtLoot-Account verknüpfen"):
     player_pin = discord.ui.TextInput(label="SpielerLogin/PIN (nur beim ersten Mal)", required=False, max_length=40)
     character = discord.ui.TextInput(label="Charakter", max_length=40)
-    item = discord.ui.TextInput(label="P0-Item (exakter Name)", max_length=120)
 
     def __init__(
         self,
@@ -943,21 +1126,27 @@ class P0SignupModal(discord.ui.Modal, title="P0 eintragen"):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            await self.bot.api.save_p0_signup(
+            characters = await self.bot.api.link_discord_account(
                 self.guild_identity,
-                self.raid_id,
                 player_pin=str(self.player_pin),
                 character=str(self.character),
-                item=str(self.item),
                 discord_user_id=interaction.user.id,
                 discord_name=interaction.user.display_name,
-                channel_id=self.channel_id,
-                message_id=self.message_id,
             )
-            await self.bot.refresh_existing_post(self.guild_identity, self.raid_id)
-            await interaction.followup.send("✅ P0-Anmeldung gespeichert.", ephemeral=True)
+            context = await self.bot.api.get_p0_context(self.guild_identity, self.raid_id)
+            items = list(context.get("items") or [])
+            if not items:
+                raise RuntimeError("Für diesen Raid ist keine P0-Lootliste konfiguriert.")
+            await interaction.followup.send(
+                "✅ Account verknüpft. Wähle jetzt Charakter und P0-Item:",
+                view=P0SignupSelectionView(
+                    self.bot, self.guild_identity, self.raid_id, self.channel_id, self.message_id,
+                    characters, items, interaction.user.id, interaction.user.display_name,
+                ),
+                ephemeral=True,
+            )
         except Exception as error:
-            await interaction.followup.send(f"⚠️ P0-Anmeldung fehlgeschlagen: {error}", ephemeral=True)
+            await interaction.followup.send(f"⚠️ Verknüpfung fehlgeschlagen: {error}", ephemeral=True)
 
 
 class P0DeleteModal(discord.ui.Modal, title="Eigene P0-Anmeldung löschen"):
@@ -987,6 +1176,99 @@ class P0DeleteModal(discord.ui.Modal, title="Eigene P0-Anmeldung löschen"):
             await interaction.followup.send("✅ Deine P0-Anmeldung wurde gelöscht.", ephemeral=True)
         except Exception as error:
             await interaction.followup.send(f"⚠️ P0-Löschung fehlgeschlagen: {error}", ephemeral=True)
+
+
+class P0CharacterSelect(discord.ui.Select):
+    def __init__(self, parent: "P0SignupSelectionView", characters: list[dict[str, Any]]) -> None:
+        self.parent_view = parent
+        options = [
+            discord.SelectOption(
+                label=(clean(row.get("name")) or "Unbekannt")[:100],
+                description=" · ".join(filter(None, [clean(row.get("className")), clean(row.get("server"))]))[:100] or None,
+                value=clean(row.get("name"))[:100],
+                emoji=_class_select_emoji(clean(row.get("className"))),
+                default=index == 0,
+            )
+            for index, row in enumerate(characters[:25])
+        ]
+        super().__init__(placeholder="Charakter suchen und auswählen", options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        self.parent_view.character = self.values[0]
+        await interaction.response.defer()
+
+
+class P0ItemSelect(discord.ui.Select):
+    def __init__(self, parent: "P0SignupSelectionView", items: list[dict[str, Any]]) -> None:
+        self.parent_view = parent
+        options = []
+        for index, row in enumerate(items[:25]):
+            name = clean(row.get("name") or row.get("item") or row.get("itemName"))
+            if not name:
+                continue
+            options.append(
+                discord.SelectOption(
+                    label=name[:100],
+                    value=name[:100],
+                    description=(clean(row.get("slot") or row.get("category")) or "P0-Item")[:100],
+                    emoji=_select_emoji(_item_icon(name)),
+                    default=index == 0,
+                )
+            )
+        super().__init__(placeholder="P0-Item suchen und auswählen", options=options, row=1)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        self.parent_view.item_name = self.values[0]
+        await interaction.response.defer()
+
+
+class P0SignupSelectionView(discord.ui.View):
+    def __init__(
+        self,
+        bot: "PoBotV2",
+        guild: GuildIdentity,
+        raid_id: str,
+        channel_id: int | str,
+        message_id: int | str,
+        characters: list[dict[str, Any]],
+        items: list[dict[str, Any]],
+        discord_user_id: int | str,
+        discord_name: str,
+    ) -> None:
+        super().__init__(timeout=180)
+        self.bot = bot
+        self.guild_identity = guild
+        self.raid_id = raid_id
+        self.channel_id = channel_id
+        self.message_id = message_id
+        self.discord_user_id = discord_user_id
+        self.discord_name = discord_name
+        self.character = clean(characters[0].get("name")) if characters else ""
+        first_item = items[0] if items else {}
+        self.item_name = clean(first_item.get("name") or first_item.get("item") or first_item.get("itemName"))
+        self.add_item(P0CharacterSelect(self, characters))
+        self.add_item(P0ItemSelect(self, items))
+
+    @discord.ui.button(label="P0 verbindlich eintragen", style=discord.ButtonStyle.success, row=2)
+    async def submit(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            await self.bot.api.save_p0_signup(
+                self.guild_identity,
+                self.raid_id,
+                player_pin="",
+                character=required(self.character, "character"),
+                item=required(self.item_name, "item"),
+                discord_user_id=self.discord_user_id,
+                discord_name=self.discord_name,
+                channel_id=self.channel_id,
+                message_id=self.message_id,
+            )
+            await self.bot.refresh_existing_post(self.guild_identity, self.raid_id)
+            await interaction.followup.send("✅ P0-Anmeldung gespeichert.", ephemeral=True)
+            self.stop()
+        except Exception as error:
+            await interaction.followup.send(f"⚠️ P0-Anmeldung fehlgeschlagen: {error}", ephemeral=True)
 
 
 class P0ReviewSelect(discord.ui.Select):
@@ -1074,16 +1356,22 @@ class CombinedSignupView(discord.ui.View):
 
     async def open_raid_modal(self, interaction: discord.Interaction, status: str) -> None:
         linked = await self.bot.api.get_linked_characters(self.guild_identity, interaction.user.id)
-        await interaction.response.send_modal(
-            RaidSignupModal(
-                self.bot,
-                self.guild_identity,
-                self.raid_id,
-                interaction.channel_id,
-                interaction.message.id,
-                preset_status=status,
-                default_character=clean(linked[0].get("name")) if linked else "",
+        if not linked:
+            await interaction.response.send_modal(
+                RaidSignupModal(
+                    self.bot, self.guild_identity, self.raid_id, interaction.channel_id,
+                    interaction.message.id, preset_status=status,
+                )
             )
+            return
+        await interaction.response.send_message(
+            "Wähle einen fest in LichtLoot gespeicherten Charakter und seine Skillung:",
+            view=RaidSignupSelectionView(
+                self.bot, self.guild_identity, self.raid_id, interaction.channel_id,
+                interaction.message.id, linked, status, interaction.user.id,
+                interaction.user.display_name,
+            ),
+            ephemeral=True,
         )
 
     @discord.ui.button(label="Klasse / Charakter anmelden", style=discord.ButtonStyle.primary, custom_id="p0v2:raid_signup", row=0)
@@ -1112,16 +1400,39 @@ class CombinedSignupView(discord.ui.View):
 
     @discord.ui.button(label="P0 eintragen", style=discord.ButtonStyle.success, custom_id="p0v2:p0_signup", row=2)
     async def p0_signup(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        linked = await self.bot.api.get_linked_characters(self.guild_identity, interaction.user.id)
-        await interaction.response.send_modal(
-            P0SignupModal(
+        linked, context = await asyncio.gather(
+            self.bot.api.get_linked_characters(self.guild_identity, interaction.user.id),
+            self.bot.api.get_p0_context(self.guild_identity, self.raid_id),
+        )
+        if not linked:
+            await interaction.response.send_modal(
+                P0SignupModal(
+                    self.bot,
+                    self.guild_identity,
+                    self.raid_id,
+                    interaction.channel_id,
+                    interaction.message.id,
+                )
+            )
+            return
+        items = list(context.get("items") or [])
+        if not items:
+            await interaction.response.send_message("⚠️ Für diesen Raid ist keine P0-Lootliste konfiguriert.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "Wähle deinen LichtLoot-Charakter und anschließend das P0-Item:",
+            view=P0SignupSelectionView(
                 self.bot,
                 self.guild_identity,
                 self.raid_id,
                 interaction.channel_id,
                 interaction.message.id,
-                default_character=clean(linked[0].get("name")) if linked else "",
-            )
+                linked,
+                items,
+                interaction.user.id,
+                interaction.user.display_name,
+            ),
+            ephemeral=True,
         )
 
     @discord.ui.button(label="P0-Eintrag löschen", style=discord.ButtonStyle.danger, custom_id="p0v2:p0_delete", row=2)
@@ -1137,10 +1448,16 @@ class CombinedSignupView(discord.ui.View):
         )
 
     async def open_p0_review(self, interaction: discord.Interaction, status: str) -> None:
-        permissions = getattr(interaction.user, "guild_permissions", None)
-        if not permissions or not (permissions.administrator or permissions.manage_guild):
+        allowed = await self.bot.api.can_review_p0(
+            self.guild_identity,
+            interaction.user.id,
+            interaction.user.display_name,
+            interaction.user.name,
+            [clean(role.id) for role in getattr(interaction.user, "roles", [])],
+        )
+        if not allowed:
             await interaction.response.send_message(
-                "⚠️ Dafür wird die Discord-Berechtigung „Server verwalten“ benötigt.",
+                "⚠️ Deine Rolle ist auf der Gildenleitungsseite nicht für die P0-Prüfung freigegeben.",
                 ephemeral=True,
             )
             return
@@ -1170,23 +1487,28 @@ class CombinedSignupView(discord.ui.View):
     @discord.ui.button(label="🏆 Alle P0+-Punkte", style=discord.ButtonStyle.secondary, custom_id="p0v2:p0_points", row=2)
     async def p0_points(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
-        linked, all_points = await asyncio.gather(
-            self.bot.api.get_linked_characters(self.guild_identity, interaction.user.id),
-            self.bot.api.get_p0_points(self.guild_identity),
-        )
-        names = {clean(row.get("name")).casefold() for row in linked}
-        own_points = [row for row in all_points if clean(row.get("player")).casefold() in names]
-        if not linked:
-            text = "⚠️ Dein Discord-Nutzer ist noch nicht mit einem LichtLoot-Account verknüpft. Gib bei einer Anmeldung einmalig deinen SpielerLogin/PIN ein."
-        elif not own_points:
-            text = "🏆 Für deine verknüpften Charaktere sind aktuell keine P0+-Punkte gespeichert."
-        else:
-            lines = [
-                f"{_item_icon(clean(row.get('item')))} **{clean(row.get('item'))}** · {float(row.get('points') or row.get('count') or 0):g} Punkte · {clean(row.get('player'))}"
-                for row in own_points
-            ]
-            text = "🏆 **Deine P0+-Punkte**\n" + "\n".join(lines)
-        await interaction.followup.send(text[:1900], ephemeral=True)
+        all_points = await self.bot.api.get_p0_points(self.guild_identity)
+        if not all_points:
+            await interaction.followup.send("🏆 Aktuell sind keine P0+-Punkte gespeichert.", ephemeral=True)
+            return
+        lines = [
+            f"{_item_icon(clean(row.get('item')))} **{clean(row.get('item'))}** · "
+            f"**{float(row.get('points') or row.get('count') or 0):g} P0+** · {clean(row.get('player'))}"
+            for row in all_points
+        ]
+        chunks = []
+        current = "🏆 **Alle P0+-Punkte · Items · Charaktere**\n"
+        for line in lines:
+            if len(current) + len(line) + 1 > 1900:
+                chunks.append(current)
+                current = line
+            else:
+                current += ("\n" if current else "") + line
+        if current:
+            chunks.append(current)
+        await interaction.followup.send(chunks[0], ephemeral=True)
+        for chunk in chunks[1:]:
+            await interaction.followup.send(chunk, ephemeral=True)
 
 
 CLASS_LABELS = {
@@ -1220,7 +1542,7 @@ def _prio_marker(row: dict[str, Any], p0_players: dict[str, str]) -> str:
 
 def _role_for(row: dict[str, Any]) -> str:
     role = clean(row.get("role")).lower()
-    spec = clean(row.get("spec") or row.get("specialization") or row.get("skillung")).lower()
+    spec = _spec_for_row(row).lower()
     if role in {"tank", "heal", "healer"}:
         return "heal" if role in {"heal", "healer"} else role
     if any(word in spec for word in ("heal", "heil", "resto")):
@@ -1266,7 +1588,7 @@ def _add_roster_fields(embed: discord.Embed, rows: list[dict[str, Any]], p0_rows
             if row not in grouped[class_key]:
                 continue
             player = clean(row.get("player") or row.get("char")) or "Unbekannt"
-            spec = clean(row.get("spec") or row.get("specialization") or row.get("skillung") or row.get("role")) or "Flex"
+            spec = _spec_for_row(row) or clean(row.get("role")) or "Flex"
             lines.append(f"{_spec_icon(spec)} `{position}` **{player}**{_prio_marker(row, p0_players)}")
         embed.add_field(name=f"{icon} __{label} ({len(lines)})__", value="\n".join(lines)[:1024], inline=True)
     status_groups = (
@@ -1292,7 +1614,14 @@ def _add_p0_fields(embed: discord.Embed, rows: list[dict[str, Any]]) -> None:
     for row in rows:
         item = clean(row.get("item") or row.get("itemName")) or "Unbekanntes Item"
         grouped.setdefault(item, []).append(row)
-    embed.add_field(name=f"📋 P0-Anmeldungen ({len(rows)})", value="🟠 eingetragen · 🟢 freigegeben", inline=False)
+    embed.add_field(
+        name=f"📋 P0-Anmeldungen ({len(rows)})",
+        value=(
+            f"{_emoji('beuteorange', '🟠')} **eingetragen** · "
+            f"{_emoji('Beutegrun', '🟢')} **freigegeben**"
+        ),
+        inline=False,
+    )
     for item, item_rows in sorted(grouped.items(), key=lambda pair: pair[0].casefold()):
         if len(embed.fields) >= 25:
             break
