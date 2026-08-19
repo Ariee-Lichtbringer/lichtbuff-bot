@@ -14,6 +14,7 @@ einer Gilde oder eines Raids verwendet werden.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -56,13 +57,45 @@ ITEM_EMOJI_ALIASES = {
 }
 
 
-def _item_icon(item_name: str) -> str:
+def _short_emoji_key(value: Any) -> str:
+    """Discord begrenzt Emoji-Namen auf 32 Zeichen.
+
+    Der bisherige P0-Bot hat lange Itemnamen beim Upload auf 25 Zeichen plus
+    einen stabilen SHA-1-Suffix gekürzt. Diese Form muss beim Lesen erneut
+    gebildet werden, sonst erscheinen lange Namen nur mit dem Ersatz-Rucksack.
+    """
+    key = _emoji_key(value)
+    if len(key) <= 32:
+        return key
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:6]
+    return f"{key[:25]}_{digest}"[:32]
+
+
+def _item_emoji_candidates(item_name: str) -> list[str]:
     raw = clean(item_name)
-    candidates = ITEM_EMOJI_ALIASES.get(raw.casefold(), [])
-    underscored = re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", unicodedata.normalize("NFKD", raw).encode("ascii", "ignore").decode().lower())).strip("_")
-    candidates.extend((underscored, f"item_{underscored}", f"loot_{underscored}", f"po_{underscored}"))
+    # Derselbe Umlaut-Umschrieb wie beim ursprünglichen Emoji-Upload.
+    ascii_name = raw.lower().replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+    ascii_name = unicodedata.normalize("NFKD", ascii_name).encode("ascii", "ignore").decode()
+    compact = re.sub(r"[^a-z0-9_]+", "", ascii_name)
+    underscored = re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", ascii_name)).strip("_")
+    candidates = list(ITEM_EMOJI_ALIASES.get(raw.casefold(), []))
+    for value in (compact, underscored):
+        if value:
+            candidates.extend((value, f"item_{value}", f"loot_{value}", f"po_{value}"))
+
+    result: list[str] = []
+    seen: set[str] = set()
     for candidate in candidates:
-        icon = EMOJI_CACHE.get(_emoji_key(candidate))
+        for key in (_emoji_key(candidate), _short_emoji_key(candidate)):
+            if key and key not in seen:
+                seen.add(key)
+                result.append(key)
+    return result
+
+
+def _item_icon(item_name: str) -> str:
+    for candidate in _item_emoji_candidates(item_name):
+        icon = EMOJI_CACHE.get(candidate)
         if icon:
             return icon
     return "🎒"
@@ -1653,7 +1686,7 @@ def _add_roster_fields(embed: discord.Embed, rows: list[dict[str, Any]], p0_rows
                 continue
             player = clean(row.get("player") or row.get("char")) or "Unbekannt"
             spec = _spec_for_row(row) or clean(row.get("role")) or "Flex"
-            lines.append(f"{_spec_icon(spec)} `{position}` **{player}**{_prio_marker(row, p0_players)}")
+            lines.append(f"{_spec_icon(spec)} `{position}` {player}{_prio_marker(row, p0_players)}")
         embed.add_field(name=f"{icon} __{label} ({len(lines)})__", value="\n".join(lines)[:1024], inline=True)
     status_groups = (
         ("🪑 Bank", {"bench", "bank"}), ("🕒 Spät", {"late", "spät", "spaet"}),
@@ -1665,12 +1698,17 @@ def _add_roster_fields(embed: discord.Embed, rows: list[dict[str, Any]], p0_rows
         if status_rows:
             embed.add_field(
                 name=f"{label} ({len(status_rows)})",
-                value="\n".join(f"• **{clean(row.get('player') or row.get('char')) or 'Unbekannt'}**" for row in status_rows)[:1024],
+                value="\n".join(f"• {clean(row.get('player') or row.get('char')) or 'Unbekannt'}" for row in status_rows)[:1024],
                 inline=True,
             )
 
 
 def _add_p0_fields(embed: discord.Embed, rows: list[dict[str, Any]]) -> None:
+    embed.add_field(
+        name="\u200b",
+        value="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        inline=False,
+    )
     if not rows:
         embed.add_field(name="📋 P0-Anmeldungen (0)", value="Noch keine P0-Anmeldungen.", inline=False)
         return
