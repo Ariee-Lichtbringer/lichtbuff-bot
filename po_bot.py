@@ -302,6 +302,7 @@ class LichtLootApi:
         raid_id: str,
         channel_id: int | str,
         message_id: int | str,
+        replace_existing: bool = False,
     ) -> None:
         result = await self.post(
             "lichtbotSetRaidDiscordMessage",
@@ -311,12 +312,12 @@ class LichtLootApi:
             raidId=required(raid_id, "raid_id"),
             discordChannelId=required(channel_id, "discord_channel_id"),
             discordMessageId=required(message_id, "discord_message_id"),
-            claimOnly="true",
+            claimOnly="false" if replace_existing else "true",
         )
         self.require_guild_response(result, guild)
         saved_raid = dict(result.get("raid") or {})
         identity = RaidIdentity.from_api(guild, saved_raid)
-        if result.get("claimed") is not True:
+        if not replace_existing and result.get("claimed") is not True:
             raise RuntimeError("Ein anderer Vorgang hat bereits einen Post für diesen Raid erstellt.")
         if identity.raid_id != raid_id:
             raise RuntimeError("API hat den Discord-Post an einen anderen Raid gebunden.")
@@ -442,6 +443,7 @@ class IdentityRegistry:
     def __init__(self, api: LichtLootApi) -> None:
         self.api = api
         self.by_discord_guild_id: dict[str, GuildIdentity] = {}
+        self.by_slug: dict[str, GuildIdentity] = {}
 
     async def refresh(self) -> None:
         guilds = await self.api.list_guilds()
@@ -455,6 +457,7 @@ class IdentityRegistry:
                 )
             registry[guild.discord_guild_id] = guild
         self.by_discord_guild_id = registry
+        self.by_slug = {guild.guild_slug: guild for guild in guilds}
 
     def for_discord_guild(self, discord_guild_id: int | str | None) -> GuildIdentity:
         key = required(discord_guild_id, "discord_guild_id")
@@ -474,6 +477,7 @@ class PoBotV2(discord.Client):
         self.api = api
         self.identities = IdentityRegistry(api)
         self._refresh_task: asyncio.Task[None] | None = None
+        self._queue_task: asyncio.Task[None] | None = None
         self._register_commands()
 
     def _register_commands(self) -> None:
@@ -624,6 +628,60 @@ class PoBotV2(discord.Client):
         )
         return post
 
+    async def create_or_replace_post(
+        self,
+        guild: GuildIdentity,
+        raid_id: str,
+        *,
+        force_replace: bool,
+        channel_id_override: str = "",
+    ) -> DiscordPostIdentity:
+        helper = await self.api.get_raid(guild, raid_id)
+        raid = dict(helper.get("raid") or {})
+        identity = RaidIdentity.from_api(guild, raid)
+        existing_message_id = clean(raid.get("discordMessageId"))
+        if existing_message_id and not force_replace:
+            return await self.refresh_existing_post(guild, raid_id)
+        p0_context, p0_entries = await asyncio.gather(
+            self.api.get_p0_context(guild, raid_id),
+            self.api.get_p0_entries(guild, raid_id),
+        )
+        channel_id = required(
+            channel_id_override or raid.get("discordChannelId"),
+            "raid.discord_channel_id",
+        )
+        discord_guild = self.get_guild(int(guild.discord_guild_id))
+        if discord_guild is None:
+            raise RuntimeError("Der konfigurierte Discord-Server ist nicht erreichbar.")
+        channel = discord_guild.get_channel(int(channel_id))
+        if channel is None:
+            channel = await self.fetch_channel(int(channel_id))
+        if not hasattr(channel, "send"):
+            raise RuntimeError("Der konfigurierte Discord-Kanal kann keine Nachrichten empfangen.")
+        message = await channel.send(
+            embed=build_combined_embed(guild, helper, p0_context, p0_entries),
+            view=CombinedSignupView(self, guild, raid_id, "pending"),
+        )
+        try:
+            await self.api.save_discord_post(
+                guild,
+                raid_id,
+                message.channel.id,
+                message.id,
+                replace_existing=force_replace,
+            )
+            await message.edit(view=CombinedSignupView(self, guild, raid_id, message.id))
+        except Exception:
+            await message.delete()
+            raise
+        return DiscordPostIdentity(
+            guild_id=guild.guild_id,
+            raid_id=identity.raid_id,
+            discord_guild_id=guild.discord_guild_id,
+            discord_channel_id=clean(message.channel.id),
+            discord_message_id=clean(message.id),
+        )
+
     async def setup_hook(self) -> None:
         await self.identities.refresh()
         await self.refresh_emoji_cache()
@@ -647,6 +705,46 @@ class PoBotV2(discord.Client):
                     )
         await self.tree.sync()
         self._refresh_task = asyncio.create_task(self.refresh_loop(), name="p0-v2-refresh")
+        self._queue_task = asyncio.create_task(self.queue_loop(), name="p0-v2-queue")
+
+    async def queue_loop(self) -> None:
+        await self.wait_until_ready()
+        while not self.is_closed():
+            try:
+                result = await self.api.get(
+                    "lichtbotGetQueueAllGuilds",
+                    types="raid_announcement",
+                    limit="20",
+                )
+                for item in list(result.get("items") or []):
+                    guild_slug = clean(item.get("guildSlug") or item.get("guild")).lower()
+                    guild = self.identities.by_slug.get(guild_slug)
+                    payload = dict(item.get("payload") or {})
+                    row_number = clean(item.get("rowNumber"))
+                    if guild is None:
+                        print(f"V2 Queue übersprungen: unbekannte Gilde {guild_slug}.")
+                        continue
+                    try:
+                        force_new = clean(payload.get("forceNewMessage")).lower() in {"1", "true", "yes", "ja"}
+                        await self.create_or_replace_post(
+                            guild,
+                            required(payload.get("raidId"), "raid_id"),
+                            force_replace=force_new,
+                            channel_id_override=clean(payload.get("channelId") or payload.get("discordChannelId")),
+                        )
+                        await self.api.post(
+                            "lichtbotResolveQueue",
+                            guild=guild.guild_slug,
+                            guildId=guild.guild_id,
+                            guildSlug=guild.guild_slug,
+                            rowNumber=row_number,
+                        )
+                        print(f"V2 Queue verarbeitet: {guild.guild_id}/{payload.get('raidId')} -> {row_number}")
+                    except Exception as error:
+                        print(f"V2 Queue fehlgeschlagen ({guild.guild_id}/{row_number}): {error}")
+            except Exception as error:
+                print(f"V2 Queue konnte nicht geladen werden: {error}")
+            await asyncio.sleep(5)
 
     async def refresh_emoji_cache(self) -> None:
         emojis = []
