@@ -2393,6 +2393,7 @@ async def edit_raid_message_preserving_po(message, raid, helper):
             await message.edit(embed=embed, attachments=[], view=RaidSignupView(raid))
         return
 
+    po_payload["guildSlug"] = message_guild_slug
     helper = preserve_raidhelper_signups(helper, po_payload)
     po_payload.update({
         "combinedRaidSnapshot": raid,
@@ -2401,7 +2402,9 @@ async def edit_raid_message_preserving_po(message, raid, helper):
     })
     items = await items_for_payload(po_payload)
     entries = await load_entries(po_payload)
-    p0plus_labels = await load_p0plus_labels(po_payload.get("raid") or "")
+    p0plus_labels = await load_p0plus_labels(
+        po_payload.get("raid") or "", payload_guild_slug(po_payload)
+    )
     embeds, view = po_message_parts(po_payload, entries, p0plus_labels, items)
     banner, _ = raid_banner_file(raid)
     if banner:
@@ -4066,9 +4069,9 @@ def format_points(value):
         return clean(value)
 
 
-async def load_p0plus_labels(raid):
+async def load_p0plus_labels(raid, guild_slug=""):
     raid_key = normalize_raid(raid)
-    guild_slug = current_guild_slug()
+    guild_slug = normalize_guild_slug(guild_slug or current_guild_slug())
     cache_key = f"{guild_slug}:{raid_key}"
     cached = p0plus_cache.get(cache_key)
     now = time.time()
@@ -6759,7 +6762,11 @@ class PoPointsButton(discord.ui.Button):
         self.items = list(items or [])
 
     async def callback(self, interaction):
-        labels = await load_p0plus_labels(self.payload.get("raid") or "")
+        interaction_payload = payload_for_interaction(self.payload, interaction)
+        labels = await load_p0plus_labels(
+            interaction_payload.get("raid") or "",
+            payload_guild_slug(interaction_payload),
+        )
         point_items = [
             item for item in self.items
             if p0plus_players_for_item(po_item_name_value(item), labels)
@@ -6932,6 +6939,9 @@ async def refresh_po_message(client, payload):
     channel = await fetch_accessible_channel(client, target_channel_id)
     if channel is None:
         raise RuntimeError(f"PO-Anmelder Ziel-Channel nicht erreichbar: {target_channel_id}")
+    channel_guild_slug = guild_slug_for_discord_server(getattr(channel, "guild", None), "")
+    if channel_guild_slug:
+        payload["guildSlug"] = channel_guild_slug
     message = await channel.fetch_message(int(payload["messageId"]))
     if not message_is_po_signup(message) and not combined_raid_snapshot(payload):
         raise RuntimeError(
@@ -6940,7 +6950,9 @@ async def refresh_po_message(client, payload):
         )
     items = await items_for_payload(payload)
     entries = await load_entries(payload)
-    p0plus_labels = await load_p0plus_labels(payload.get("raid") or "")
+    p0plus_labels = await load_p0plus_labels(
+        payload.get("raid") or "", payload_guild_slug(payload)
+    )
     if combined_raid_snapshot(payload):
         helper = await get_raid_helper_for_refresh(payload)
         if helper and helper.get("success"):
@@ -7039,9 +7051,14 @@ async def post_or_update_from_queue(client, payload):
     channel = await fetch_accessible_channel(client, target_channel_id)
     if channel is None:
         raise RuntimeError(f"PO-Anmelder Ziel-Channel nicht erreichbar: {target_channel_id}")
+    channel_guild_slug = guild_slug_for_discord_server(getattr(channel, "guild", None), "")
+    if channel_guild_slug:
+        normalized["guildSlug"] = channel_guild_slug
     items = await items_for_payload(normalized)
     entries = await load_entries(normalized)
-    p0plus_labels = await load_p0plus_labels(normalized.get("raid") or "")
+    p0plus_labels = await load_p0plus_labels(
+        normalized.get("raid") or "", payload_guild_slug(normalized)
+    )
     embeds, view = po_message_parts(normalized, entries, p0plus_labels, items)
     banner, _ = raid_banner_file(combined_raid_snapshot(normalized) or {})
     message = None
@@ -7747,6 +7764,12 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
                         if not ({"slots", "gesamt angemeldet", "fest angemeldet", "rollenverteilung"} & field_names):
                             continue
                         candidate_post_id = signup_post_id_from_message(candidate)
+                        # Alte ausführliche P0-Posts enthalten ebenfalls die
+                        # Raid-Rosterfelder. Ihre P0-Post-ID darf trotzdem nie
+                        # als kanonische Raid-Nachricht übernommen werden.
+                        candidate_id_key = candidate_post_id.casefold()
+                        if "-po-anmelder-" in candidate_id_key or "-p0-anmelder-" in candidate_id_key:
+                            continue
                         candidate_raid = normalize_raid(clean(embed.title)).lower()
                         field_text = " ".join(clean(field.value) for field in embed.fields)
                         matching_raids = []
