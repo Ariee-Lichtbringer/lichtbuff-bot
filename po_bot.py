@@ -1187,7 +1187,7 @@ class P0CharacterSelect(discord.ui.Select):
                 description=" · ".join(filter(None, [clean(row.get("className")), clean(row.get("server"))]))[:100] or None,
                 value=clean(row.get("name"))[:100],
                 emoji=_class_select_emoji(clean(row.get("className"))),
-                default=index == 0,
+                default=clean(row.get("name")).casefold() == clean(parent.character).casefold(),
             )
             for index, row in enumerate(characters[:25])
         ]
@@ -1222,6 +1222,51 @@ class P0ItemSelect(discord.ui.Select):
         await interaction.response.defer()
 
 
+class P0ItemSearchModal(discord.ui.Modal, title="P0-Item suchen"):
+    search = discord.ui.TextInput(
+        label="Itemname oder Teil des Namens",
+        placeholder="z. B. Neltharion",
+        min_length=2,
+        max_length=100,
+    )
+
+    def __init__(self, parent: "P0SignupSelectionView") -> None:
+        super().__init__()
+        self.parent_view = parent
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        query = clean(str(self.search)).casefold()
+        matches = [
+            row for row in self.parent_view.all_items
+            if query in clean(row.get("name") or row.get("item") or row.get("itemName")).casefold()
+        ]
+        if not matches:
+            await interaction.followup.send(
+                "⚠️ Kein gespeichertes LichtLoot-Item passt zu dieser Suche.", ephemeral=True
+            )
+            return
+        result_view = P0SignupSelectionView(
+            self.parent_view.bot,
+            self.parent_view.guild_identity,
+            self.parent_view.raid_id,
+            self.parent_view.channel_id,
+            self.parent_view.message_id,
+            self.parent_view.characters,
+            matches[:25],
+            self.parent_view.discord_user_id,
+            self.parent_view.discord_name,
+            selected_character=self.parent_view.character,
+            all_items=self.parent_view.all_items,
+        )
+        suffix = " (erste 25 Treffer)" if len(matches) > 25 else ""
+        await interaction.followup.send(
+            f"🔎 **{len(matches)} Item(s) gefunden{suffix}:** Wähle das richtige Item aus.",
+            view=result_view,
+            ephemeral=True,
+        )
+
+
 class P0SignupSelectionView(discord.ui.View):
     def __init__(
         self,
@@ -1234,6 +1279,8 @@ class P0SignupSelectionView(discord.ui.View):
         items: list[dict[str, Any]],
         discord_user_id: int | str,
         discord_name: str,
+        selected_character: str = "",
+        all_items: list[dict[str, Any]] | None = None,
     ) -> None:
         super().__init__(timeout=180)
         self.bot = bot
@@ -1243,11 +1290,17 @@ class P0SignupSelectionView(discord.ui.View):
         self.message_id = message_id
         self.discord_user_id = discord_user_id
         self.discord_name = discord_name
-        self.character = clean(characters[0].get("name")) if characters else ""
+        self.characters = characters
+        self.all_items = list(all_items if all_items is not None else items)
+        self.character = clean(selected_character) or (clean(characters[0].get("name")) if characters else "")
         first_item = items[0] if items else {}
         self.item_name = clean(first_item.get("name") or first_item.get("item") or first_item.get("itemName"))
         self.add_item(P0CharacterSelect(self, characters))
         self.add_item(P0ItemSelect(self, items))
+
+    @discord.ui.button(label="🔎 Item suchen", style=discord.ButtonStyle.primary, row=2)
+    async def search_item(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(P0ItemSearchModal(self))
 
     @discord.ui.button(label="P0 verbindlich eintragen", style=discord.ButtonStyle.success, row=2)
     async def submit(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
