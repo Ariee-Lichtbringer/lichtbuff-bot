@@ -675,6 +675,14 @@ class PoBotV2(discord.Client):
                     ephemeral=True,
                 )
 
+        @self.tree.command(
+            name="anmelder_refresh",
+            description="Aktualisiert die neuen kombinierten Raid-/P0-Posts.",
+        )
+        @app_commands.default_permissions(manage_guild=True)
+        async def legacy_refresh_alias(interaction: discord.Interaction) -> None:
+            await refresh.callback(interaction, None)
+
     async def refresh_existing_post(
         self, guild: GuildIdentity, raid_id: str
     ) -> DiscordPostIdentity:
@@ -831,7 +839,7 @@ class PoBotV2(discord.Client):
             try:
                 result = await self.api.get(
                     "lichtbotGetQueueAllGuilds",
-                    types="raid_announcement",
+                    types="raid_announcement,p0_post_refresh",
                     limit="20",
                 )
                 for item in list(result.get("items") or []):
@@ -1692,6 +1700,30 @@ def _add_p0_fields(embed: discord.Embed, rows: list[dict[str, Any]]) -> None:
         embed.add_field(name=f"{_item_icon(item)} {item}", value="\n".join(lines)[:1024], inline=True)
 
 
+def _fit_embed_to_discord_limit(embed: discord.Embed, maximum: int = 5900) -> discord.Embed:
+    """Behält alle Bereiche, kürzt aber lange Feldlisten unter Discord 6000 Zeichen."""
+    while len(embed) > maximum:
+        candidates = [
+            (index, field)
+            for index, field in enumerate(embed.fields)
+            if len(field.value) > 140
+        ]
+        if candidates:
+            index, field = max(candidates, key=lambda pair: len(pair[1].value))
+            excess = len(embed) - maximum
+            keep = max(120, len(field.value) - excess - 40)
+            value = field.value[:keep].rstrip() + "\n… weitere Einträge in der Webansicht"
+            embed.set_field_at(index, name=field.name, value=value[:1024], inline=field.inline)
+            continue
+        if embed.description and len(embed.description) > 200:
+            excess = len(embed) - maximum
+            keep = max(180, len(embed.description) - excess - 10)
+            embed.description = embed.description[:keep].rstrip() + "…"
+            continue
+        break
+    return embed
+
+
 def build_combined_embed(
     guild: GuildIdentity,
     helper: dict[str, Any],
@@ -1760,7 +1792,7 @@ def build_combined_embed(
             image_url = f"https://lichtloot-production.up.railway.app/images/raid-banners/{raid_key}.jpg"
     if image_url.startswith(("https://", "http://")):
         embed.set_image(url=image_url)
-    return embed
+    return _fit_embed_to_discord_limit(embed)
 
 
 API_URL = clean(os.getenv("PO_BOT_API_URL") or os.getenv("LICHTLOOT_API_URL") or API_DEFAULT)
