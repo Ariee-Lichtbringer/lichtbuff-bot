@@ -641,7 +641,9 @@ class PoBotV2(discord.Client):
                     raise
                 try:
                     await message.edit(
-                        view=CombinedSignupView(self, guild, raid_id, message.id)
+                        view=CombinedSignupView(
+                            self, guild, raid_id, message.id, _raid_signup_enabled(raid)
+                        )
                     )
                 except Exception as error:
                     print(f"V2-Post wurde gespeichert, aber Buttons fehlen vorübergehend: {error}")
@@ -751,7 +753,9 @@ class PoBotV2(discord.Client):
         )
         await message.edit(
             embed=build_combined_embed(guild, helper, p0_context, p0_entries),
-            view=CombinedSignupView(self, guild, raid_id, message_id),
+            view=CombinedSignupView(
+                self, guild, raid_id, message_id, _raid_signup_enabled(raid)
+            ),
         )
         await self.remove_duplicate_raid_posts(channel, raid_id, message_id)
         return post
@@ -788,7 +792,9 @@ class PoBotV2(discord.Client):
             raise RuntimeError("Der konfigurierte Discord-Kanal kann keine Nachrichten empfangen.")
         message = await channel.send(
             embed=build_combined_embed(guild, helper, p0_context, p0_entries),
-            view=CombinedSignupView(self, guild, raid_id, "pending"),
+            view=CombinedSignupView(
+                self, guild, raid_id, "pending", _raid_signup_enabled(raid)
+            ),
         )
         try:
             await self.api.save_discord_post(
@@ -798,7 +804,11 @@ class PoBotV2(discord.Client):
                 message.id,
                 replace_existing=force_replace,
             )
-            await message.edit(view=CombinedSignupView(self, guild, raid_id, message.id))
+            await message.edit(
+                view=CombinedSignupView(
+                    self, guild, raid_id, message.id, _raid_signup_enabled(raid)
+                )
+            )
         except Exception:
             await message.delete()
             raise
@@ -859,6 +869,7 @@ class PoBotV2(discord.Client):
                             guild,
                             required(raid.get("raidId"), "raid_id"),
                             message_id,
+                            _raid_signup_enabled(raid),
                         ),
                         message_id=int(message_id),
                     )
@@ -1428,12 +1439,17 @@ class CombinedSignupView(discord.ui.View):
         guild: GuildIdentity,
         raid_id: str,
         message_id: int | str,
+        raid_signup_enabled: bool = True,
     ) -> None:
         super().__init__(timeout=None)
         self.bot = bot
         self.guild_identity = guild
         self.raid_id = required(raid_id, "raid_id")
         self.message_id = required(message_id, "discord_message_id")
+        if not raid_signup_enabled:
+            for item in list(self.children):
+                if clean(getattr(item, "custom_id", "")).startswith("p0v2:raid_"):
+                    self.remove_item(item)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         try:
@@ -1625,6 +1641,16 @@ def _truthy(value: Any) -> bool:
     return value is True or clean(value).lower() in {"1", "true", "yes", "ja", "freigegeben"}
 
 
+def _raid_signup_enabled(raid: dict[str, Any]) -> bool:
+    """Übernimmt exakt den Baustein „Raidanmelder im Discord erstellen“."""
+    value = raid.get("raidHelperEnabled")
+    if value is None:
+        value = raid.get("raidhelperEnabled")
+    if value is None:
+        return True
+    return value is True or clean(value).lower() in {"1", "true", "yes", "ja", "on"}
+
+
 def _prio_marker(row: dict[str, Any], p0_players: dict[str, str]) -> str:
     player_key = clean(row.get("player") or row.get("char")).casefold()
     po_status = clean(row.get("poApprovalStatus") or p0_players.get(player_key)).lower()
@@ -1703,12 +1729,18 @@ def _add_roster_fields(embed: discord.Embed, rows: list[dict[str, Any]], p0_rows
             )
 
 
-def _add_p0_fields(embed: discord.Embed, rows: list[dict[str, Any]]) -> None:
-    embed.add_field(
-        name="\u200b",
-        value="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        inline=False,
-    )
+def _add_p0_fields(
+    embed: discord.Embed,
+    rows: list[dict[str, Any]],
+    *,
+    separator: bool = True,
+) -> None:
+    if separator:
+        embed.add_field(
+            name="\u200b",
+            value="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            inline=False,
+        )
     if not rows:
         embed.add_field(name="📋 P0-Anmeldungen (0)", value="Noch keine P0-Anmeldungen.", inline=False)
         return
@@ -1769,8 +1801,10 @@ def build_combined_embed(
     p0_entries: list[dict[str, Any]] | None = None,
 ) -> discord.Embed:
     raid = dict(helper.get("raid") or {})
+    raid_signup_enabled = _raid_signup_enabled(raid)
     identity = RaidIdentity.from_api(guild, raid)
-    title = (clean(raid.get("raidName") or raid.get("raid")) or "Raid").upper()
+    raid_title = (clean(raid.get("raidName") or raid.get("raid")) or "Raid").upper()
+    title = raid_title if raid_signup_enabled else f"{raid_title} P0-ANMELDER"
     raid_date = clean(raid.get("raidDate")) or "–"
     raid_time = clean(raid.get("raidTime")) or "–"
     configured_description = clean(raid.get("description"))
@@ -1792,7 +1826,7 @@ def build_combined_embed(
         value = clean(raid.get(key))
         if value:
             slot_parts.append(f"{label} {value}")
-    if slot_parts:
+    if raid_signup_enabled and slot_parts:
         embed.add_field(name="Raidplätze", value=" · ".join(slot_parts), inline=False)
     prio_pin = clean(raid.get("playerPin") or raid.get("prioPin"))
     if raid.get("prioEnabled") is not False and prio_pin:
@@ -1816,8 +1850,9 @@ def build_combined_embed(
         ),
         inline=False,
     )
-    _add_roster_fields(embed, raid_rows, p0_rows)
-    _add_p0_fields(embed, p0_rows)
+    if raid_signup_enabled:
+        _add_roster_fields(embed, raid_rows, p0_rows)
+    _add_p0_fields(embed, p0_rows, separator=raid_signup_enabled)
     embed.set_footer(
         text=f"Gilden-ID: {guild.guild_id} · Raid-ID: {identity.raid_id}"
     )
