@@ -2360,6 +2360,31 @@ async def edit_raid_message_preserving_po(message, raid, helper):
     )
     raid["guildSlug"] = message_guild_slug
     state, state_key, po_payload = combined_po_payload_for_message(getattr(message, "id", ""))
+    if not po_payload and message_is_po_signup(message):
+        # Eine zweite Bot-Instanz oder ein Neustart besitzt den kombinierten
+        # P0-Zustand noch nicht im lokalen JSON. In diesem Fall ist LichtLoot
+        # die gemeinsame Quelle. Ein Raid-Refresh darf den sichtbaren P0-Teil
+        # niemals nur wegen eines leeren lokalen Caches entfernen.
+        api_payloads = await load_payloads_from_api_entries()
+        po_payload = next(
+            (
+                dict(candidate)
+                for candidate in api_payloads
+                if clean(candidate.get("messageId") or candidate.get("discordMessageId"))
+                == clean(getattr(message, "id", ""))
+                and payload_guild_slug(candidate) == message_guild_slug
+            ),
+            None,
+        )
+        if po_payload:
+            state_key = po_post_state_key(po_payload)
+        else:
+            print(
+                "Raidanmelder-Refresh übersprungen: Nachricht enthält einen P0-Anmelder, "
+                "aber der gemeinsame P0-Zustand konnte nicht geladen werden "
+                f"({getattr(message, 'id', '')})."
+            )
+            return
     if not po_payload:
         embed = build_raid_announcement_embed(raid)
         add_raid_signup_roster_fields(embed, helper)
