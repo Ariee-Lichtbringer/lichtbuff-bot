@@ -347,7 +347,11 @@ class LichtLootApi:
             raidId=required(raid_id, "raid_id"),
         )
         self.require_guild_response(result, guild)
-        return [dict(row) for row in list(result.get("entries") or []) if not row.get("configOnly")]
+        return [
+            {**dict(row), "entrySource": "po_post"}
+            for row in list(result.get("entries") or [])
+            if not row.get("configOnly")
+        ]
 
     async def get_linked_characters(
         self, guild: GuildIdentity, discord_user_id: int | str
@@ -554,6 +558,25 @@ class LichtLootApi:
             status=required(status, "approval_status"),
             reviewerDiscordId=required(reviewer_discord_id, "reviewer_discord_id"),
             reviewerDiscordName=required(reviewer_discord_name, "reviewer_discord_name"),
+        )
+        self.require_guild_response(result, guild)
+
+    async def review_po_post_entry(
+        self,
+        guild: GuildIdentity,
+        *,
+        entry_id: str,
+        status: str,
+        reviewer_discord_name: str,
+    ) -> None:
+        result = await self.post(
+            "reviewPoPostEntry",
+            guild=guild.guild_slug,
+            guildId=guild.guild_id,
+            guildSlug=guild.guild_slug,
+            entryId=required(entry_id, "entry_id"),
+            status=required(status, "approval_status"),
+            reviewer=clean(reviewer_discord_name) or "Gildenleitung",
         )
         self.require_guild_response(result, guild)
 
@@ -1391,16 +1414,23 @@ class P0ReviewSelect(discord.ui.Select):
         self.guild_identity = guild
         self.raid_id = raid_id
         self.review_status = status
-        options = [
-            discord.SelectOption(
-                label=(clean(row.get("player") or row.get("char")) or "Unbekannt")[:100],
-                description=(clean(row.get("item") or row.get("itemName")) or "P0-Item")[:100],
-                value=required(row.get("id") or row.get("signupId"), "signup_id"),
-                emoji="✅" if status == "approved" else "❌",
+        self.entries_by_value: dict[str, dict[str, Any]] = {}
+        options = []
+        for index, row in enumerate(entries[:25]):
+            entry_id = clean(row.get("id") or row.get("signupId"))
+            if not entry_id:
+                continue
+            source = "po_post" if clean(row.get("entrySource")) == "po_post" else "signup"
+            value = f"{source}:{entry_id}"
+            self.entries_by_value[value] = row
+            options.append(
+                discord.SelectOption(
+                    label=(clean(row.get("player") or row.get("char")) or "Unbekannt")[:100],
+                    description=(clean(row.get("item") or row.get("itemName")) or "P0-Item")[:100],
+                    value=value[:100],
+                    emoji="✅" if status == "approved" else "❌",
+                )
             )
-            for row in entries[:25]
-            if clean(row.get("id") or row.get("signupId"))
-        ]
         super().__init__(
             placeholder="P0-Eintrag auswählen",
             min_values=1,
@@ -1411,14 +1441,25 @@ class P0ReviewSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            await self.bot.api.review_p0_signup(
-                self.guild_identity,
-                self.raid_id,
-                signup_id=self.values[0],
-                status=self.review_status,
-                reviewer_discord_id=interaction.user.id,
-                reviewer_discord_name=interaction.user.display_name,
-            )
+            selected_value = self.values[0]
+            selected = self.entries_by_value[selected_value]
+            entry_id = required(selected.get("id") or selected.get("signupId"), "entry_id")
+            if clean(selected.get("entrySource")) == "po_post":
+                await self.bot.api.review_po_post_entry(
+                    self.guild_identity,
+                    entry_id=entry_id,
+                    status=self.review_status,
+                    reviewer_discord_name=interaction.user.display_name,
+                )
+            else:
+                await self.bot.api.review_p0_signup(
+                    self.guild_identity,
+                    self.raid_id,
+                    signup_id=entry_id,
+                    status=self.review_status,
+                    reviewer_discord_id=interaction.user.id,
+                    reviewer_discord_name=interaction.user.display_name,
+                )
             await self.bot.refresh_existing_post(self.guild_identity, self.raid_id)
             label = "freigegeben" if self.review_status == "approved" else "abgelehnt"
             await interaction.followup.send(f"✅ P0-Eintrag wurde {label}.", ephemeral=True)
@@ -1574,12 +1615,24 @@ class CombinedSignupView(discord.ui.View):
                 ephemeral=True,
             )
             return
-        context = await self.bot.api.get_p0_context(self.guild_identity, self.raid_id)
-        entries = [
-            row for row in list(context.get("signups") or [])
-            if clean(row.get("approvalStatus")).lower() != status
-            and clean(row.get("id") or row.get("signupId"))
-        ]
+        context, legacy_entries = await asyncio.gather(
+            self.bot.api.get_p0_context(self.guild_identity, self.raid_id),
+            self.bot.api.get_p0_entries(self.guild_identity, self.raid_id),
+        )
+        combined = [
+            {**dict(row), "entrySource": "signup"}
+            for row in list(context.get("signups") or [])
+        ] + list(legacy_entries)
+        entries = []
+        seen: set[tuple[str, str]] = set()
+        for row in combined:
+            entry_id = clean(row.get("id") or row.get("signupId"))
+            source = clean(row.get("entrySource")) or "signup"
+            key = (source, entry_id)
+            if not entry_id or key in seen or clean(row.get("approvalStatus")).lower() == status:
+                continue
+            seen.add(key)
+            entries.append(row)
         if not entries:
             await interaction.response.send_message("ℹ️ Kein passender P0-Eintrag vorhanden.", ephemeral=True)
             return
