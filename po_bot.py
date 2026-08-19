@@ -7887,32 +7887,11 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle", chan
                                 if refreshed is True:
                                     raid_refreshed += 1
                                     continue
-                            if refreshed == "missing_message":
-                                raid_helper_enabled = (
-                                    raid.get("raidHelperEnabled") is True
-                                    or clean(raid.get("raidHelperEnabled") or raid.get("raidhelperEnabled")).lower()
-                                    in {"1", "true", "yes", "ja", "on"}
-                                )
-                                if not raid_helper_enabled:
-                                    skipped += 1
-                                    continue
-                            posted = await post_raid_announcement_by_id(
-                                clean(raid.get("raidId") or raid.get("id")),
-                                raid_channel_id,
-                                raid,
-                                force_new=True,
+                            skipped += 1
+                            errors.append(
+                                f"Raid {clean(raid.get('raidName') or raid.get('raid') or raid.get('raidId'))}: "
+                                "Bestehender Anmelder nicht gefunden; beim Refresh wurde kein neuer Post erstellt."
                             )
-                            if posted is True:
-                                raid_replaced += 1
-                                if old_message is not None:
-                                    try:
-                                        await old_message.delete()
-                                    except (discord.Forbidden, discord.NotFound):
-                                        errors.append(
-                                            f"Alter Post für {clean(raid.get('raidName') or raid.get('raid'))} konnte nicht entfernt werden."
-                                        )
-                            else:
-                                skipped += 1
                         else:
                             skipped += 1
                     except Exception as error:
@@ -7921,11 +7900,8 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle", chan
                 errors.append(f"Raidanmelder konnten nicht geladen werden: {error}")
 
         if kind in {"alle", "po"}:
-            # Nach dem Raid-Refresh den gerade gespeicherten Discord-Zielpost
-            # erneut laden. Falls ein kombinierter Raid-/P0-Anmelder zuvor
-            # gelöscht war, kann der Raid-Refresh bereits einen Ersatzpost
-            # angelegt haben. Der P0-Refresh muss genau diesen Post übernehmen,
-            # damit beide Anmelder wieder gemeinsam im Channel stehen.
+            # Nach dem Raid-Refresh den gespeicherten Discord-Zielpost erneut
+            # laden. Refreshes bearbeiten ausschließlich vorhandene Posts.
             current_raids = []
             if kind in {"alle", "po"}:
                 try:
@@ -8135,13 +8111,13 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle", chan
                     seen_messages.add(message_id)
                 try:
                     if not message_id:
-                        await post_or_update_from_queue(client, payload)
-                    elif paired_with_raid_post:
-                        # post_or_update speichert die neue gemeinsame
-                        # Message-ID zusätzlich im lokalen/API-Zustand.
-                        await post_or_update_from_queue(client, payload)
-                    else:
-                        await refresh_po_message(client, payload)
+                        skipped += 1
+                        errors.append(
+                            f"PO {clean(payload.get('title') or payload.get('postKey'))}: "
+                            "Keine bestehende Message-ID; beim Refresh wurde kein neuer Post erstellt."
+                        )
+                        continue
+                    await refresh_po_message(client, payload)
                     po_refreshed += 1
                 except discord.NotFound:
                     errors.append(
@@ -8160,11 +8136,6 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle", chan
                     paired_message_id = clean(
                         paired_raid.get("discordMessageId") or paired_raid.get("discord_message_id")
                     )
-                    raid_helper_enabled = (
-                        paired_raid.get("raidHelperEnabled") is True
-                        or clean(paired_raid.get("raidHelperEnabled") or paired_raid.get("raidhelperEnabled")).lower()
-                        in {"1", "true", "yes", "ja", "on"}
-                    )
                     try:
                         if paired_channel_id and paired_message_id:
                             refreshed = await refresh_raid_signup_message_by_id(
@@ -8172,13 +8143,6 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle", chan
                                 paired_channel_id,
                                 paired_message_id,
                                 paired_raid,
-                            )
-                        elif paired_channel_id and raid_helper_enabled:
-                            refreshed = await post_raid_announcement_by_id(
-                                payload_raid_id,
-                                paired_channel_id,
-                                paired_raid,
-                                force_new=True,
                             )
                         else:
                             refreshed = False
@@ -8382,7 +8346,7 @@ async def channel_leeren(interaction, bestaetigung: str):
 
 
 async def restart_all_active_signup_posts():
-    """Registriert und aktualisiert bestehende Anmelder ohne neue Posts anzulegen."""
+    """Registriert und aktualisiert ausschließlich bestehende Anmelder."""
     await refresh_guild_registry()
     raid_views = 0
     raid_refreshed = 0
@@ -8412,30 +8376,6 @@ async def restart_all_active_signup_posts():
                             errors.append(
                                 f"Alte Raidanmelder-Dublette für {clean(raid.get('raidName') or raid.get('raidId'))}: {error}"
                             )
-                    raid_helper_enabled = (
-                        raid.get("raidHelperEnabled") is True
-                        or clean(raid.get("raidHelperEnabled") or raid.get("raidhelperEnabled")).lower()
-                        in {"1", "true", "yes", "ja", "on"}
-                    )
-                    if channel_id and not message_id and raid_helper_enabled:
-                        try:
-                            posted = await post_raid_announcement_by_id(
-                                clean(raid.get("raidId") or raid.get("id")),
-                                channel_id,
-                                raid,
-                                force_new=True,
-                            )
-                            if posted is True:
-                                raid_refreshed += 1
-                            else:
-                                skipped += 1
-                        except Exception as error:
-                            errors.append(
-                                "Fehlender Raidanmelder konnte nicht wiederhergestellt werden "
-                                f"({clean(raid.get('raidName') or raid.get('raidId'))}): {error}"
-                            )
-                        await asyncio.sleep(0.25)
-                        continue
                     if not channel_id or not message_id:
                         skipped += 1
                         continue
@@ -8457,9 +8397,8 @@ async def restart_all_active_signup_posts():
                             f"Raid {clean(raid.get('raidName') or raid.get('raid') or raid.get('raidId'))}: {error}"
                         )
                     await asyncio.sleep(0.25)
-                # Ein eventuell neu erstellter Raidpost besitzt jetzt eine
-                # neue Message-ID. Diese wird für die anschließende gemeinsame
-                # Raid-/P0-Wiederherstellung benötigt.
+                # Erneut laden, damit die anschließenden P0-Refreshes mit dem
+                # aktuellen API-Stand arbeiten. Es wird kein Post neu erstellt.
                 refreshed_result = await asyncio.to_thread(api_get, {
                     "action": "getActiveRaids",
                     "guild": guild_slug,
@@ -8654,18 +8593,19 @@ async def restart_all_active_signup_posts():
                 if not post_identity or post_identity in seen_po_posts:
                     continue
                 seen_po_posts.add(post_identity)
+                message_id = clean(payload.get("messageId") or payload.get("discordMessageId"))
+                if not message_id:
+                    skipped += 1
+                    continue
                 try:
-                    # Auch getrennte P0-Anmelder vollständig prüfen. Eine
-                    # alte gespeicherte Message-ID kann auf einen vollständigen
-                    # Raidanmelder zeigen und muss dann durch einen echten
-                    # P0-Anmelder ersetzt werden.
-                    await post_or_update_from_queue(client, payload)
+                    await refresh_po_message(client, payload)
                     po_views += 1
                 except discord.NotFound:
-                    payload["messageId"] = ""
-                    payload["discordMessageId"] = ""
-                    await post_or_update_from_queue(client, payload)
-                    po_views += 1
+                    skipped += 1
+                    errors.append(
+                        f"PO {clean(payload.get('title') or payload.get('postKey'))}: "
+                        "Bestehender Anmelder nicht gefunden; es wurde kein neuer Post erstellt."
+                    )
                 except Exception as error:
                     errors.append(
                         f"PO {clean(payload.get('title') or payload.get('postKey'))}: {error}"
@@ -8684,7 +8624,7 @@ async def restart_all_active_signup_posts():
 
 @client.tree.command(
     name="anmelder_neustart",
-    description="Stellt nach einem Bot-Absturz alle aktuellen Raid- und PO-Anmelder wieder her.",
+    description="Verbindet und aktualisiert vorhandene Raid- und P0-Anmelder neu.",
 )
 @app_commands.guild_only()
 async def anmelder_neustart(interaction):
