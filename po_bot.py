@@ -742,10 +742,16 @@ class PoBotV2(discord.Client):
             await refresh.callback(interaction, None)
 
     async def refresh_existing_post(
-        self, guild: GuildIdentity, raid_id: str
+        self,
+        guild: GuildIdentity,
+        raid_id: str,
+        raid_signup_enabled_override: bool | None = None,
     ) -> DiscordPostIdentity:
         helper = await self.api.get_raid(guild, raid_id)
         raid = dict(helper.get("raid") or {})
+        if raid_signup_enabled_override is not None:
+            raid["raidHelperEnabled"] = raid_signup_enabled_override
+            helper = {**helper, "raid": raid}
         identity = RaidIdentity.from_api(guild, raid)
         channel_id = required(raid.get("discordChannelId"), "discord_channel_id")
         message_id = required(raid.get("discordMessageId"), "discord_message_id")
@@ -790,13 +796,22 @@ class PoBotV2(discord.Client):
         *,
         force_replace: bool,
         channel_id_override: str = "",
+        raid_signup_enabled_override: bool | None = None,
+        legacy_post_key: str = "",
     ) -> DiscordPostIdentity:
         helper = await self.api.get_raid(guild, raid_id)
         raid = dict(helper.get("raid") or {})
+        if raid_signup_enabled_override is not None:
+            raid["raidHelperEnabled"] = raid_signup_enabled_override
+            helper = {**helper, "raid": raid}
         identity = RaidIdentity.from_api(guild, raid)
         existing_message_id = clean(raid.get("discordMessageId"))
         if existing_message_id and not force_replace:
-            return await self.refresh_existing_post(guild, raid_id)
+            return await self.refresh_existing_post(
+                guild,
+                raid_id,
+                raid_signup_enabled_override=raid_signup_enabled_override,
+            )
         p0_context, p0_entries = await asyncio.gather(
             self.api.get_p0_context(guild, raid_id),
             self.api.get_p0_entries(guild, raid_id),
@@ -836,7 +851,12 @@ class PoBotV2(discord.Client):
             await message.delete()
             raise
         if force_replace:
-            await self.remove_duplicate_raid_posts(channel, raid_id, message.id, purge_legacy=True)
+            await self.remove_duplicate_raid_posts(
+                channel,
+                raid_id,
+                message.id,
+                legacy_post_key=legacy_post_key,
+            )
         return DiscordPostIdentity(
             guild_id=guild.guild_id,
             raid_id=identity.raid_id,
@@ -850,7 +870,7 @@ class PoBotV2(discord.Client):
         channel: discord.abc.Messageable,
         raid_id: str,
         canonical_message_id: int | str,
-        purge_legacy: bool = False,
+        legacy_post_key: str = "",
     ) -> None:
         if not hasattr(channel, "history"):
             return
@@ -864,7 +884,10 @@ class PoBotV2(discord.Client):
                     continue
                 footer_texts = [clean(embed.footer.text) for embed in candidate.embeds if embed.footer]
                 is_same_v2_post = any(marker in footer for footer in footer_texts)
-                is_legacy_post = purge_legacy and any(footer.startswith("Post-ID:") for footer in footer_texts)
+                legacy_marker = f"Post-ID: {clean(legacy_post_key)}"
+                is_legacy_post = bool(legacy_post_key) and any(
+                    footer == legacy_marker for footer in footer_texts
+                )
                 if not is_same_v2_post and not is_legacy_post:
                     continue
                 await candidate.delete()
@@ -944,6 +967,7 @@ class PoBotV2(discord.Client):
                             queue_type == "po_post"
                             or clean(payload.get("forceNewMessage")).lower() in {"1", "true", "yes", "ja"}
                         )
+                        raid_signup_override = _queue_raid_signup_override(payload)
                         await self.create_or_replace_post(
                             guild,
                             raid_id,
@@ -953,6 +977,12 @@ class PoBotV2(discord.Client):
                                 or payload.get("discordChannelId")
                                 or payload.get("targetChannelId")
                                 or payload.get("sourceChannelId")
+                            ),
+                            raid_signup_enabled_override=raid_signup_override,
+                            legacy_post_key=clean(
+                                payload.get("postKey")
+                                or payload.get("poPostKey")
+                                or payload.get("postId")
                             ),
                         )
                         await self.api.post(
@@ -1787,6 +1817,24 @@ CLASS_LABELS = {
 
 def _truthy(value: Any) -> bool:
     return value is True or clean(value).lower() in {"1", "true", "yes", "ja", "freigegeben"}
+
+
+def _queue_raid_signup_override(payload: dict[str, Any]) -> bool | None:
+    """Liest den ausdrücklich von der API gesetzten Discord-Postmodus.
+
+    Alte Queue-Einträge besitzen diese Angabe nicht und verwenden weiterhin
+    den am Raid gespeicherten Wert. Neue Aufträge verlieren den gewählten
+    Modus dadurch auch dann nicht, wenn parallel ein Raid gleichen Typs und
+    Termins im jeweils anderen Modus existiert.
+    """
+    mode = clean(payload.get("postMode") or payload.get("discordPostMode")).lower()
+    if mode in {"p0_only", "po_only", "p0-only", "po-only"}:
+        return False
+    if mode in {"raid_p0", "raid_po", "combined", "raid-p0", "raid-po"}:
+        return True
+    if "raidSignupEnabled" in payload:
+        return _truthy(payload.get("raidSignupEnabled"))
+    return None
 
 
 def _raid_signup_enabled(raid: dict[str, Any]) -> bool:
