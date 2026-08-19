@@ -1764,6 +1764,27 @@ def _role_for(row: dict[str, Any]) -> str:
 def _add_roster_fields(embed: discord.Embed, rows: list[dict[str, Any]], p0_rows: list[dict[str, Any]]) -> None:
     active_statuses = {"signed", "angemeldet", "confirmed", "fest", ""}
     active = [row for row in rows if clean(row.get("status")).lower() in active_statuses]
+    status_sets = {
+        "bank": {"bench", "bank"},
+        "late": {"late", "spät", "spaet"},
+        "tentative": {"tentative", "vorläufig", "vorlaeufig"},
+        "absent": {"absent", "abwesend"},
+    }
+    status_counts = {
+        key: sum(clean(row.get("status")).lower() in statuses for row in rows)
+        for key, statuses in status_sets.items()
+    }
+    embed.add_field(
+        name="Anmeldestatus",
+        value=(
+            f"👥 **Fest angemeldet {len(active)}** · "
+            f"🪑 Bank **{status_counts['bank']}** · "
+            f"🕒 Spät **{status_counts['late']}** · "
+            f"⚖️ Vorläufig **{status_counts['tentative']}** · "
+            f"🚫 Abwesend **{status_counts['absent']}**"
+        ),
+        inline=False,
+    )
     p0_players = {
         clean(row.get("player") or row.get("char")).casefold(): clean(row.get("approvalStatus"))
         for row in p0_rows
@@ -1800,9 +1821,9 @@ def _add_roster_fields(embed: discord.Embed, rows: list[dict[str, Any]], p0_rows
             lines.append(f"{_spec_icon(spec)} `{position}` {player}{_prio_marker(row, p0_players)}")
         embed.add_field(name=f"{icon} __{label} ({len(lines)})__", value="\n".join(lines)[:1024], inline=True)
     status_groups = (
-        ("🪑 Bank", {"bench", "bank"}), ("🕒 Spät", {"late", "spät", "spaet"}),
-        ("⚖️ Vorläufig", {"tentative", "vorläufig", "vorlaeufig"}),
-        ("🚫 Abwesenheit", {"absent", "abwesend"}),
+        ("🪑 Bank", status_sets["bank"]), ("🕒 Spät", status_sets["late"]),
+        ("⚖️ Vorläufig", status_sets["tentative"]),
+        ("🚫 Abwesenheit", status_sets["absent"]),
     )
     for label, statuses in status_groups:
         status_rows = [row for row in rows if clean(row.get("status")).lower() in statuses]
