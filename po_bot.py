@@ -324,12 +324,15 @@ item_emoji_cache = {}
 # Emojis geliefert hat. Sonst werden kurzzeitig Unicode-Ersatzsymbole in die
 # Nachricht geschrieben und bleiben dort bis zum nächsten Refresh stehen.
 emoji_cache_ready = asyncio.Event()
+startup_restore_ready = asyncio.Event()
 RAID_SIGNUP_DM_CACHE = {}
 p0plus_cache = {}
 P0PLUS_CACHE_SECONDS = int(os.getenv("PO_BOT_P0PLUS_CACHE_SECONDS", "60") or "60")
 empty_queue_log_at = 0
 slash_commands_synced_for_guilds = False
 PO_GUILDWIDE_DEDUP_DONE = set()
+WORLDBUFF_ANNOUNCEMENT_CACHE = {}
+WORLDBUFF_CACHE_REFRESH_SECONDS = 300
 
 
 def clean(value):
@@ -1555,20 +1558,10 @@ def parse_raid_worldbuff_date(value):
 
 def current_worldbuff_announcement_block(guild_slug=None, raid_date=None, max_lines=8):
     resolved_guild_slug = normalize_guild_slug(guild_slug or current_guild_slug())
-    try:
-        result = api_get({
-            "action": "guildGetWorldbuffs",
-            "queueToken": QUEUE_TOKEN,
-            "guild": resolved_guild_slug,
-            "guildSlug": resolved_guild_slug,
-            "source": "railway",
-            "days": "all",
-            "t": int(time.time()),
-        })
-    except Exception as error:
-        print(f"Worldbuffs fuer Raidanmelder konnten nicht geladen werden: {error}")
-        return ""
-    rows = result.get("buffs") or result.get("entries") or []
+    # Embed-Erzeugung ist synchron und muss deshalb rein lokal bleiben.
+    # Netzwerkzugriffe an dieser Stelle blockierten früher den Discord-
+    # Eventloop und ließen Slash-Interaktionen nach drei Sekunden verfallen.
+    rows = list(WORLDBUFF_ANNOUNCEMENT_CACHE.get(resolved_guild_slug) or [])
     selected_raid_date = parse_raid_worldbuff_date(raid_date)
     # Im Raidanmelder sind ausschließlich die für die Vorbereitung relevanten
     # Termine sichtbar: der Vortag und der eigentliche Raidtag.
@@ -1616,6 +1609,33 @@ def current_worldbuff_announcement_block(guild_slug=None, raid_date=None, max_li
     if remaining:
         lines.append(f"… und {remaining} weitere Worldbuff-Termine im Worldbuff-Post.")
     return "\n".join(lines)
+
+
+async def refresh_worldbuff_announcement_cache_once():
+    guild_slugs = list(GUILD_REGISTRY.keys()) or [current_guild_slug()]
+    for guild_slug in guild_slugs:
+        try:
+            result = await asyncio.to_thread(api_get, {
+                "action": "guildGetWorldbuffs",
+                "queueToken": QUEUE_TOKEN,
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
+                "source": "railway",
+                "days": "all",
+                "t": int(time.time()),
+            })
+            WORLDBUFF_ANNOUNCEMENT_CACHE[normalize_guild_slug(guild_slug)] = list(
+                result.get("buffs") or result.get("entries") or []
+            )
+        except Exception as error:
+            print(f"Worldbuff-Cache für {guild_slug} konnte nicht geladen werden: {error}")
+
+
+async def worldbuff_announcement_cache_loop():
+    await client.wait_until_ready()
+    while not client.is_closed():
+        await refresh_worldbuff_announcement_cache_once()
+        await asyncio.sleep(WORLDBUFF_CACHE_REFRESH_SECONDS)
 
 
 def build_raid_announcement_text(raid):
@@ -7202,6 +7222,7 @@ async def po_queue_loop():
             # on_ready lädt zuerst die App-Emojis. Ohne diese Sperre kann ein
             # Queue-Refresh die Nachricht vorher mit Ersatzsymbolen ersetzen.
             await emoji_cache_ready.wait()
+            await startup_restore_ready.wait()
             await refresh_guild_registry()
             result = await asyncio.to_thread(api_get, {
                 "action": "lichtbotGetQueueAllGuilds",
@@ -7676,12 +7697,6 @@ async def on_ready():
     print(f"PO Bot online als {client.user}")
     await refresh_guild_registry()
     await sync_po_commands_for_connected_guilds()
-    if not hasattr(client, "discord_channel_sync_started"):
-        client.discord_channel_sync_started = True
-        client.loop.create_task(discord_channel_sync_loop())
-    if not hasattr(client, "raid_calendar_refresh_started"):
-        client.raid_calendar_refresh_started = True
-        client.loop.create_task(raid_calendar_refresh_loop())
     emoji_cache_ready.clear()
     found_classes, found_specs, found_items = {}, {}, {}
     try:
@@ -7713,9 +7728,11 @@ async def on_ready():
     if not hasattr(client, "raid_signup_views_restored"):
         client.raid_signup_views_restored = True
         await restore_active_raid_signup_views()
-    if not hasattr(client, "all_signup_posts_refresh_started"):
-        client.all_signup_posts_refresh_started = True
-        client.loop.create_task(refresh_all_signup_posts_after_start())
+    # Kein zweiter automatischer Voll-Refresh: restore_active_raid_signup_views
+    # hat die aktiven Raidanmelder bereits aktualisiert. Der frühere zusätzliche
+    # Lauf bearbeitete danach noch einmal alle Gilden und erzeugte unnötige
+    # API-, Discord- und Queue-Last. Für eine bewusste Vollaktualisierung gibt
+    # es /alleraidanmelder_refreshen und /anmelder_neustart.
     state = load_state()
     for payload in state.values():
         if not isinstance(payload, dict) or not payload.get("postKey"):
@@ -7749,6 +7766,19 @@ async def on_ready():
     if restored:
         save_state(state)
         print(f"PO Views aus LichtLoot wiederhergestellt: {restored}")
+    startup_restore_ready.set()
+    # Periodische Jobs beginnen erst nach der einmaligen Wiederherstellung.
+    # So konkurrieren sie beim Deployment nicht mit Discord-Interaktionen und
+    # der Registrierung persistenter Views.
+    if not hasattr(client, "discord_channel_sync_started"):
+        client.discord_channel_sync_started = True
+        client.loop.create_task(discord_channel_sync_loop())
+    if not hasattr(client, "raid_calendar_refresh_started"):
+        client.raid_calendar_refresh_started = True
+        client.loop.create_task(raid_calendar_refresh_loop())
+    if not hasattr(client, "worldbuff_announcement_cache_started"):
+        client.worldbuff_announcement_cache_started = True
+        client.loop.create_task(worldbuff_announcement_cache_loop())
 
 
 async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle", channel_id_override=""):
@@ -8730,25 +8760,6 @@ async def restart_all_active_signup_posts():
         "skipped": skipped,
         "errors": errors,
     }
-
-
-async def refresh_all_signup_posts_after_start():
-    """Aktualisiert nach einem Deployment einmal alle aktiven Raid- und P0-Anmelder."""
-    await client.wait_until_ready()
-    await emoji_cache_ready.wait()
-    try:
-        result = await restart_all_active_signup_posts()
-        print(
-            "Automatische Anmelder-Aktualisierung abgeschlossen: "
-            f"{int(result.get('raidRefreshed') or 0)} Raidanmelder aktualisiert, "
-            f"{int(result.get('poViews') or 0)} P0-Anmelder aktualisiert, "
-            f"{int(result.get('skipped') or 0)} übersprungen, "
-            f"{len(result.get('errors') or [])} Fehler."
-        )
-        for error in result.get("errors") or []:
-            print(f"Automatische Anmelder-Aktualisierung: {error}")
-    except Exception as error:
-        print(f"Automatische Anmelder-Aktualisierung fehlgeschlagen: {error}")
 
 
 @client.tree.command(
