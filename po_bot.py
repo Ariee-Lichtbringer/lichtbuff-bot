@@ -7652,17 +7652,21 @@ async def sync_po_commands_for_connected_guilds():
     if slash_commands_synced_for_guilds:
         return
     slash_commands_synced_for_guilds = True
-    # In Produktion sind die Befehle global registriert. Alte, zusaetzlich auf
-    # einzelnen Servern registrierte Kopien werden entfernt, sonst zeigt
-    # Discord denselben Befehl doppelt an.
+    # Globale Discord-Commands können bis zur sichtbaren Aktualisierung
+    # verzögert sein. Deshalb spiegeln wir den aktuellen Command-Baum beim
+    # Start zusätzlich direkt in jeden verbundenen Server. Gildenbefehle sind
+    # dort sofort verfügbar und überdecken gleichnamige globale Befehle.
     if TEST_GUILD_ID:
         return
     for guild in getattr(client, "guilds", []) or []:
         try:
             guild_object = discord.Object(id=int(guild.id))
-            client.tree.clear_commands(guild=guild_object)
+            client.tree.copy_global_to(guild=guild_object)
             synced = await client.tree.sync(guild=guild_object)
-            print(f"Alte lokale PO Slash-Commands fuer {guild.name} ({guild.id}) entfernt: {len(synced)} verbleiben")
+            print(
+                f"PO Slash-Commands für {guild.name} ({guild.id}) sofort synchronisiert: "
+                f"{len(synced)} Befehle"
+            )
         except Exception as error:
             print(f"PO Slash-Commands fuer Discord-Server {getattr(guild, 'id', '?')} konnten nicht synchronisiert werden: {error}")
 
