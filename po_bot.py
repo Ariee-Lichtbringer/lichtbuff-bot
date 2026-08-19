@@ -2193,8 +2193,18 @@ def raid_announcement_is_stale(raid):
         return True
     raid_date = canonical_raid_date(raid.get("raidDate") or raid.get("date") or raid.get("datum"))
     if raid_date:
-        today = datetime.now(ZoneInfo("Europe/Berlin")).date().isoformat()
-        if raid_date < today:
+        raid_kind = normalize_raid(raid.get("raid") or raid.get("raidName") or raid.get("raidType")).lower()
+        raid_time = normalize_post_time(raid.get("raidTime") or raid.get("time") or raid.get("uhrzeit"))
+        now = datetime.now(ZoneInfo("Europe/Berlin"))
+        if raid_kind in {"aq20", "zg"} and raid_time:
+            try:
+                starts_at = datetime.strptime(
+                    f"{raid_date} {raid_time}", "%Y-%m-%d %H:%M"
+                ).replace(tzinfo=ZoneInfo("Europe/Berlin"))
+                return now >= starts_at + timedelta(hours=2)
+            except ValueError:
+                pass
+        if raid_date < now.date().isoformat():
             return True
     return False
 
@@ -2218,8 +2228,24 @@ def po_payload_is_stale(payload):
             candidate.get("raidDate") or candidate.get("date") or candidate.get("datum")
         )
         if raid_date:
-            today = datetime.now(ZoneInfo("Europe/Berlin")).date().isoformat()
-            if raid_date < today:
+            raid_kind = normalize_raid(
+                candidate.get("raid") or candidate.get("raidName") or candidate.get("raidType")
+            ).lower()
+            raid_time = normalize_post_time(
+                candidate.get("raidTime") or candidate.get("time") or candidate.get("uhrzeit")
+            )
+            now = datetime.now(ZoneInfo("Europe/Berlin"))
+            if raid_kind in {"aq20", "zg"} and raid_time:
+                try:
+                    starts_at = datetime.strptime(
+                        f"{raid_date} {raid_time}", "%Y-%m-%d %H:%M"
+                    ).replace(tzinfo=ZoneInfo("Europe/Berlin"))
+                    if now >= starts_at + timedelta(hours=2):
+                        return True
+                    continue
+                except ValueError:
+                    pass
+            if raid_date < now.date().isoformat():
                 return True
     return False
 
@@ -3542,61 +3568,6 @@ def lichtloot_prio_url(payload=None):
 
 def guild_prio_link_icon(payload):
     return "🔗"
-
-
-def build_fixed_po_header(payload):
-    raid_name = display_raid(payload.get("raid") or "")
-    raid_date, raid_time = payload_raid_schedule(payload)
-    date = normalize_post_date(raid_date)
-    time_value = normalize_post_time(raid_time)
-    guild_name = guild_display_name(payload=payload)
-    created_by = clean(payload.get("createdBy") or payload.get("created_by") or payload.get("erstelltVon")) or "Gildenleitung"
-    lichtloot_id = payload_lichtloot_raid_pin(payload)
-    lines = [
-        f"📣 Neuer Raid: {raid_name}",
-        f"🗓️ Datum: {date or '-'}",
-        f"⏰ Start: {time_value or '-'} Uhr",
-        f"🏰 Gilde: {guild_name}",
-        f"👤 Erstellt von: {created_by}",
-        "",
-        f"🔑 Prio-PIN: {lichtloot_id or '-'}",
-        f"**[{guild_prio_link_icon(payload)} Hier kannst du deine P1–P3 eintragen.]({lichtloot_prio_url(payload)})**",
-        "",
-        "Bitte tragt eure Prios rechtzeitig ein.",
-        "",
-        "**LichtLoot**",
-    ]
-    if lichtloot_id:
-        lines.append(f"ID: `{lichtloot_id}`")
-    lines.append("PO wird mit LichtLoot synchronisiert.")
-    if normalize_raid(payload.get("raid") or "") in {"zg", "aq20"}:
-        lines.append(f"{custom_emoji('beuteorange', '🟠')} **PO:** frei wählbar, sammelt keine PO+-Punkte.")
-        lines.append(f"{custom_emoji('Beutegrun', '🟢')} **PO+:** benötigt Freigabe und sammelt PO+-Punkte.")
-    else:
-        lines.append(f"{custom_emoji('beuteorange', '🟠')} **PO eingetragen:** wartet noch auf Freigabe.")
-        lines.append(f"{custom_emoji('Beutegrun', '🟢')} **PO freigegeben:** wurde durch die Gildenleitung freigegeben.")
-    lines.append("")
-    return lines
-
-
-def looks_like_generated_po_header(text):
-    value = clean(text)
-    if not value:
-        return False
-    markers = [
-        "Neuer Raid:",
-        "Prios eintragen:",
-        "Prio-PIN:",
-        "Bitte tragt eure Prios rechtzeitig ein.",
-    ]
-    return sum(1 for marker in markers if marker in value) >= 2
-
-
-def po_post_note(payload):
-    note = clean(payload.get("note") or payload.get("message") or payload.get("description"))
-    if looks_like_generated_po_header(note):
-        return ""
-    return note
 
 
 def generated_pin(seed, length):
@@ -7776,7 +7747,7 @@ async def on_ready():
         print(f"PO Views aus LichtLoot wiederhergestellt: {restored}")
 
 
-async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
+async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle", channel_id_override=""):
     """Aktualisiert vorhandene Raid-/PO-Anmelder im aktuellen Discord-Channel."""
     await refresh_guild_registry()
     guild_slug = guild_slug_for_discord_server(getattr(interaction, "guild", None), "")
@@ -7788,7 +7759,7 @@ async def refresh_signup_posts_in_channel(interaction, refresh_kind="alle"):
             "skipped": 0,
             "errors": ["Dieser Discord-Server ist keiner freigeschalteten Gilde zugeordnet."],
         }
-    channel_id = clean(getattr(interaction, "channel_id", ""))
+    channel_id = clean(channel_id_override or getattr(interaction, "channel_id", ""))
     kind = clean(refresh_kind).lower() or "alle"
     raid_refreshed = 0
     raid_replaced = 0
@@ -8326,6 +8297,88 @@ def may_manage_discord_channel(interaction):
         permissions
         and (permissions.administrator or permissions.manage_messages)
     )
+
+
+@client.tree.command(
+    name="alleraidanmelder_refreshen",
+    description="Aktualisiert alle aktiven Raid- und P0-Anmelder dieser Gilde.",
+)
+@app_commands.guild_only()
+async def alleraidanmelder_refreshen(interaction):
+    if not may_manage_discord_channel(interaction):
+        await interaction.response.send_message(
+            "❌ Dafür benötigst du die Berechtigung **Nachrichten verwalten**.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        await asyncio.wait_for(emoji_cache_ready.wait(), timeout=20)
+        await refresh_guild_registry()
+        guild_slug = guild_slug_for_discord_server(interaction.guild, "")
+        if not guild_slug:
+            raise RuntimeError("Dieser Discord-Server ist keiner LichtLoot-Gilde zugeordnet.")
+
+        token = CURRENT_GUILD_SLUG.set(guild_slug)
+        try:
+            result = await asyncio.to_thread(api_get, {
+                "action": "getActiveRaids",
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
+                "t": int(time.time() * 1000),
+            })
+            channel_ids = {
+                clean(raid.get("discordChannelId") or raid.get("discord_channel_id"))
+                for raid in (result.get("allRaids") or result.get("raids") or [])
+            }
+            payloads = [payload for payload in load_state().values() if isinstance(payload, dict)]
+            payloads.extend(await load_payloads_from_api_entries())
+            channel_ids.update(
+                clean(payload.get("targetChannelId") or payload.get("channelId") or payload.get("sourceChannelId"))
+                for payload in payloads
+                if payload_guild_slug(payload) == guild_slug and not po_payload_is_stale(payload)
+            )
+        finally:
+            CURRENT_GUILD_SLUG.reset(token)
+
+        channel_ids.discard("")
+        totals = {"raid": 0, "replaced": 0, "po": 0, "skipped": 0}
+        errors = []
+        processed_channels = 0
+        for channel_id in sorted(channel_ids):
+            try:
+                channel = await fetch_accessible_channel(client, channel_id)
+                if getattr(channel, "guild", None) is None or channel.guild.id != interaction.guild.id:
+                    continue
+                channel_result = await asyncio.wait_for(
+                    refresh_signup_posts_in_channel(interaction, "alle", channel_id),
+                    timeout=120,
+                )
+                processed_channels += 1
+                for key in totals:
+                    totals[key] += int(channel_result.get(key) or 0)
+                errors.extend(channel_result.get("errors") or [])
+            except Exception as error:
+                errors.append(f"Channel {channel_id}: {clean(error) or type(error).__name__}")
+
+        text = (
+            f"✅ Gildenweit aktualisiert: **{totals['raid']} Raidanmelder** und "
+            f"**{totals['po']} P0-Anmelder** in **{processed_channels} Channels**."
+        )
+        if totals["replaced"]:
+            text += f" Ersetzt: {totals['replaced']}."
+        if totals["skipped"]:
+            text += f" Übersprungen: {totals['skipped']}."
+        if errors:
+            preview = "\n".join(f"• {clean(error)[:220]}" for error in errors[:5])
+            text += f"\n⚠️ {len(errors)} Fehler:\n{preview}"
+        await interaction.followup.send(text, ephemeral=True)
+    except Exception as error:
+        await interaction.followup.send(
+            f"❌ Die gildenweite Aktualisierung ist fehlgeschlagen: {clean(error) or type(error).__name__}",
+            ephemeral=True,
+        )
 
 
 @client.tree.command(
