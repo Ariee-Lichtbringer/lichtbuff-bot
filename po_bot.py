@@ -8325,6 +8325,78 @@ async def alleraidanmelder_refreshen(interaction):
 
 
 @client.tree.command(
+    name="bot_wartung",
+    description="Kündigt eine zweistündige Bot-Wartung in allen aktiven Anmeldechannels an.",
+)
+@app_commands.guild_only()
+async def bot_wartung(interaction):
+    if not may_manage_discord_channel(interaction):
+        await interaction.response.send_message(
+            "❌ Dafür benötigst du die Berechtigung **Nachrichten verwalten**.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        await refresh_guild_registry()
+        guild_slug = guild_slug_for_discord_server(interaction.guild, "")
+        if not guild_slug:
+            raise RuntimeError("Dieser Discord-Server ist keiner LichtLoot-Gilde zugeordnet.")
+
+        token = CURRENT_GUILD_SLUG.set(guild_slug)
+        try:
+            result = await asyncio.to_thread(api_get, {
+                "action": "getActiveRaids",
+                "guild": guild_slug,
+                "guildSlug": guild_slug,
+                "t": int(time.time() * 1000),
+            })
+            channel_ids = {
+                clean(raid.get("discordChannelId") or raid.get("discord_channel_id"))
+                for raid in (result.get("allRaids") or result.get("raids") or [])
+            }
+            payloads = [payload for payload in load_state().values() if isinstance(payload, dict)]
+            payloads.extend(await load_payloads_from_api_entries())
+            channel_ids.update(
+                clean(payload.get("targetChannelId") or payload.get("channelId") or payload.get("sourceChannelId"))
+                for payload in payloads
+                if payload_guild_slug(payload) == guild_slug and not po_payload_is_stale(payload)
+            )
+        finally:
+            CURRENT_GUILD_SLUG.reset(token)
+
+        channel_ids.discard("")
+        announcement = (
+            "⚠️ **Bot vorübergehend offline**\n\n"
+            "Der Bot ist für etwa **2 Stunden offline**.\n"
+            "**P0-Eintragungen über LichtLoot oder NachtLoot sind weiterhin möglich.**"
+        )
+        posted = 0
+        errors = []
+        for channel_id in sorted(channel_ids):
+            try:
+                channel = await fetch_accessible_channel(client, channel_id)
+                if getattr(channel, "guild", None) is None or channel.guild.id != interaction.guild.id:
+                    continue
+                await send_silent(channel, announcement)
+                posted += 1
+            except Exception as error:
+                errors.append(f"Channel {channel_id}: {clean(error) or type(error).__name__}")
+
+        text = f"✅ Wartungshinweis wurde in **{posted} aktiven Anmeldechannels** gepostet."
+        if errors:
+            preview = "\n".join(f"• {clean(error)[:220]}" for error in errors[:5])
+            text += f"\n⚠️ {len(errors)} Fehler:\n{preview}"
+        await interaction.followup.send(text, ephemeral=True)
+    except Exception as error:
+        await interaction.followup.send(
+            f"❌ Der Wartungshinweis konnte nicht gepostet werden: {clean(error) or type(error).__name__}",
+            ephemeral=True,
+        )
+
+
+@client.tree.command(
     name="channel_leeren",
     description="Löscht alle nicht angehefteten Nachrichten im aktuellen Channel.",
 )
