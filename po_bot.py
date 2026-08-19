@@ -2453,21 +2453,18 @@ async def refresh_raid_signup_message_by_id(raid_id, channel_id=None, message_id
     if not message_id:
         print(
             "Raidanmelder Refresh ohne Message-ID: "
-            f"erstelle den fehlenden Discord-Post neu fuer raid={raid_id} channel={channel_id}"
+            f"kein neuer Discord-Post fuer raid={raid_id} channel={channel_id}"
         )
-        return await post_raid_announcement_by_id(raid_id, channel_id, payload_data, force_new=True)
+        return "missing_message"
     channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
     try:
         message = await channel.fetch_message(int(message_id))
     except discord.NotFound:
-        # Die gespeicherte ID kann auf einen inzwischen gelöschten alten
-        # Raid-Helper-/Bot-Post zeigen. Dann wird ein neuer eigener Anmelder
-        # erstellt und dessen Message-ID wieder am Raid gespeichert.
         print(
             "Raidanmelder Refresh mit geloeschter Message-ID: "
-            f"erstelle den Discord-Post neu fuer raid={raid_id} channel={channel_id}"
+            f"kein neuer Discord-Post fuer raid={raid_id} channel={channel_id}"
         )
-        return await post_raid_announcement_by_id(raid_id, channel_id, payload_data, force_new=True)
+        return "missing_message"
     # Discord erlaubt nur dem ursprünglichen Autor, eine Nachricht zu ändern.
     # Alte Raidanmelder können noch auf eine Nachricht des früheren Hauptbots
     # zeigen. Solche Queue-Aufträge dürfen nicht endlos erneut versucht werden,
@@ -2592,7 +2589,13 @@ async def edit_raid_signup_message_from_helper(raid, helper, origin_channel_id=N
     print(f"Raidanmelder direkt aktualisiert: {clean(fresh_raid.get('raidId') or fresh_raid.get('id'))} mit {raid_signup_row_count(helper)} Anmeldung(en).")
 
 
-async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None, force_new=False):
+async def post_raid_announcement_by_id(
+    raid_id,
+    channel_id=None,
+    payload=None,
+    force_new=False,
+    update_existing_only=False,
+):
     payload = payload or {}
     helper = await get_raid_helper_for_refresh(payload or clean(raid_id))
     fallback_helper = raid_helper_snapshot_from_payload(payload) if payload else {}
@@ -2630,6 +2633,12 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None, f
         or raid.get("discordMessageId")
         or raid.get("discord_message_id")
     )
+    if update_existing_only and not existing_message_id:
+        print(
+            "Raidanmelder-Aktualisierung ohne Message-ID verworfen; "
+            f"kein neuer Post fuer raid={raid_id} channel={channel_id}"
+        )
+        return "missing_message"
     if existing_message_id:
         try:
             existing_message = await channel.fetch_message(int(existing_message_id))
@@ -2647,6 +2656,12 @@ async def post_raid_announcement_by_id(raid_id, channel_id=None, payload=None, f
             print(f"Bestehender Raidanmelder aktualisiert: {raid_id} in {channel_id}/{existing_message_id}")
             return True
         except (discord.NotFound, discord.Forbidden):
+            if update_existing_only:
+                print(
+                    "Bestehender Raidanmelder nicht erreichbar; kein neuer Post: "
+                    f"{raid_id} in {channel_id}/{existing_message_id}"
+                )
+                return "missing_message"
             print(f"Bestehender Raidanmelder nicht erreichbar, erstelle neu: {raid_id} in {channel_id}/{existing_message_id}")
     embed = build_raid_announcement_embed(raid)
     add_raid_signup_roster_fields(embed, helper)
@@ -7309,7 +7324,17 @@ async def po_queue_loop():
                                     force_new=clean(
                                         payload.get("forceNewMessage") or payload.get("forceRepost")
                                     ).lower() in {"1", "true", "yes", "ja"},
+                                    update_existing_only=clean(
+                                        payload.get("updateExistingOnly")
+                                    ).lower() in {"1", "true", "yes", "ja"},
                                 )
+                                if posted in {"missing_message", "foreign_message"}:
+                                    await resolve_queue_item(item.get("rowNumber"))
+                                    print(
+                                        "Raidanmelder nicht neu erstellt; Aktualisierungsauftrag erledigt: "
+                                        f"{current_guild_slug()}:{payload.get('raidId') or payload.get('id')}"
+                                    )
+                                    continue
                                 if posted or posted == "stale":
                                     await resolve_queue_item(item.get("rowNumber"))
                                     print(
@@ -7335,7 +7360,17 @@ async def po_queue_loop():
                                     force_new=clean(
                                         payload.get("forceNewMessage") or payload.get("forceRepost")
                                     ).lower() in {"1", "true", "yes", "ja"},
+                                    update_existing_only=clean(
+                                        payload.get("updateExistingOnly")
+                                    ).lower() in {"1", "true", "yes", "ja"},
                                 )
+                                if posted in {"missing_message", "foreign_message"}:
+                                    await resolve_queue_item(item.get("rowNumber"))
+                                    print(
+                                        "Raid- und P0-Aktualisierung abgebrochen; Raidanmelder fehlt: "
+                                        f"{current_guild_slug()}:{payload.get('raidId') or payload.get('id')}"
+                                    )
+                                    continue
                                 separate_po_payload = {
                                     **followup,
                                     "guildSlug": queue_guild_slug,
