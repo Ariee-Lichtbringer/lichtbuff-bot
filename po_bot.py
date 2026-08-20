@@ -130,8 +130,11 @@ def _class_select_emoji(class_name: str) -> str | discord.PartialEmoji | None:
         "krieger": "⚔️", "paladin": "🛡️", "jäger": "🏹", "schurke": "🗡️",
         "priester": "✨", "schamane": "⚡", "magier": "🔥", "hexenmeister": "👿", "druide": "🐾",
     }
-    fallback = fallbacks.get(class_key, "🎮")
-    return _select_emoji(_class_icon(class_key, fallback)) or fallback
+    # Select-Optionen werden von Discord strenger validiert als normaler
+    # Nachrichtentext. Ein nicht mehr verfuegbares Application-Emoji macht
+    # dabei das komplette Charaktermenue unbrauchbar (400 / Invalid emoji).
+    # Unicode-Klassenicons sind serverunabhaengig und koennen nicht veralten.
+    return fallbacks.get(class_key, "🎮")
 
 
 def _spec_icon(spec: str, fallback: str = "◆") -> str:
