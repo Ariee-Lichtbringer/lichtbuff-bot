@@ -689,58 +689,6 @@ class PoBotV2(discord.Client):
             except Exception as error:
                 await interaction.followup.send(f"⚠️ Kein Post wurde erstellt oder ersetzt: {error}", ephemeral=True)
 
-        @self.tree.command(
-            name="refresh",
-            description="Aktualisiert vorhandene Raid-/P0-Posts, ohne neue Posts zu erstellen.",
-        )
-        @app_commands.default_permissions(manage_guild=True)
-        @app_commands.describe(raid_id="Optional: nur diese Raid-ID aktualisieren")
-        async def refresh(interaction: discord.Interaction, raid_id: str | None = None) -> None:
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            try:
-                guild = self.identities.for_discord_guild(interaction.guild_id)
-                if clean(raid_id):
-                    state = await self.refresh_existing_post(guild, required(raid_id, "raid_id"))
-                    await interaction.followup.send(
-                        f"✅ Raid-/P0-Post `{state.discord_message_id}` wurde aktualisiert.",
-                        ephemeral=True,
-                    )
-                    return
-                raids = await self.api.get_active_raids(guild)
-                updated = 0
-                skipped = 0
-                errors = []
-                for raid in raids:
-                    if not clean(raid.get("discordMessageId")):
-                        skipped += 1
-                        continue
-                    current_raid_id = required(raid.get("raidId"), "raid_id")
-                    try:
-                        await self.refresh_existing_post(guild, current_raid_id)
-                        updated += 1
-                    except Exception as error:
-                        errors.append(f"{current_raid_id}: {error}")
-                summary = (
-                    f"✅ **{updated}** vorhandene Raid-/P0-Posts aktualisiert; "
-                    f"**{skipped}** Raids ohne Post übersprungen."
-                )
-                if errors:
-                    summary += "\n⚠️ " + "\n⚠️ ".join(errors[:5])
-                await interaction.followup.send(summary[:1900], ephemeral=True)
-            except Exception as error:
-                await interaction.followup.send(
-                    f"⚠️ Refresh fehlgeschlagen; es wurde kein Post erstellt: {error}",
-                    ephemeral=True,
-                )
-
-        @self.tree.command(
-            name="anmelder_refresh",
-            description="Aktualisiert die neuen kombinierten Raid-/P0-Posts.",
-        )
-        @app_commands.default_permissions(manage_guild=True)
-        async def legacy_refresh_alias(interaction: discord.Interaction) -> None:
-            await refresh.callback(interaction, None)
-
     async def refresh_existing_post(
         self,
         guild: GuildIdentity,
