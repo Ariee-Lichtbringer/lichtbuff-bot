@@ -1219,8 +1219,12 @@ class RaidCharacterSelect(discord.ui.Select):
         super().__init__(placeholder="Gespeicherten LichtLoot-Charakter auswählen", options=options, row=0)
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        # Den Dropdown-Klick sofort quittieren. Ein direktes edit_message als
+        # erste Antwort kann bei Discord unter Last die Drei-Sekunden-Frist
+        # überschreiten, obwohl die Auswahl anschließend korrekt verarbeitet wird.
+        await interaction.response.defer()
         self.parent_view.set_character(int(self.values[0]))
-        await interaction.response.edit_message(view=self.parent_view)
+        await interaction.edit_original_response(view=self.parent_view)
 
 
 class RaidSpecSelect(discord.ui.Select):
