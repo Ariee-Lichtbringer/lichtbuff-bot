@@ -1174,6 +1174,40 @@ class RaidSignupModal(discord.ui.Modal, title="LichtLoot-Account verknüpfen"):
             await interaction.followup.send(f"⚠️ Verknüpfung fehlgeschlagen: {error}", ephemeral=True)
 
 
+class RaidAccountLinkView(discord.ui.View):
+    """Öffnet das Verknüpfungsmodal erst nach einer bereits bestätigten Interaktion."""
+
+    def __init__(
+        self,
+        bot: "PoBotV2",
+        guild: GuildIdentity,
+        raid_id: str,
+        channel_id: int | str,
+        message_id: int | str,
+        status: str,
+    ) -> None:
+        super().__init__(timeout=180)
+        self.bot = bot
+        self.guild_identity = guild
+        self.raid_id = raid_id
+        self.channel_id = channel_id
+        self.message_id = message_id
+        self.status = status
+
+    @discord.ui.button(label="LichtLoot-Account verknüpfen", style=discord.ButtonStyle.primary)
+    async def link_account(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(
+            RaidSignupModal(
+                self.bot,
+                self.guild_identity,
+                self.raid_id,
+                self.channel_id,
+                self.message_id,
+                preset_status=self.status,
+            )
+        )
+
+
 class RaidCharacterSelect(discord.ui.Select):
     def __init__(self, parent: "RaidSignupSelectionView", characters: list[dict[str, Any]]) -> None:
         self.parent_view = parent
@@ -1676,24 +1710,35 @@ class CombinedSignupView(discord.ui.View):
             return False
 
     async def open_raid_modal(self, interaction: discord.Interaction, status: str) -> None:
-        linked = await self.bot.api.get_linked_characters(self.guild_identity, interaction.user.id)
-        if not linked:
-            await interaction.response.send_modal(
-                RaidSignupModal(
-                    self.bot, self.guild_identity, self.raid_id, interaction.channel_id,
-                    interaction.message.id, preset_status=status,
+        # Discord verlangt innerhalb von rund drei Sekunden eine erste Antwort.
+        # Die LichtLoot-Abfrage darf deshalb niemals vor dem Defer stattfinden.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            linked = await self.bot.api.get_linked_characters(self.guild_identity, interaction.user.id)
+            if not linked:
+                await interaction.followup.send(
+                    "Für deinen Discord-Account ist noch kein LichtLoot-Charakter verknüpft.",
+                    view=RaidAccountLinkView(
+                        self.bot, self.guild_identity, self.raid_id, interaction.channel_id,
+                        interaction.message.id, status,
+                    ),
+                    ephemeral=True,
                 )
+                return
+            await interaction.followup.send(
+                "Wähle einen fest in LichtLoot gespeicherten Charakter und seine Skillung:",
+                view=RaidSignupSelectionView(
+                    self.bot, self.guild_identity, self.raid_id, interaction.channel_id,
+                    interaction.message.id, linked, status, interaction.user.id,
+                    interaction.user.display_name,
+                ),
+                ephemeral=True,
             )
-            return
-        await interaction.response.send_message(
-            "Wähle einen fest in LichtLoot gespeicherten Charakter und seine Skillung:",
-            view=RaidSignupSelectionView(
-                self.bot, self.guild_identity, self.raid_id, interaction.channel_id,
-                interaction.message.id, linked, status, interaction.user.id,
-                interaction.user.display_name,
-            ),
-            ephemeral=True,
-        )
+        except Exception as error:
+            await interaction.followup.send(
+                f"⚠️ LichtLoot-Charaktere konnten nicht geladen werden: {error}",
+                ephemeral=True,
+            )
 
     @discord.ui.button(label="Klasse / Charakter anmelden", style=discord.ButtonStyle.primary, custom_id="p0v2:raid_signup", row=0)
     async def raid_signup(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
