@@ -32,6 +32,7 @@ from discord import app_commands
 API_DEFAULT = "https://lichtloot-production.up.railway.app/api/apps-script"
 SITE_DEFAULT = "https://lichtloot.de"
 EMOJI_CACHE: dict[str, str] = {}
+APPLICATION_EMOJI_IDS: set[int] = set()
 
 
 def _emoji_key(value: Any) -> str:
@@ -113,7 +114,11 @@ def _select_emoji(value: str) -> str | discord.PartialEmoji | None:
     value = clean(value)
     if value.startswith("<:") or value.startswith("<a:"):
         try:
-            return discord.PartialEmoji.from_str(value)
+            emoji = discord.PartialEmoji.from_str(value)
+            # Komponenten dürfen keine Emojis aus einer anderen Discord-Gilde
+            # enthalten. Application-Emojis sind dagegen serverübergreifend
+            # für diesen Bot gültig.
+            return emoji if emoji.id in APPLICATION_EMOJI_IDS else None
         except ValueError:
             return None
     return value or None
@@ -125,7 +130,8 @@ def _class_select_emoji(class_name: str) -> str | discord.PartialEmoji | None:
         "krieger": "⚔️", "paladin": "🛡️", "jäger": "🏹", "schurke": "🗡️",
         "priester": "✨", "schamane": "⚡", "magier": "🔥", "hexenmeister": "👿", "druide": "🐾",
     }
-    return _select_emoji(_class_icon(class_key, fallbacks.get(class_key, "🎮")))
+    fallback = fallbacks.get(class_key, "🎮")
+    return _select_emoji(_class_icon(class_key, fallback)) or fallback
 
 
 def _spec_icon(spec: str, fallback: str = "◆") -> str:
@@ -1001,11 +1007,16 @@ class PoBotV2(discord.Client):
         await message.delete()
 
     async def refresh_emoji_cache(self) -> None:
-        emojis = []
+        application_emojis = []
         try:
-            emojis.extend(list(await self.fetch_application_emojis()))
+            application_emojis.extend(list(await self.fetch_application_emojis()))
         except Exception as error:
             print(f"V2 Application-Emojis konnten nicht geladen werden: {error}")
+        APPLICATION_EMOJI_IDS.clear()
+        APPLICATION_EMOJI_IDS.update(
+            emoji.id for emoji in application_emojis if getattr(emoji, "id", None)
+        )
+        emojis = list(application_emojis)
         for discord_guild in self.guilds:
             try:
                 emojis.extend(list(await discord_guild.fetch_emojis()))
