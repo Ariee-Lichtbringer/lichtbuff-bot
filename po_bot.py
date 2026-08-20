@@ -124,6 +124,16 @@ def _select_emoji(value: str) -> str | discord.PartialEmoji | None:
     return value or None
 
 
+def _class_select_emoji(class_name: str) -> str | discord.PartialEmoji | None:
+    class_key = clean(class_name).casefold()
+    fallbacks = {
+        "krieger": "⚔️", "paladin": "🛡️", "jäger": "🏹", "schurke": "🗡️",
+        "priester": "✨", "schamane": "⚡", "magier": "🔥", "hexenmeister": "👿", "druide": "🐾",
+    }
+    fallback = fallbacks.get(class_key, "🎮")
+    return _select_emoji(_class_icon(class_key, fallback)) or fallback
+
+
 def _spec_icon(spec: str, fallback: str = "◆") -> str:
     aliases = {
         "waffen": "waffen", "furor": "fury", "heilung": "heilung", "heilig": "holy_pala",
@@ -1215,6 +1225,7 @@ class RaidCharacterSelect(discord.ui.Select):
         options = [discord.SelectOption(
             label=clean(row.get("name"))[:100], value=str(index),
             description=" · ".join(filter(None, [clean(row.get("className")), clean(row.get("server"))]))[:100] or None,
+            emoji=_class_select_emoji(clean(row.get("className"))),
             default=index == 0,
         ) for index, row in enumerate(characters[:25])]
         super().__init__(placeholder="Gespeicherten LichtLoot-Charakter auswählen", options=options, row=0)
@@ -1234,7 +1245,16 @@ class RaidCharacterSelect(discord.ui.Select):
 class RaidSpecSelect(discord.ui.Select):
     def __init__(self, parent: "RaidSignupSelectionView", specs: list[tuple[str, str]]) -> None:
         self.parent_view = parent
-        options = [discord.SelectOption(label=name, value=f"{name}|{role}", emoji=_select_emoji(_spec_icon(name)), default=index == 0) for index, (name, role) in enumerate(specs)]
+        # Keine Emojis in Select-Optionen: Discord lehnt einzelne der
+        # Skillungsicons als "Invalid emoji" ab und verwirft dann die ganze View.
+        options = [
+            discord.SelectOption(
+                label=name,
+                value=f"{name}|{role}",
+                default=index == 0,
+            )
+            for index, (name, role) in enumerate(specs)
+        ]
         super().__init__(placeholder="Skillung auswählen", options=options, row=1)
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -1392,6 +1412,7 @@ class P0CharacterSelect(discord.ui.Select):
                 label=name[:100],
                 description=" · ".join(filter(None, [clean(row.get("className")), clean(row.get("server"))]))[:100] or None,
                 value=option_value,
+                emoji=_class_select_emoji(clean(row.get("className"))),
                 default=name.casefold() == clean(parent.character).casefold(),
             ))
         super().__init__(placeholder="Charakter suchen und auswählen", options=options, row=0)
