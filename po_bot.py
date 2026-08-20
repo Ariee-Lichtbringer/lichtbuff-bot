@@ -1223,7 +1223,10 @@ class RaidCharacterSelect(discord.ui.Select):
         # erste Antwort kann bei Discord unter Last die Drei-Sekunden-Frist
         # überschreiten, obwohl die Auswahl anschließend korrekt verarbeitet wird.
         await interaction.response.defer()
-        self.parent_view.set_character(int(self.values[0]))
+        selected_index = int(self.values[0])
+        self.parent_view.set_character(selected_index)
+        for option in self.options:
+            option.default = option.value == str(selected_index)
         await interaction.edit_original_response(view=self.parent_view)
 
 
