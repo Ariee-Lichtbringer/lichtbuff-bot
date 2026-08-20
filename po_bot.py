@@ -371,7 +371,7 @@ class LichtLootApi:
         guild: GuildIdentity,
         *,
         player_pin: str,
-        character: str,
+        character: str = "",
         discord_user_id: int | str,
         discord_name: str,
     ) -> list[dict[str, Any]]:
@@ -381,7 +381,7 @@ class LichtLootApi:
             guildId=guild.guild_id,
             guildSlug=guild.guild_slug,
             playerPin=required(player_pin, "player_pin"),
-            character=required(character, "character"),
+            character=clean(character),
             discordUserId=required(discord_user_id, "discord_user_id"),
             discordName=clean(discord_name),
         )
@@ -1290,9 +1290,8 @@ class RaidSignupSelectionView(discord.ui.View):
             await interaction.followup.send(f"⚠️ Raidanmeldung fehlgeschlagen: {error}", ephemeral=True)
 
 
-class P0SignupModal(discord.ui.Modal, title="LichtLoot-Account verknüpfen"):
-    player_pin = discord.ui.TextInput(label="SpielerLogin/PIN (nur beim ersten Mal)", required=False, max_length=40)
-    character = discord.ui.TextInput(label="Charakter", max_length=40)
+class P0SignupModal(discord.ui.Modal, title="SpielerLogin verknüpfen"):
+    player_pin = discord.ui.TextInput(label="LichtLoot-/NachtLoot-SpielerLogin", required=True, max_length=40)
 
     def __init__(
         self,
@@ -1301,7 +1300,6 @@ class P0SignupModal(discord.ui.Modal, title="LichtLoot-Account verknüpfen"):
         raid_id: str,
         channel_id: int | str,
         message_id: int | str,
-        default_character: str = "",
     ) -> None:
         super().__init__()
         self.bot = bot
@@ -1309,9 +1307,6 @@ class P0SignupModal(discord.ui.Modal, title="LichtLoot-Account verknüpfen"):
         self.raid_id = required(raid_id, "raid_id")
         self.channel_id = required(channel_id, "discord_channel_id")
         self.message_id = required(message_id, "discord_message_id")
-        if clean(default_character):
-            self.character.default = clean(default_character)
-            self.player_pin.placeholder = "LichtLoot-Account bereits verknüpft"
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -1319,7 +1314,6 @@ class P0SignupModal(discord.ui.Modal, title="LichtLoot-Account verknüpfen"):
             characters = await self.bot.api.link_discord_account(
                 self.guild_identity,
                 player_pin=str(self.player_pin),
-                character=str(self.character),
                 discord_user_id=interaction.user.id,
                 discord_name=interaction.user.display_name,
             )
@@ -1328,8 +1322,8 @@ class P0SignupModal(discord.ui.Modal, title="LichtLoot-Account verknüpfen"):
             if not items:
                 raise RuntimeError("Für diesen Raid ist keine P0-Lootliste konfiguriert.")
             await interaction.followup.send(
-                "✅ Account verknüpft. Wähle jetzt Charakter und P0-Item:",
-                view=P0SignupSelectionView(
+                "✅ SpielerLogin gefunden. **2. Wähle jetzt deinen Charakter:**",
+                view=P0CharacterSelectionView(
                     self.bot, self.guild_identity, self.raid_id, self.channel_id, self.message_id,
                     characters, items, interaction.user.id, interaction.user.display_name,
                 ),
@@ -1340,30 +1334,57 @@ class P0SignupModal(discord.ui.Modal, title="LichtLoot-Account verknüpfen"):
 
 
 class P0DeleteModal(discord.ui.Modal, title="Eigene P0-Anmeldung löschen"):
-    player_pin = discord.ui.TextInput(label="SpielerLogin/PIN (nur beim ersten Mal)", required=False, max_length=40)
-    character = discord.ui.TextInput(label="Charakter", max_length=40)
+    player_pin = discord.ui.TextInput(label="LichtLoot-/NachtLoot-SpielerLogin", required=True, max_length=40)
 
     def __init__(self, bot: "PoBotV2", guild: GuildIdentity, raid_id: str, default_character: str = "") -> None:
         super().__init__()
         self.bot = bot
         self.guild_identity = guild
         self.raid_id = required(raid_id, "raid_id")
-        if clean(default_character):
-            self.character.default = clean(default_character)
-            self.player_pin.placeholder = "LichtLoot-Account bereits verknüpft"
+        self.default_character = clean(default_character)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            await self.bot.api.delete_p0_signup(
+            characters = await self.bot.api.link_discord_account(
                 self.guild_identity,
-                self.raid_id,
                 player_pin=str(self.player_pin),
-                character=str(self.character),
                 discord_user_id=interaction.user.id,
+                discord_name=interaction.user.display_name,
+            )
+            await interaction.followup.send(
+                "Wähle den gespeicherten Charakter, dessen P0-Anmeldung gelöscht werden soll:",
+                view=P0DeleteCharacterView(
+                    self.bot, self.guild_identity, self.raid_id, characters,
+                    interaction.user.id, self.default_character,
+                ),
+                ephemeral=True,
+            )
+        except Exception as error:
+            await interaction.followup.send(f"⚠️ P0-Löschung fehlgeschlagen: {error}", ephemeral=True)
+
+
+class P0DeleteCharacterView(discord.ui.View):
+    def __init__(self, bot: "PoBotV2", guild: GuildIdentity, raid_id: str,
+                 characters: list[dict[str, Any]], discord_user_id: int | str,
+                 default_character: str = "") -> None:
+        super().__init__(timeout=180)
+        self.bot, self.guild_identity, self.raid_id = bot, guild, raid_id
+        self.characters, self.discord_user_id = characters, discord_user_id
+        self.character = clean(default_character) or (clean(characters[0].get("name")) if characters else "")
+        self.add_item(P0CharacterSelect(self, characters))
+
+    @discord.ui.button(label="P0-Anmeldung löschen", style=discord.ButtonStyle.danger, row=1)
+    async def delete_signup(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            await self.bot.api.delete_p0_signup(
+                self.guild_identity, self.raid_id, player_pin="", character=self.character,
+                discord_user_id=self.discord_user_id,
             )
             await self.bot.refresh_existing_post(self.guild_identity, self.raid_id)
             await interaction.followup.send("✅ Deine P0-Anmeldung wurde gelöscht.", ephemeral=True)
+            self.stop()
         except Exception as error:
             await interaction.followup.send(f"⚠️ P0-Löschung fehlgeschlagen: {error}", ephemeral=True)
 
@@ -1371,44 +1392,50 @@ class P0DeleteModal(discord.ui.Modal, title="Eigene P0-Anmeldung löschen"):
 class P0CharacterSelect(discord.ui.Select):
     def __init__(self, parent: "P0SignupSelectionView", characters: list[dict[str, Any]]) -> None:
         self.parent_view = parent
-        options = [
-            discord.SelectOption(
-                label=(clean(row.get("name")) or "Unbekannt")[:100],
+        self.character_names: dict[str, str] = {}
+        options = []
+        for index, row in enumerate(characters[:25]):
+            name = clean(row.get("name")) or "Unbekannt"
+            option_value = str(index)
+            self.character_names[option_value] = name
+            options.append(discord.SelectOption(
+                label=name[:100],
                 description=" · ".join(filter(None, [clean(row.get("className")), clean(row.get("server"))]))[:100] or None,
-                value=clean(row.get("name"))[:100],
+                value=option_value,
                 emoji=_class_select_emoji(clean(row.get("className"))),
-                default=clean(row.get("name")).casefold() == clean(parent.character).casefold(),
-            )
-            for index, row in enumerate(characters[:25])
-        ]
+                default=name.casefold() == clean(parent.character).casefold(),
+            ))
         super().__init__(placeholder="Charakter suchen und auswählen", options=options, row=0)
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        self.parent_view.character = self.values[0]
+        self.parent_view.character = self.character_names[self.values[0]]
         await interaction.response.defer()
 
 
 class P0ItemSelect(discord.ui.Select):
     def __init__(self, parent: "P0SignupSelectionView", items: list[dict[str, Any]]) -> None:
         self.parent_view = parent
+        self.item_names: dict[str, str] = {}
         options = []
         for index, row in enumerate(items[:25]):
             name = clean(row.get("name") or row.get("item") or row.get("itemName"))
             if not name:
                 continue
+            option_value = str(index)
+            self.item_names[option_value] = name
             options.append(
                 discord.SelectOption(
                     label=name[:100],
-                    value=name[:100],
+                    value=option_value,
                     description=(clean(row.get("slot") or row.get("category")) or "P0-Item")[:100],
                     emoji=_select_emoji(_item_icon(name)),
-                    default=index == 0,
+                    default=not options,
                 )
             )
         super().__init__(placeholder="P0-Item suchen und auswählen", options=options, row=1)
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        self.parent_view.item_name = self.values[0]
+        self.parent_view.item_name = self.item_names[self.values[0]]
         await interaction.response.defer()
 
 
@@ -1451,10 +1478,35 @@ class P0ItemSearchModal(discord.ui.Modal, title="P0-Item suchen"):
         )
         suffix = " (erste 25 Treffer)" if len(matches) > 25 else ""
         await interaction.followup.send(
-            f"🔎 **{len(matches)} Item(s) gefunden{suffix}:** Wähle das richtige Item aus.",
+            f"🔎 **4. {len(matches)} Item(s) gefunden{suffix}:** Wähle das richtige Item aus.",
             view=result_view,
             ephemeral=True,
         )
+
+
+class P0CharacterSelectionView(discord.ui.View):
+    def __init__(
+        self, bot: "PoBotV2", guild: GuildIdentity, raid_id: str,
+        channel_id: int | str, message_id: int | str,
+        characters: list[dict[str, Any]], items: list[dict[str, Any]],
+        discord_user_id: int | str, discord_name: str,
+    ) -> None:
+        super().__init__(timeout=180)
+        self.bot = bot
+        self.guild_identity = guild
+        self.raid_id = raid_id
+        self.channel_id = channel_id
+        self.message_id = message_id
+        self.discord_user_id = discord_user_id
+        self.discord_name = discord_name
+        self.characters = characters
+        self.all_items = items
+        self.character = clean(characters[0].get("name")) if characters else ""
+        self.add_item(P0CharacterSelect(self, characters))
+
+    @discord.ui.button(label="3. Item suchen", style=discord.ButtonStyle.primary, row=1)
+    async def search_item(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(P0ItemSearchModal(self))
 
 
 class P0SignupSelectionView(discord.ui.View):
@@ -1485,7 +1537,8 @@ class P0SignupSelectionView(discord.ui.View):
         self.character = clean(selected_character) or (clean(characters[0].get("name")) if characters else "")
         first_item = items[0] if items else {}
         self.item_name = clean(first_item.get("name") or first_item.get("item") or first_item.get("itemName"))
-        self.add_item(P0CharacterSelect(self, characters))
+        if not clean(selected_character):
+            self.add_item(P0CharacterSelect(self, characters))
         self.add_item(P0ItemSelect(self, items))
 
     @discord.ui.button(label="🔎 Item suchen", style=discord.ButtonStyle.primary, row=2)
