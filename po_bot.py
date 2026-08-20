@@ -124,19 +124,6 @@ def _select_emoji(value: str) -> str | discord.PartialEmoji | None:
     return value or None
 
 
-def _class_select_emoji(class_name: str) -> str | discord.PartialEmoji | None:
-    class_key = clean(class_name).casefold()
-    fallbacks = {
-        "krieger": "⚔️", "paladin": "🛡️", "jäger": "🏹", "schurke": "🗡️",
-        "priester": "✨", "schamane": "⚡", "magier": "🔥", "hexenmeister": "👿", "druide": "🐾",
-    }
-    # Select-Optionen werden von Discord strenger validiert als normaler
-    # Nachrichtentext. Ein nicht mehr verfuegbares Application-Emoji macht
-    # dabei das komplette Charaktermenue unbrauchbar (400 / Invalid emoji).
-    # Unicode-Klassenicons sind serverunabhaengig und koennen nicht veralten.
-    return fallbacks.get(class_key, "🎮")
-
-
 def _spec_icon(spec: str, fallback: str = "◆") -> str:
     aliases = {
         "waffen": "waffen", "furor": "fury", "heilung": "heilung", "heilig": "holy_pala",
@@ -1228,7 +1215,7 @@ class RaidCharacterSelect(discord.ui.Select):
         options = [discord.SelectOption(
             label=clean(row.get("name"))[:100], value=str(index),
             description=" · ".join(filter(None, [clean(row.get("className")), clean(row.get("server"))]))[:100] or None,
-            emoji=_class_select_emoji(clean(row.get("className"))), default=index == 0,
+            default=index == 0,
         ) for index, row in enumerate(characters[:25])]
         super().__init__(placeholder="Gespeicherten LichtLoot-Charakter auswählen", options=options, row=0)
 
@@ -1405,7 +1392,6 @@ class P0CharacterSelect(discord.ui.Select):
                 label=name[:100],
                 description=" · ".join(filter(None, [clean(row.get("className")), clean(row.get("server"))]))[:100] or None,
                 value=option_value,
-                emoji=_class_select_emoji(clean(row.get("className"))),
                 default=name.casefold() == clean(parent.character).casefold(),
             ))
         super().__init__(placeholder="Charakter suchen und auswählen", options=options, row=0)
