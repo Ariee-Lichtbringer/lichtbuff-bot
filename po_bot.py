@@ -740,7 +740,6 @@ class PoBotV2(discord.Client):
                 self, guild, raid_id, message_id, _raid_signup_enabled(raid)
             ),
         )
-        await self.remove_duplicate_raid_posts(channel, raid_id, message_id)
         return post
 
     async def create_or_replace_post(
