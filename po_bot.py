@@ -1342,6 +1342,37 @@ class P0SignupModal(discord.ui.Modal, title="SpielerLogin verknüpfen"):
             await interaction.followup.send(f"⚠️ Verknüpfung fehlgeschlagen: {error}", ephemeral=True)
 
 
+class P0AccountLinkView(discord.ui.View):
+    """Fragt den SpielerLogin nur bei noch nicht verknüpften Accounts ab."""
+
+    def __init__(
+        self,
+        bot: "PoBotV2",
+        guild: GuildIdentity,
+        raid_id: str,
+        channel_id: int | str,
+        message_id: int | str,
+    ) -> None:
+        super().__init__(timeout=180)
+        self.bot = bot
+        self.guild_identity = guild
+        self.raid_id = raid_id
+        self.channel_id = channel_id
+        self.message_id = message_id
+
+    @discord.ui.button(label="LichtLoot-Account verknüpfen", style=discord.ButtonStyle.primary)
+    async def link_account(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(
+            P0SignupModal(
+                self.bot,
+                self.guild_identity,
+                self.raid_id,
+                self.channel_id,
+                self.message_id,
+            )
+        )
+
+
 class P0DeleteModal(discord.ui.Modal, title="Eigene P0-Anmeldung löschen"):
     player_pin = discord.ui.TextInput(label="LichtLoot-/NachtLoot-SpielerLogin", required=True, max_length=40)
 
@@ -1793,18 +1824,45 @@ class CombinedSignupView(discord.ui.View):
 
     @discord.ui.button(label="P0 eintragen", style=discord.ButtonStyle.success, custom_id="p0v2:p0_signup", row=2)
     async def p0_signup(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        # Discord erwartet die erste Antwort innerhalb von drei Sekunden.
-        # Das Modal wird deshalb sofort geöffnet; Verknüpfung, Charaktere und
-        # Lootliste werden erst beim Absenden des Modals über die API geladen.
-        await interaction.response.send_modal(
-            P0SignupModal(
-                self.bot,
-                self.guild_identity,
-                self.raid_id,
-                interaction.channel_id,
-                interaction.message.id,
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            characters = await self.bot.api.get_linked_characters(
+                self.guild_identity, interaction.user.id
             )
-        )
+            if not characters:
+                await interaction.followup.send(
+                    "Dein Discord-Account ist noch nicht mit LichtLoot verknüpft.",
+                    view=P0AccountLinkView(
+                        self.bot,
+                        self.guild_identity,
+                        self.raid_id,
+                        interaction.channel_id,
+                        interaction.message.id,
+                    ),
+                    ephemeral=True,
+                )
+                return
+            context = await self.bot.api.get_p0_context(self.guild_identity, self.raid_id)
+            items = list(context.get("items") or [])
+            if not items:
+                raise RuntimeError("Für diesen Raid ist keine P0-Lootliste konfiguriert.")
+            await interaction.followup.send(
+                "Wähle deinen gespeicherten Charakter und das gewünschte P0-Item:",
+                view=P0CharacterSelectionView(
+                    self.bot,
+                    self.guild_identity,
+                    self.raid_id,
+                    interaction.channel_id,
+                    interaction.message.id,
+                    characters,
+                    items,
+                    interaction.user.id,
+                    interaction.user.display_name,
+                ),
+                ephemeral=True,
+            )
+        except Exception as error:
+            await interaction.followup.send(f"⚠️ P0-Anmeldung fehlgeschlagen: {error}", ephemeral=True)
 
     @discord.ui.button(label="P0-Eintrag löschen", style=discord.ButtonStyle.danger, custom_id="p0v2:p0_delete", row=2)
     async def p0_delete(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
