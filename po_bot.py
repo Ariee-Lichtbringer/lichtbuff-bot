@@ -2141,6 +2141,41 @@ def _fit_embed_to_discord_limit(embed: discord.Embed, maximum: int = 5900) -> di
     return embed
 
 
+def _raid_embed_links(guild: GuildIdentity, raid: dict[str, Any]) -> list[str]:
+    links: list[tuple[str, str, str]] = []
+    raw_url = clean(raid.get("linkUrl"))
+    if raw_url.startswith("["):
+        try:
+            parsed = json.loads(raw_url)
+            if isinstance(parsed, list):
+                for row in parsed:
+                    if isinstance(row, dict):
+                        links.append((clean(row.get("icon")), clean(row.get("text")), clean(row.get("url"))))
+        except json.JSONDecodeError:
+            pass
+    elif raw_url:
+        links.append((clean(raid.get("linkIcon")), clean(raid.get("linkText")), raw_url))
+
+    raid_key = clean(raid.get("raid") or raid.get("raidName")).lower().replace("_", "-")
+    if raid_key.startswith("zg"):
+        raid_key = "zg"
+    prio_pin = clean(raid.get("playerPin") or raid.get("prioPin"))
+    query = urllib.parse.urlencode({"guild": guild.guild_slug, "pin": prio_pin})
+    if raid_key in {"mc", "bwl", "aq40", "naxx", "zg", "aq20", "ony"}:
+        links.insert(0, ("🎒", "Lootseite", f"{SITE_DEFAULT}/loot/{raid_key}-loot.html?{query}"))
+    links.insert(0, ("🌐", "Webansicht", f"{SITE_DEFAULT}/start.html?{query}"))
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for icon, label, url in links:
+        if not url.startswith(("https://", "http://")) or url in seen:
+            continue
+        seen.add(url)
+        safe_label = (label or "Link").replace("[", "").replace("]", "")
+        result.append(f"{icon or '🔗'} [{safe_label}]({url})")
+    return result
+
+
 def build_combined_embed(
     guild: GuildIdentity,
     helper: dict[str, Any],
@@ -2178,6 +2213,9 @@ def build_combined_embed(
     prio_pin = clean(raid.get("playerPin") or raid.get("prioPin"))
     if raid.get("prioEnabled") is not False and prio_pin:
         embed.add_field(name="Prio-PIN", value=f"`{prio_pin}`", inline=False)
+    raid_links = _raid_embed_links(guild, raid)
+    if raid_links:
+        embed.add_field(name="Links", value=" · ".join(raid_links)[:1024], inline=False)
     raid_rows = list(helper.get("signups") or []) + list(helper.get("externalSignups") or [])
     p0_by_player_item: dict[tuple[str, str], dict[str, Any]] = {}
     for row in list(p0_context.get("signups") or []) + list(p0_entries or []):
