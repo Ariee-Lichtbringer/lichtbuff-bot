@@ -134,21 +134,57 @@ def _class_select_emoji(class_name: str) -> str | discord.PartialEmoji | None:
     return _select_emoji(_class_icon(class_key, fallback)) or fallback
 
 
-def _spec_icon(spec: str, fallback: str = "◆") -> str:
-    aliases = {
-        "waffen": "waffen", "furor": "fury", "heilung": "heilung", "heilig": "holy_pala",
-        "schutz": "tank", "wiederherstellung": "heilung",
-        "vergeltung": "retri", "feuer": "feuer", "frost": "frost", "arkan": "arkan",
-        "schatten": "schatten", "tank": "tank", "combat": "combat", "kampf": "combat",
-        "survival": "survival", "überleben": "survival", "marksman": "marksman",
-        "treffsicherheit": "marksman", "beastmaster": "beastmaster", "tierherrschaft": "beastmaster",
-        "disziplin": "disziplin", "gebrechen": "affliction", "dämonologie": "demonology",
-        "damonologie": "demonology", "zerstörung": "destruction", "zerstorung": "destruction",
-        "elementar": "elemental", "verstärkung": "enhancement", "verstarkung": "enhancement",
-        "gleichgewicht": "balance", "wildheit": "feral", "meucheln": "assassination",
-        "täuschung": "subtlety", "tauschung": "subtlety",
-    }
-    return _emoji(aliases.get(clean(spec).casefold(), clean(spec)), fallback)
+SPEC_EMOJI_ALIASES = {
+    "tank": ["tank", "prot", "schutz"],
+    "heal": ["heilung", "heal", "heiler", "resto", "restoration"],
+    "paladin_holy": ["holy_pala", "paladin_holy", "pala_holy", "palaholy", "holy_paladin", "heilig_paladin"],
+    "priest_holy": ["holy_priester", "priest_holy", "priester_holy", "holy_priest", "heilig_priester"],
+    "discipline": ["disziplin", "discipline", "disc"],
+    "shadow": ["schatten", "shadow"],
+    "arms": ["arms", "waffen"],
+    "fury": ["fury", "furor"],
+    "retri": ["retri", "ret", "vergeltung"],
+    "fire": ["feuer", "fire"],
+    "frost": ["frost", "eis"],
+    "arcane": ["arkan", "arcane"],
+    "assassination": ["assassination", "assa", "meucheln"],
+    "subtlety": ["subtlety", "sub", "tauschung", "täuschung"],
+    "combat": ["combat", "kampf"],
+    "affliction": ["affliction", "affli", "gebrechen"],
+    "demonology": ["demonology", "demo", "damonologie", "dämonologie"],
+    "destruction": ["destruction", "destro", "zerstoerung", "zerstörung"],
+    "feral": ["feraldd", "feral", "wildheit", "wildheitdd"],
+    "balance": ["eule", "balance", "moonkin", "gleichgewicht"],
+    "survival": ["survival", "uberleben", "überleben"],
+    "marksman": ["marksman", "marksmanship", "treffsicherheit"],
+    "beastmaster": ["beastmaster", "beastmastery", "bm", "tierherrschaft"],
+    "elemental": ["elemental", "ele", "elementar"],
+    "enhancement": ["enhancement", "enh", "verstarkung", "verstärkung"],
+}
+
+
+def _spec_icon(spec: str, fallback: str = "◆", class_key: str = "") -> str:
+    normalized = _emoji_key(spec)
+    if normalized == "heilig":
+        canonical = "priest_holy" if class_key in {"priester", "priest"} else "paladin_holy"
+    elif normalized in {"heilung", "wiederherstellung"}:
+        canonical = "heal"
+    elif normalized == "schutz":
+        canonical = "tank"
+    else:
+        canonical = next(
+            (
+                key
+                for key, aliases in SPEC_EMOJI_ALIASES.items()
+                if normalized in {_emoji_key(alias) for alias in aliases}
+            ),
+            normalized,
+        )
+    for candidate in SPEC_EMOJI_ALIASES.get(canonical, [canonical]):
+        icon = EMOJI_CACHE.get(_emoji_key(candidate))
+        if icon:
+            return icon
+    return fallback
 
 
 def _row_spec_icon(row: dict[str, Any], class_key: str) -> str:
@@ -158,11 +194,13 @@ def _row_spec_icon(row: dict[str, Any], class_key: str) -> str:
     elif role == "heal":
         fallback = _emoji("heilung", "✨")
     else:
-        fallback = _class_icon(class_key, "👤")
+        # Ohne gespeicherte Skillung darf kein Klassen-Icon eine konkrete
+        # Spezialisierung vortäuschen. Der Eintrag muss dann neu gewählt werden.
+        fallback = "❓"
     spec = _spec_for_row(row)
     if not spec or spec.casefold() in {"dd", "dps", "flex"}:
         return fallback
-    return _spec_icon(spec, fallback)
+    return _spec_icon(spec, fallback, class_key)
 
 
 def _spec_for_row(row: dict[str, Any]) -> str:
