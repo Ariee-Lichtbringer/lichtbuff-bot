@@ -153,12 +153,12 @@ def _spec_icon(spec: str, fallback: str = "◆") -> str:
 
 def _row_spec_icon(row: dict[str, Any], class_key: str) -> str:
     role = _role_for(row)
-    fallback = {
-        "tank": _emoji("tank", "🛡️"),
-        "heal": _emoji("heilung", "✨"),
-        "ranged": _emoji("range", "🏹"),
-        "melee": _emoji("melee", "⚔️"),
-    }.get(role, _class_icon(class_key, "👤"))
+    if role == "tank":
+        fallback = _emoji("tank", "🛡️")
+    elif role == "heal":
+        fallback = _emoji("heilung", "✨")
+    else:
+        fallback = _class_icon(class_key, "👤")
     spec = _spec_for_row(row)
     if not spec or spec.casefold() in {"dd", "dps", "flex"}:
         return fallback
