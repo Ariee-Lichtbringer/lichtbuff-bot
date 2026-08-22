@@ -137,6 +137,7 @@ def _class_select_emoji(class_name: str) -> str | discord.PartialEmoji | None:
 def _spec_icon(spec: str, fallback: str = "◆") -> str:
     aliases = {
         "waffen": "waffen", "furor": "fury", "heilung": "heilung", "heilig": "holy_pala",
+        "schutz": "tank", "wiederherstellung": "heilung",
         "vergeltung": "retri", "feuer": "feuer", "frost": "frost", "arkan": "arkan",
         "schatten": "schatten", "tank": "tank", "combat": "combat", "kampf": "combat",
         "survival": "survival", "überleben": "survival", "marksman": "marksman",
@@ -148,6 +149,20 @@ def _spec_icon(spec: str, fallback: str = "◆") -> str:
         "täuschung": "subtlety", "tauschung": "subtlety",
     }
     return _emoji(aliases.get(clean(spec).casefold(), clean(spec)), fallback)
+
+
+def _row_spec_icon(row: dict[str, Any], class_key: str) -> str:
+    role = _role_for(row)
+    fallback = {
+        "tank": _emoji("tank", "🛡️"),
+        "heal": _emoji("heilung", "✨"),
+        "ranged": _emoji("range", "🏹"),
+        "melee": _emoji("melee", "⚔️"),
+    }.get(role, _class_icon(class_key, "👤"))
+    spec = _spec_for_row(row)
+    if not spec or spec.casefold() in {"dd", "dps", "flex"}:
+        return fallback
+    return _spec_icon(spec, fallback)
 
 
 def _spec_for_row(row: dict[str, Any]) -> str:
@@ -2048,6 +2063,7 @@ def _add_roster_fields(
         ),
         inline=True,
     )
+    embed.add_field(name="\u200b", value="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", inline=False)
     embed.add_field(name="Kader", value="Klassen und aktuelle Belegung", inline=False)
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in active:
@@ -2064,8 +2080,7 @@ def _add_roster_fields(
             if row not in grouped[class_key]:
                 continue
             player = clean(row.get("player") or row.get("char")) or "Unbekannt"
-            spec = _spec_for_row(row) or clean(row.get("role")) or "Flex"
-            lines.append(f"{_spec_icon(spec)} `{position}` {player}{_prio_marker(row, p0_players)}")
+            lines.append(f"{_row_spec_icon(row, class_key)} `{position}` {player}{_prio_marker(row, p0_players)}")
         embed.add_field(name=f"{icon} __{label} ({len(lines)})__", value="\n".join(lines)[:1024], inline=True)
     status_groups = (
         ("🪑 Bank", status_sets["bank"]), ("🕒 Spät", status_sets["late"]),
