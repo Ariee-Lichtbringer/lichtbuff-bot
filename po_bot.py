@@ -1674,21 +1674,25 @@ class P0ReviewSelect(discord.ui.Select):
         self.review_status = status
         self.entries_by_value: dict[str, dict[str, Any]] = {}
         options = []
-        for index, row in enumerate(entries[:25]):
+        for row in entries:
             entry_id = clean(row.get("id") or row.get("signupId"))
             if not entry_id:
                 continue
             source = "po_post" if clean(row.get("entrySource")) == "po_post" else "signup"
-            value = f"{source}:{entry_id}"
+            value = f"{source}:{entry_id}"[:100]
+            if value in self.entries_by_value:
+                continue
             self.entries_by_value[value] = row
             options.append(
                 discord.SelectOption(
                     label=(clean(row.get("player") or row.get("char")) or "Unbekannt")[:100],
                     description=(clean(row.get("item") or row.get("itemName")) or "P0-Item")[:100],
-                    value=value[:100],
+                    value=value,
                     emoji="✅" if status == "approved" else "❌",
                 )
             )
+            if len(options) == 25:
+                break
         super().__init__(
             placeholder="P0-Eintrag auswählen",
             min_values=1,
@@ -1955,7 +1959,7 @@ class CombinedSignupView(discord.ui.View):
             seen: set[tuple[str, str]] = set()
             for row in combined:
                 entry_id = clean(row.get("id") or row.get("signupId"))
-                source = clean(row.get("entrySource")) or "signup"
+                source = "po_post" if clean(row.get("entrySource")) == "po_post" else "signup"
                 key = (source, entry_id)
                 if not entry_id or key in seen or clean(row.get("approvalStatus")).lower() == status:
                     continue
