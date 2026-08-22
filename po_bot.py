@@ -1700,6 +1700,13 @@ class P0SignupSelectionView(discord.ui.View):
     async def submit(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
+            channel_id = clean(self.channel_id)
+            message_id = clean(self.message_id)
+            if not channel_id or not message_id:
+                context = await self.bot.api.get_p0_context(self.guild_identity, self.raid_id)
+                raid = dict(context.get("raid") or {})
+                channel_id = channel_id or clean(raid.get("discordChannelId"))
+                message_id = message_id or clean(raid.get("discordMessageId"))
             await self.bot.api.save_p0_signup(
                 self.guild_identity,
                 self.raid_id,
@@ -1708,8 +1715,8 @@ class P0SignupSelectionView(discord.ui.View):
                 item=required(self.item_name, "item"),
                 discord_user_id=self.discord_user_id,
                 discord_name=self.discord_name,
-                channel_id=self.channel_id,
-                message_id=self.message_id,
+                channel_id=required(channel_id, "discord_channel_id"),
+                message_id=required(message_id, "discord_message_id"),
             )
             await self.bot.refresh_existing_post(self.guild_identity, self.raid_id)
             await interaction.followup.send("✅ P0-Anmeldung gespeichert.", ephemeral=True)
@@ -1941,6 +1948,14 @@ class CombinedSignupView(discord.ui.View):
     async def p0_signup(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
+            interaction_channel = getattr(interaction, "channel", None)
+            message_channel = getattr(getattr(interaction, "message", None), "channel", None)
+            channel_id = clean(
+                interaction.channel_id
+                or getattr(interaction_channel, "id", "")
+                or getattr(message_channel, "id", "")
+            )
+            message_id = clean(getattr(getattr(interaction, "message", None), "id", ""))
             characters = await self.bot.api.get_linked_characters(
                 self.guild_identity, interaction.user.id
             )
@@ -1951,13 +1966,16 @@ class CombinedSignupView(discord.ui.View):
                         self.bot,
                         self.guild_identity,
                         self.raid_id,
-                        interaction.channel_id,
-                        interaction.message.id,
+                        required(channel_id, "discord_channel_id"),
+                        required(message_id, "discord_message_id"),
                     ),
                     ephemeral=True,
                 )
                 return
             context = await self.bot.api.get_p0_context(self.guild_identity, self.raid_id)
+            raid = dict(context.get("raid") or {})
+            channel_id = channel_id or clean(raid.get("discordChannelId"))
+            message_id = message_id or clean(raid.get("discordMessageId"))
             items = list(context.get("items") or [])
             if not items:
                 raise RuntimeError("Für diesen Raid ist keine P0-Lootliste konfiguriert.")
@@ -1967,8 +1985,8 @@ class CombinedSignupView(discord.ui.View):
                     self.bot,
                     self.guild_identity,
                     self.raid_id,
-                    interaction.channel_id,
-                    interaction.message.id,
+                    required(channel_id, "discord_channel_id"),
+                    required(message_id, "discord_message_id"),
                     characters,
                     items,
                     interaction.user.id,
