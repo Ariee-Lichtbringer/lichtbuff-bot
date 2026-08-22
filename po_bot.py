@@ -740,6 +740,7 @@ class PoBotV2(discord.Client):
                 self, guild, raid_id, message_id, _raid_signup_enabled(raid)
             ),
         )
+        await self.remove_duplicate_raid_posts(channel, raid_id, message_id)
         return post
 
     async def create_or_replace_post(
@@ -916,10 +917,9 @@ class PoBotV2(discord.Client):
                             payload.get("raidId") or payload.get("lichtlootRaidId"),
                             "raid_id",
                         )
-                        force_new = (
-                            queue_type == "po_post"
-                            or clean(payload.get("forceNewMessage")).lower() in {"1", "true", "yes", "ja"}
-                        )
+                        force_new = clean(payload.get("forceNewMessage")).lower() in {
+                            "1", "true", "yes", "ja"
+                        }
                         raid_signup_override = _queue_raid_signup_override(payload)
                         await self.create_or_replace_post(
                             guild,
