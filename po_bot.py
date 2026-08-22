@@ -2002,7 +2002,12 @@ def _role_for(row: dict[str, Any]) -> str:
     return "ranged" if class_key in {"mage", "magier", "warlock", "hexenmeister", "hunter", "jäger", "priest", "priester"} else "melee"
 
 
-def _add_roster_fields(embed: discord.Embed, rows: list[dict[str, Any]], p0_rows: list[dict[str, Any]]) -> None:
+def _add_roster_fields(
+    embed: discord.Embed,
+    rows: list[dict[str, Any]],
+    p0_rows: list[dict[str, Any]],
+    max_players: str = "",
+) -> None:
     active_statuses = {"signed", "angemeldet", "confirmed", "fest", ""}
     active = [row for row in rows if clean(row.get("status")).lower() in active_statuses]
     status_sets = {
@@ -2018,13 +2023,13 @@ def _add_roster_fields(embed: discord.Embed, rows: list[dict[str, Any]], p0_rows
     embed.add_field(
         name="Anmeldestatus",
         value=(
-            f"👥 **Fest angemeldet {len(active)}** · "
+            f"👥 **{len(active)}{f' / {max_players}' if max_players else ''} fest**\n"
             f"🪑 Bank **{status_counts['bank']}** · "
             f"🕒 Spät **{status_counts['late']}** · "
             f"⚖️ Vorläufig **{status_counts['tentative']}** · "
             f"🚫 Abwesend **{status_counts['absent']}**"
         ),
-        inline=False,
+        inline=True,
     )
     p0_players = {
         clean(row.get("player") or row.get("char")).casefold(): clean(row.get("approvalStatus"))
@@ -2041,8 +2046,9 @@ def _add_roster_fields(embed: discord.Embed, rows: list[dict[str, Any]], p0_rows
             f"{_emoji('range', '🏹')} **Ranged {counts['ranged']}** · "
             f"{_emoji('heilung', '✨')} **Heiler {counts['heal']}**"
         ),
-        inline=False,
+        inline=True,
     )
+    embed.add_field(name="Kader", value="Klassen und aktuelle Belegung", inline=False)
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in active:
         class_key = clean(row.get("className") or row.get("klasse")).lower()
@@ -2060,7 +2066,10 @@ def _add_roster_fields(embed: discord.Embed, rows: list[dict[str, Any]], p0_rows
             player = clean(row.get("player") or row.get("char")) or "Unbekannt"
             spec = _spec_for_row(row) or clean(row.get("role")) or "Flex"
             lines.append(f"{_spec_icon(spec)} `{position}` {player}{_prio_marker(row, p0_players)}")
-        embed.add_field(name=f"{icon} __{label} ({len(lines)})__", value="\n".join(lines)[:1024], inline=True)
+        visible_lines = lines[:4]
+        if len(lines) > 4:
+            visible_lines.append(f"_+{len(lines) - 4} weitere in der Webansicht_")
+        embed.add_field(name=f"{icon} __{label} ({len(lines)})__", value="\n".join(visible_lines)[:1024], inline=True)
     status_groups = (
         ("🪑 Bank", status_sets["bank"]), ("🕒 Spät", status_sets["late"]),
         ("⚖️ Vorläufig", status_sets["tentative"]),
@@ -2082,12 +2091,6 @@ def _add_p0_fields(
     *,
     separator: bool = True,
 ) -> None:
-    if separator:
-        embed.add_field(
-            name="\u200b",
-            value="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            inline=False,
-        )
     if not rows:
         embed.add_field(name="📋 P0-Anmeldungen (0)", value="Noch keine P0-Anmeldungen.", inline=False)
         return
@@ -2095,26 +2098,26 @@ def _add_p0_fields(
     for row in rows:
         item = clean(row.get("item") or row.get("itemName")) or "Unbekanntes Item"
         grouped.setdefault(item, []).append(row)
-    embed.add_field(
-        name=f"📋 P0-Anmeldungen ({len(rows)})",
-        value=(
-            f"{_emoji('beuteorange', '🟠')} **eingetragen** · "
-            f"{_emoji('Beutegrun', '🟢')} **freigegeben**"
-        ),
-        inline=False,
-    )
+    lines = [
+        f"{_emoji('beutelilia', '🟣')} **P1–P3 Lootbag** · "
+        f"{_emoji('beuteorange', '🟠')} **eingetragen** · "
+        f"{_emoji('Beutegrun', '🟢')} **freigegeben**"
+    ]
     for item, item_rows in sorted(grouped.items(), key=lambda pair: pair[0].casefold()):
-        if len(embed.fields) >= 25:
-            break
-        lines = []
+        player_lines = []
         for row in sorted(item_rows, key=lambda value: clean(value.get("player") or value.get("char")).casefold()):
             player = clean(row.get("player") or row.get("char")) or "Unbekannt"
             approval = clean(row.get("approvalStatus")).lower()
             icon = _emoji("Beutegrun", "🟢") if approval in {"approved", "freigegeben"} else _emoji("beuteorange", "🟠")
             points = float(row.get("p0PlusPoints") or 0)
             suffix = f" · **{points:g} P0+**" if points else ""
-            lines.append(f"{icon} `{player[:24]}`{suffix}")
-        embed.add_field(name=f"{_item_icon(item)} {item}", value="\n".join(lines)[:1024], inline=True)
+            player_lines.append(f"{icon} `{player[:24]}`{suffix}")
+        lines.append(f"{_item_icon(item)} **{item}** — {' · '.join(player_lines)}")
+    embed.add_field(
+        name=f"📋 P0-Anmeldungen ({len(rows)})",
+        value="\n".join(lines)[:1024],
+        inline=False,
+    )
 
 
 def _fit_embed_to_discord_limit(embed: discord.Embed, maximum: int = 5900) -> discord.Embed:
@@ -2196,23 +2199,12 @@ def build_combined_embed(
         color=0x7C3AED,
     )
     embed.add_field(name="Raidlead", value=clean(raid.get("createdBy") or raid.get("raidLead")) or "Gildenleitung", inline=True)
-    embed.add_field(name="Tag / Datum", value=f"**__{raid_date}__**", inline=True)
-    embed.add_field(name="Uhrzeit", value=f"**__{raid_time} Uhr__**", inline=True)
-    slot_parts = []
-    for label, key in (
-        ("Gesamt", "maxPlayers"),
-        ("Tanks", "tankSlots"),
-        ("Heiler", "healSlots"),
-        ("DD", "ddSlots"),
-    ):
-        value = clean(raid.get(key))
-        if value:
-            slot_parts.append(f"{label} {value}")
-    if raid_signup_enabled and slot_parts:
-        embed.add_field(name="Raidplätze", value=" · ".join(slot_parts), inline=False)
+    embed.add_field(name="Termin", value=f"**__{raid_date} · {raid_time} Uhr__**", inline=True)
     prio_pin = clean(raid.get("playerPin") or raid.get("prioPin"))
     if raid.get("prioEnabled") is not False and prio_pin:
-        embed.add_field(name="Prio-PIN", value=f"`{prio_pin}`", inline=False)
+        embed.add_field(name="Prio-PIN", value=f"`{prio_pin}`", inline=True)
+    else:
+        embed.add_field(name="Prio-PIN", value="–", inline=True)
     raid_links = _raid_embed_links(guild, raid)
     if raid_links:
         embed.add_field(name="Links", value=" · ".join(raid_links)[:1024], inline=False)
@@ -2226,17 +2218,8 @@ def build_combined_embed(
         current = p0_by_player_item.get(key, {})
         p0_by_player_item[key] = {**current, **row}
     p0_rows = list(p0_by_player_item.values())
-    embed.add_field(
-        name="\u200b",
-        value=(
-            f"{_emoji('beutelilia', '🟣')} **P1–P3 Lootbag** · "
-            f"{_emoji('beuteorange', '🟠')} **P0 eingetragen** · "
-            f"{_emoji('Beutegrun', '🟢')} **P0 freigegeben**"
-        ),
-        inline=False,
-    )
     if raid_signup_enabled:
-        _add_roster_fields(embed, raid_rows, p0_rows)
+        _add_roster_fields(embed, raid_rows, p0_rows, clean(raid.get("maxPlayers")))
     _add_p0_fields(embed, p0_rows, separator=raid_signup_enabled)
     embed.set_footer(
         text=f"Gilden-ID: {guild.guild_id} · Raid-ID: {identity.raid_id}"
