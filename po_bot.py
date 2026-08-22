@@ -678,6 +678,7 @@ class PoBotV2(discord.Client):
         self.identities = IdentityRegistry(api)
         self._refresh_task: asyncio.Task[None] | None = None
         self._queue_task: asyncio.Task[None] | None = None
+        self._registered_view_message_ids: set[str] = set()
         self._register_commands()
 
     def _register_commands(self) -> None:
@@ -906,6 +907,14 @@ class PoBotV2(discord.Client):
     async def setup_hook(self) -> None:
         await self.identities.refresh()
         await self.refresh_emoji_cache()
+        await self.register_persistent_views()
+        await self.tree.sync()
+        self._refresh_task = asyncio.create_task(self.refresh_loop(), name="p0-v2-refresh")
+        self._queue_task = asyncio.create_task(self.queue_loop(), name="p0-v2-queue")
+
+    async def register_persistent_views(self) -> int:
+        """Registriert aktive Discord-Posts wiederholbar statt nur beim Prozessstart."""
+        registered = 0
         for guild in self.identities.by_discord_guild_id.values():
             try:
                 raids = await self.api.get_active_raids(guild)
@@ -914,20 +923,23 @@ class PoBotV2(discord.Client):
                 continue
             for raid in raids:
                 message_id = clean(raid.get("discordMessageId"))
-                if message_id:
-                    self.add_view(
-                        CombinedSignupView(
-                            self,
-                            guild,
-                            required(raid.get("raidId"), "raid_id"),
-                            message_id,
-                            _raid_signup_enabled(raid),
-                        ),
-                        message_id=int(message_id),
-                    )
-        await self.tree.sync()
-        self._refresh_task = asyncio.create_task(self.refresh_loop(), name="p0-v2-refresh")
-        self._queue_task = asyncio.create_task(self.queue_loop(), name="p0-v2-queue")
+                if not message_id or message_id in self._registered_view_message_ids:
+                    continue
+                self.add_view(
+                    CombinedSignupView(
+                        self,
+                        guild,
+                        required(raid.get("raidId"), "raid_id"),
+                        message_id,
+                        _raid_signup_enabled(raid),
+                    ),
+                    message_id=int(message_id),
+                )
+                self._registered_view_message_ids.add(message_id)
+                registered += 1
+        if registered:
+            print(f"P0-Bot V2: {registered} persistente Discord-Post-View(s) registriert.")
+        return registered
 
     async def queue_loop(self) -> None:
         await self.wait_until_ready()
@@ -1084,6 +1096,10 @@ class PoBotV2(discord.Client):
                 await self.identities.refresh()
             except Exception as error:
                 print(f"V2 behält die letzte gültige Gildenkonfiguration: {error}")
+            try:
+                await self.register_persistent_views()
+            except Exception as error:
+                print(f"V2 konnte persistente Views nicht nachregistrieren: {error}")
             for guild in list(self.identities.by_discord_guild_id.values()):
                 try:
                     raids = await self.api.get_active_raids(guild)
@@ -1105,8 +1121,9 @@ class PoBotV2(discord.Client):
     async def on_ready(self) -> None:
         try:
             await self.identities.refresh()
+            await self.register_persistent_views()
         except Exception as error:
-            print(f"V2 konnte die Gildenkonfiguration beim Reconnect nicht laden: {error}")
+            print(f"V2 konnte Gildenkonfiguration/Views beim Reconnect nicht laden: {error}")
         print(
             f"P0-Bot V2 online als {self.user}; "
             f"{len(self.identities.by_discord_guild_id)} Gilden-ID(s) geladen."
