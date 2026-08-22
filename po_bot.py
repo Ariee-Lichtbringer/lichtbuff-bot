@@ -346,7 +346,7 @@ class LichtLootApi:
 
     async def get_p0_entries(self, guild: GuildIdentity, raid_id: str) -> list[dict[str, Any]]:
         result = await self.get(
-            "lichtbotGetPoPostEntries",
+            "lichtbotGetP0SignupContext",
             guild=guild.guild_slug,
             guildId=guild.guild_id,
             guildSlug=guild.guild_slug,
@@ -354,9 +354,8 @@ class LichtLootApi:
         )
         self.require_guild_response(result, guild)
         return [
-            {**dict(row), "entrySource": "po_post"}
-            for row in list(result.get("entries") or [])
-            if not row.get("configOnly")
+            {**dict(row), "entrySource": "p0_database"}
+            for row in list(result.get("signups") or [])
         ]
 
     async def get_linked_characters(
