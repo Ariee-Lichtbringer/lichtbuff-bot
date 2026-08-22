@@ -2066,10 +2066,7 @@ def _add_roster_fields(
             player = clean(row.get("player") or row.get("char")) or "Unbekannt"
             spec = _spec_for_row(row) or clean(row.get("role")) or "Flex"
             lines.append(f"{_spec_icon(spec)} `{position}` {player}{_prio_marker(row, p0_players)}")
-        visible_lines = lines[:4]
-        if len(lines) > 4:
-            visible_lines.append(f"_+{len(lines) - 4} weitere in der Webansicht_")
-        embed.add_field(name=f"{icon} __{label} ({len(lines)})__", value="\n".join(visible_lines)[:1024], inline=True)
+        embed.add_field(name=f"{icon} __{label} ({len(lines)})__", value="\n".join(lines)[:1024], inline=True)
     status_groups = (
         ("🪑 Bank", status_sets["bank"]), ("🕒 Spät", status_sets["late"]),
         ("⚖️ Vorläufig", status_sets["tentative"]),
@@ -2098,12 +2095,18 @@ def _add_p0_fields(
     for row in rows:
         item = clean(row.get("item") or row.get("itemName")) or "Unbekanntes Item"
         grouped.setdefault(item, []).append(row)
-    lines = [
-        f"{_emoji('beutelilia', '🟣')} **P1–P3 Lootbag** · "
-        f"{_emoji('beuteorange', '🟠')} **eingetragen** · "
-        f"{_emoji('Beutegrun', '🟢')} **freigegeben**"
-    ]
+    embed.add_field(
+        name=f"📋 P0-Anmeldungen ({len(rows)})",
+        value=(
+            f"{_emoji('beutelilia', '🟣')} **P1–P3 Lootbag** · "
+            f"{_emoji('beuteorange', '🟠')} **eingetragen** · "
+            f"{_emoji('Beutegrun', '🟢')} **freigegeben**"
+        ),
+        inline=False,
+    )
     for item, item_rows in sorted(grouped.items(), key=lambda pair: pair[0].casefold()):
+        if len(embed.fields) >= 25:
+            break
         player_lines = []
         for row in sorted(item_rows, key=lambda value: clean(value.get("player") or value.get("char")).casefold()):
             player = clean(row.get("player") or row.get("char")) or "Unbekannt"
@@ -2112,12 +2115,11 @@ def _add_p0_fields(
             points = float(row.get("p0PlusPoints") or 0)
             suffix = f" · **{points:g} P0+**" if points else ""
             player_lines.append(f"{icon} `{player[:24]}`{suffix}")
-        lines.append(f"{_item_icon(item)} **{item}** — {' · '.join(player_lines)}")
-    embed.add_field(
-        name=f"📋 P0-Anmeldungen ({len(rows)})",
-        value="\n".join(lines)[:1024],
-        inline=False,
-    )
+        embed.add_field(
+            name=f"{_item_icon(item)} {item}",
+            value="\n".join(player_lines)[:1024],
+            inline=True,
+        )
 
 
 def _fit_embed_to_discord_limit(embed: discord.Embed, maximum: int = 5900) -> discord.Embed:
