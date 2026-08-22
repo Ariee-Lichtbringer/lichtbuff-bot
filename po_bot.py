@@ -679,6 +679,7 @@ class PoBotV2(discord.Client):
         self._refresh_task: asyncio.Task[None] | None = None
         self._queue_task: asyncio.Task[None] | None = None
         self._registered_view_message_ids: set[str] = set()
+        self._post_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._register_commands()
 
     def _register_commands(self) -> None:
@@ -754,6 +755,18 @@ class PoBotV2(discord.Client):
         raid_id: str,
         raid_signup_enabled_override: bool | None = None,
     ) -> DiscordPostIdentity:
+        lock = self._post_locks.setdefault((guild.guild_id, raid_id), asyncio.Lock())
+        async with lock:
+            return await self._refresh_existing_post_unlocked(
+                guild, raid_id, raid_signup_enabled_override
+            )
+
+    async def _refresh_existing_post_unlocked(
+        self,
+        guild: GuildIdentity,
+        raid_id: str,
+        raid_signup_enabled_override: bool | None = None,
+    ) -> DiscordPostIdentity:
         helper = await self.api.get_raid(guild, raid_id)
         raid = dict(helper.get("raid") or {})
         if raid_signup_enabled_override is not None:
@@ -777,10 +790,18 @@ class PoBotV2(discord.Client):
             raise RuntimeError("Der gespeicherte Discord-Kanal existiert nicht.")
         try:
             message = await channel.fetch_message(int(message_id))
-        except discord.NotFound as error:
-            raise RuntimeError(
-                "Der gespeicherte Discord-Post fehlt. Refresh erstellt absichtlich keinen neuen Post."
-            ) from error
+        except discord.NotFound:
+            print(
+                f"V2 stellt fehlenden Discord-Post für {guild.guild_slug}/{raid_id} "
+                f"automatisch wieder her (alte Message-ID {message_id})."
+            )
+            return await self._create_or_replace_post_unlocked(
+                guild,
+                raid_id,
+                force_replace=True,
+                channel_id_override=channel_id,
+                raid_signup_enabled_override=raid_signup_enabled_override,
+            )
         if message.author.id != self.user.id:
             raise RuntimeError("Der gespeicherte Post gehört nicht zu diesem Bot.")
         p0_context, p0_entries = await asyncio.gather(
@@ -806,6 +827,27 @@ class PoBotV2(discord.Client):
         raid_signup_enabled_override: bool | None = None,
         legacy_post_key: str = "",
     ) -> DiscordPostIdentity:
+        lock = self._post_locks.setdefault((guild.guild_id, raid_id), asyncio.Lock())
+        async with lock:
+            return await self._create_or_replace_post_unlocked(
+                guild,
+                raid_id,
+                force_replace=force_replace,
+                channel_id_override=channel_id_override,
+                raid_signup_enabled_override=raid_signup_enabled_override,
+                legacy_post_key=legacy_post_key,
+            )
+
+    async def _create_or_replace_post_unlocked(
+        self,
+        guild: GuildIdentity,
+        raid_id: str,
+        *,
+        force_replace: bool,
+        channel_id_override: str = "",
+        raid_signup_enabled_override: bool | None = None,
+        legacy_post_key: str = "",
+    ) -> DiscordPostIdentity:
         helper = await self.api.get_raid(guild, raid_id)
         raid = dict(helper.get("raid") or {})
         if raid_signup_enabled_override is not None:
@@ -814,7 +856,7 @@ class PoBotV2(discord.Client):
         identity = RaidIdentity.from_api(guild, raid)
         existing_message_id = clean(raid.get("discordMessageId"))
         if existing_message_id and not force_replace:
-            return await self.refresh_existing_post(
+            return await self._refresh_existing_post_unlocked(
                 guild,
                 raid_id,
                 raid_signup_enabled_override=raid_signup_enabled_override,
