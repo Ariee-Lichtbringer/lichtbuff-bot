@@ -2145,8 +2145,23 @@ def _add_roster_fields(
     p0_rows: list[dict[str, Any]],
     max_players: str = "",
 ) -> None:
+    def signup_number(row: dict[str, Any]) -> int:
+        try:
+            value = int(row.get("signupNumber") or 0)
+            return value if value > 0 else 999999
+        except (TypeError, ValueError):
+            return 999999
+
+    ordered_rows = sorted(
+        rows,
+        key=lambda row: (
+            signup_number(row),
+            clean(row.get("createdAt")),
+            clean(row.get("player") or row.get("char")).casefold(),
+        ),
+    )
     active_statuses = {"signed", "angemeldet", "confirmed", "fest", ""}
-    active = [row for row in rows if clean(row.get("status")).lower() in active_statuses]
+    active = [row for row in ordered_rows if clean(row.get("status")).lower() in active_statuses]
     status_sets = {
         "bank": {"bench", "bank"},
         "late": {"late", "spät", "spaet"},
@@ -2198,11 +2213,11 @@ def _add_roster_fields(
         icon, label = ("🛡️", "Tank") if class_key == "tank" else CLASS_LABELS.get(class_key, ("👤", "Ohne Klasse"))
         icon = _emoji("tank", icon) if class_key == "tank" else _class_icon(class_key, icon)
         lines = []
-        for position, row in enumerate(rows, 1):
-            if row not in grouped[class_key]:
-                continue
+        for row in sorted(grouped[class_key], key=signup_number):
             player = clean(row.get("player") or row.get("char")) or "Unbekannt"
-            lines.append(f"{_row_spec_icon(row, class_key)} `{position}` {player}{_prio_marker(row, p0_players)}")
+            number = signup_number(row)
+            number_label = str(number) if number < 999999 else "–"
+            lines.append(f"{_row_spec_icon(row, class_key)} `{number_label}` {player}{_prio_marker(row, p0_players)}")
         embed.add_field(name=f"{icon} __{label} ({len(lines)})__", value="\n".join(lines)[:1024], inline=True)
     status_groups = (
         ("🪑 Bank", status_sets["bank"]), ("🕒 Spät", status_sets["late"]),
@@ -2210,11 +2225,15 @@ def _add_roster_fields(
         ("🚫 Abwesenheit", status_sets["absent"]),
     )
     for label, statuses in status_groups:
-        status_rows = [row for row in rows if clean(row.get("status")).lower() in statuses]
+        status_rows = [row for row in ordered_rows if clean(row.get("status")).lower() in statuses]
         if status_rows:
             embed.add_field(
                 name=f"{label} ({len(status_rows)})",
-                value="\n".join(f"• {clean(row.get('player') or row.get('char')) or 'Unbekannt'}" for row in status_rows)[:1024],
+                value="\n".join(
+                    f"`{signup_number(row) if signup_number(row) < 999999 else '–'}` "
+                    f"{clean(row.get('player') or row.get('char')) or 'Unbekannt'}"
+                    for row in status_rows
+                )[:1024],
                 inline=True,
             )
 
