@@ -412,7 +412,7 @@ class LichtLootApi:
         ]
 
     async def get_linked_characters(
-        self, guild: GuildIdentity, discord_user_id: int | str
+        self, guild: GuildIdentity, discord_user_id: int | str, raid_id: str = ""
     ) -> list[dict[str, Any]]:
         result = await self.get(
             "lichtbotGetPoLinkedCharacters",
@@ -420,6 +420,7 @@ class LichtLootApi:
             guildId=guild.guild_id,
             guildSlug=guild.guild_slug,
             discordUserId=required(discord_user_id, "discord_user_id"),
+            raidId=clean(raid_id),
         )
         self.require_guild_response(result, guild)
         return list(result.get("characters") or [])
@@ -1382,7 +1383,6 @@ class RaidSignupSelectionView(discord.ui.View):
         self.bot, self.guild_identity, self.raid_id = bot, guild, raid_id
         self.channel_id, self.message_id, self.characters = channel_id, message_id, characters
         self.status, self.discord_user_id, self.discord_name = status, discord_user_id, discord_name
-        self.add_item(RaidCharacterSelect(self, characters))
         self.set_character(0)
 
     def set_character(self, index: int) -> None:
@@ -1394,6 +1394,13 @@ class RaidSignupSelectionView(discord.ui.View):
         for child in list(self.children):
             if isinstance(child, RaidSpecSelect): self.remove_item(child)
         self.add_item(RaidSpecSelect(self, specs))
+
+    @discord.ui.button(label="Charakter wechseln", style=discord.ButtonStyle.secondary, row=2)
+    async def change_character(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not any(isinstance(child, RaidCharacterSelect) for child in self.children):
+            self.add_item(RaidCharacterSelect(self, self.characters))
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
 
     @discord.ui.button(label="Raidanmeldung speichern", style=discord.ButtonStyle.success, row=2)
     async def submit(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -1902,7 +1909,9 @@ class CombinedSignupView(discord.ui.View):
         # Die LichtLoot-Abfrage darf deshalb niemals vor dem Defer stattfinden.
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            linked = await self.bot.api.get_linked_characters(self.guild_identity, interaction.user.id)
+            linked = await self.bot.api.get_linked_characters(
+                self.guild_identity, interaction.user.id, self.raid_id
+            )
             if not linked:
                 await interaction.followup.send(
                     "Für deinen Discord-Account ist noch kein LichtLoot-Charakter verknüpft.",
@@ -1914,7 +1923,9 @@ class CombinedSignupView(discord.ui.View):
                 )
                 return
             await interaction.followup.send(
-                "Wähle einen fest in LichtLoot gespeicherten Charakter und seine Skillung:",
+                "Vorausgewählter LichtLoot-Charakter: **{}**. Wähle nur noch die Skillung:".format(
+                    clean(linked[0].get("name"))
+                ),
                 view=RaidSignupSelectionView(
                     self.bot, self.guild_identity, self.raid_id, interaction.channel_id,
                     interaction.message.id, linked, status, interaction.user.id,
