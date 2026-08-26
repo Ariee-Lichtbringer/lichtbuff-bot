@@ -1702,7 +1702,12 @@ class P0SignupSelectionView(discord.ui.View):
     async def submit(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            channel_id = clean(self.channel_id)
+            interaction_channel = getattr(interaction, "channel", None)
+            channel_id = clean(
+                self.channel_id
+                or interaction.channel_id
+                or getattr(interaction_channel, "id", "")
+            )
             message_id = clean(self.message_id)
             if not channel_id or not message_id:
                 context = await self.bot.api.get_p0_context(self.guild_identity, self.raid_id)
