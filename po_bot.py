@@ -565,8 +565,10 @@ class LichtLootApi:
             item=required(item, "item"),
             discordUserId=required(discord_user_id, "discord_user_id"),
             discordName=required(discord_name, "discord_name"),
-            discordChannelId=required(channel_id, "discord_channel_id"),
-            discordMessageId=required(message_id, "discord_message_id"),
+            # Der Server ergänzt fehlende Discord-Metadaten anhand der
+            # eindeutigen Raid-ID. Das ist bei ephemeren Discord-Views nötig.
+            discordChannelId=clean(channel_id),
+            discordMessageId=clean(message_id),
         )
         self.require_guild_response(result, guild)
         identity = RaidIdentity.from_api(guild, dict(result.get("raid") or {}))
@@ -1434,8 +1436,8 @@ class P0SignupModal(discord.ui.Modal, title="SpielerLogin verknüpfen"):
         self.bot = bot
         self.guild_identity = guild
         self.raid_id = required(raid_id, "raid_id")
-        self.channel_id = required(channel_id, "discord_channel_id")
-        self.message_id = required(message_id, "discord_message_id")
+        self.channel_id = clean(channel_id)
+        self.message_id = clean(message_id)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -1729,8 +1731,8 @@ class P0SignupSelectionView(discord.ui.View):
                 item=required(self.item_name, "item"),
                 discord_user_id=self.discord_user_id,
                 discord_name=self.discord_name,
-                channel_id=required(channel_id, "discord_channel_id"),
-                message_id=required(message_id, "discord_message_id"),
+                channel_id=clean(channel_id),
+                message_id=clean(message_id),
             )
             await self.bot.refresh_existing_post(self.guild_identity, self.raid_id)
             await interaction.followup.send("✅ P0-Anmeldung gespeichert.", ephemeral=True)
@@ -1985,8 +1987,8 @@ class CombinedSignupView(discord.ui.View):
                         self.bot,
                         self.guild_identity,
                         self.raid_id,
-                        required(channel_id, "discord_channel_id"),
-                        required(message_id, "discord_message_id"),
+                        clean(channel_id),
+                        clean(message_id),
                     ),
                     ephemeral=True,
                 )
@@ -2004,8 +2006,8 @@ class CombinedSignupView(discord.ui.View):
                     self.bot,
                     self.guild_identity,
                     self.raid_id,
-                    required(channel_id, "discord_channel_id"),
-                    required(message_id, "discord_message_id"),
+                    clean(channel_id),
+                    clean(message_id),
                     characters,
                     items,
                     interaction.user.id,
