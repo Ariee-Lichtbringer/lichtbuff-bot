@@ -2276,9 +2276,47 @@ def _add_p0_fields(
         ),
         inline=False,
     )
-    for item, item_rows in sorted(grouped.items(), key=lambda pair: pair[0].casefold()):
-        if len(embed.fields) >= 25:
-            break
+    sorted_groups = sorted(grouped.items(), key=lambda pair: pair[0].casefold())
+    available_fields = max(0, 25 - len(embed.fields))
+
+    # Bei großen Raidkadern bleiben oft weniger Discord-Felder übrig als es
+    # verschiedene P0-Items gibt. In diesem Fall alle Anmeldungen kompakt in
+    # Sammelfeldern ausgeben, statt die letzten Itemgruppen still zu verlieren.
+    if len(sorted_groups) > available_fields:
+        blocks: list[str] = []
+        for item, item_rows in sorted_groups:
+            player_lines = []
+            for row in sorted(item_rows, key=lambda value: clean(value.get("player") or value.get("char")).casefold()):
+                player = clean(row.get("player") or row.get("char")) or "Unbekannt"
+                approval = clean(row.get("approvalStatus")).lower()
+                icon = _emoji("Beutegrun", "🟢") if approval in {"approved", "freigegeben"} else _emoji("beuteorange", "🟠")
+                points = float(row.get("p0PlusPoints") or 0)
+                suffix = f" · **{points:g} P0+**" if points else ""
+                player_lines.append(f"{icon} `{player[:24]}`{suffix}")
+            blocks.append(f"{_item_icon(item)} **{item}**\n" + "\n".join(player_lines))
+
+        chunks: list[str] = []
+        current = ""
+        for block in blocks:
+            candidate = f"{current}\n\n{block}" if current else block
+            if len(candidate) <= 1024:
+                current = candidate
+            else:
+                if current:
+                    chunks.append(current)
+                current = block[:1024]
+        if current:
+            chunks.append(current)
+
+        for index, chunk in enumerate(chunks[:available_fields]):
+            embed.add_field(
+                name="P0-Auswahl" if index == 0 else "P0-Auswahl (Fortsetzung)",
+                value=chunk,
+                inline=False,
+            )
+        return
+
+    for item, item_rows in sorted_groups:
         player_lines = []
         for row in sorted(item_rows, key=lambda value: clean(value.get("player") or value.get("char")).casefold()):
             player = clean(row.get("player") or row.get("char")) or "Unbekannt"
