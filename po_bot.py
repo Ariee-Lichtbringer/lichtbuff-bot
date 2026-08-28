@@ -997,7 +997,7 @@ class PoBotV2(discord.Client):
                     types=(
                         "raid_announcement,po_post,p0_post_refresh,"
                         "raid_announcement_delete,po_post_delete,"
-                        "raid_announcement_role_notice"
+                        "raid_announcement_role_notice,loot_master_leadpin_notice"
                     ),
                     limit="20",
                 )
@@ -1022,6 +1022,20 @@ class PoBotV2(discord.Client):
                             )
                             print(
                                 f"V2 Erstellungs-DM verarbeitet: "
+                                f"{guild.guild_id}/{row_number} -> {delivered} Empfänger"
+                            )
+                            continue
+                        if queue_type == "loot_master_leadpin_notice":
+                            delivered = await self.send_loot_master_leadpin_notice(guild, payload)
+                            await self.api.post(
+                                "lichtbotResolveQueue",
+                                guild=guild.guild_slug,
+                                guildId=guild.guild_id,
+                                guildSlug=guild.guild_slug,
+                                rowNumber=row_number,
+                            )
+                            print(
+                                f"V2 LeadPIN-DM verarbeitet: "
                                 f"{guild.guild_id}/{row_number} -> {delivered} Empfänger"
                             )
                             continue
@@ -1191,6 +1205,108 @@ class PoBotV2(discord.Client):
             raise RuntimeError(f"Erstellungs-DM konnte nicht zugestellt werden: {detail}")
         if failures:
             print(f"V2 Erstellungs-DM: {len(failures)} Zustellung(en) fehlgeschlagen.")
+        return delivered
+
+    async def send_loot_master_leadpin_notice(
+        self, guild: GuildIdentity, payload: dict[str, Any]
+    ) -> int:
+        targets = list(payload.get("targets") or [])
+        wanted_names = {
+            _emoji_key(target.get("value") or target.get("name"))
+            for target in targets
+            if clean(target.get("type") or "name").lower() == "name"
+            and clean(target.get("value") or target.get("name"))
+        }
+        wanted_role_ids = {
+            clean(target.get("value") or target.get("id"))
+            for target in targets
+            if clean(target.get("type")).lower() == "role"
+            and clean(target.get("value") or target.get("id"))
+        }
+        if not wanted_names and not wanted_role_ids:
+            raise RuntimeError("Keine Empfänger für die LeadPIN-DM ausgewählt.")
+
+        discord_guild = self.get_guild(int(guild.discord_guild_id))
+        if discord_guild is None:
+            raise RuntimeError("Der konfigurierte Discord-Server ist nicht erreichbar.")
+
+        def matches(member: discord.Member) -> bool:
+            names = {
+                _emoji_key(getattr(member, "name", "")),
+                _emoji_key(getattr(member, "display_name", "")),
+                _emoji_key(getattr(member, "global_name", "")),
+            }
+            role_ids = {
+                clean(getattr(role, "id", "")) for role in getattr(member, "roles", [])
+            }
+            return bool(wanted_names.intersection(names) or wanted_role_ids.intersection(role_ids))
+
+        recipients = {
+            member.id: member
+            for member in getattr(discord_guild, "members", [])
+            if not getattr(member, "bot", False) and matches(member)
+        }
+        if not recipients:
+            try:
+                fetched = [member async for member in discord_guild.fetch_members(limit=None)]
+            except Exception as error:
+                raise RuntimeError(f"Discord-Mitglieder konnten nicht geladen werden: {error}") from error
+            recipients = {
+                member.id: member
+                for member in fetched
+                if not getattr(member, "bot", False) and matches(member)
+            }
+        if not recipients:
+            raise RuntimeError("Kein ausgewählter LeadPIN-Empfänger wurde gefunden.")
+
+        raid_id = clean(payload.get("raidId"))
+        raid_name = clean(payload.get("raidName") or payload.get("raid")) or "Raid"
+        raid_date = clean(payload.get("raidDate")) or "–"
+        raid_time = clean(payload.get("raidTime")) or "–"
+        lead_pin = clean(payload.get("leadPin"))
+        loot_master_pin = clean(payload.get("lootMasterPin"))
+        custom_message = clean(payload.get("messageTemplate")).replace("{raid}", raid_name)
+        query = urllib.parse.urlencode({
+            "guild": guild.guild_slug,
+            "raidId": raid_id,
+            "leadPin": lead_pin,
+        })
+        panel_url = f"{SITE_DEFAULT.rstrip('/')}/raidlead-panel.html?{query}"
+        description = "\n".join([
+            custom_message or f"Du bist für **{raid_name}** als Plündermeister eingetragen.",
+            "",
+            f"🔐 **LeadPIN:** `{lead_pin or '–'}`",
+            f"🪙 **Plündermeister-PIN:** `{loot_master_pin or '–'}`",
+            "Alternativ wird auch der Mastercode der Gildenleitung als Plündermeister-Passwort akzeptiert.",
+            "",
+            f"📅 **Datum:** {raid_date}",
+            f"⏰ **Uhrzeit:** {raid_time} Uhr",
+            f"🔗 **[Plündermeisterseite für den Raid öffnen]({panel_url})**",
+            "",
+            "**Erinnerung für nach dem Raid:**",
+            "• P0+ Punkte übertragen",
+            "• Erhaltene Items markieren und die zugehörigen Punkte entfernen",
+        ])
+        embed = discord.Embed(
+            title="🪙 Plündermeister / LeadPIN",
+            description=description,
+            color=0xD4AF37,
+        )
+        embed.set_footer(text="Automatische Nachricht von LichtLoot")
+
+        delivered = 0
+        failures: list[str] = []
+        for member in recipients.values():
+            try:
+                await member.send(embed=embed)
+                delivered += 1
+            except Exception as error:
+                failures.append(f"{member}: {error}")
+        if delivered == 0:
+            detail = failures[0] if failures else "unbekannter Discord-Fehler"
+            raise RuntimeError(f"LeadPIN-DM konnte nicht zugestellt werden: {detail}")
+        if failures:
+            print(f"V2 LeadPIN-DM: {len(failures)} Zustellung(en) fehlgeschlagen.")
         return delivered
 
     async def delete_queued_post(
