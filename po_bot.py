@@ -996,7 +996,8 @@ class PoBotV2(discord.Client):
                     "lichtbotGetQueueAllGuilds",
                     types=(
                         "raid_announcement,po_post,p0_post_refresh,"
-                        "raid_announcement_delete,po_post_delete"
+                        "raid_announcement_delete,po_post_delete,"
+                        "raid_announcement_role_notice"
                     ),
                     limit="20",
                 )
@@ -1010,6 +1011,20 @@ class PoBotV2(discord.Client):
                         print(f"V2 Queue übersprungen: unbekannte Gilde {guild_slug}.")
                         continue
                     try:
+                        if queue_type == "raid_announcement_role_notice":
+                            delivered = await self.send_raid_announcement_notice(guild, payload)
+                            await self.api.post(
+                                "lichtbotResolveQueue",
+                                guild=guild.guild_slug,
+                                guildId=guild.guild_id,
+                                guildSlug=guild.guild_slug,
+                                rowNumber=row_number,
+                            )
+                            print(
+                                f"V2 Erstellungs-DM verarbeitet: "
+                                f"{guild.guild_id}/{row_number} -> {delivered} Empfänger"
+                            )
+                            continue
                         if queue_type in {"raid_announcement_delete", "po_post_delete"}:
                             await self.delete_queued_post(guild, payload)
                             await self.api.post(
@@ -1082,6 +1097,101 @@ class PoBotV2(discord.Client):
             except Exception as error:
                 print(f"V2 Queue konnte nicht geladen werden: {error}")
             await asyncio.sleep(5)
+
+    async def send_raid_announcement_notice(
+        self, guild: GuildIdentity, payload: dict[str, Any]
+    ) -> int:
+        targets = list(payload.get("targets") or [])
+        wanted_names = {
+            _emoji_key(target.get("value") or target.get("name"))
+            for target in targets
+            if clean(target.get("type") or "name").lower() == "name"
+            and clean(target.get("value") or target.get("name"))
+        }
+        wanted_role_ids = {
+            clean(target.get("value") or target.get("id"))
+            for target in targets
+            if clean(target.get("type")).lower() == "role"
+            and clean(target.get("value") or target.get("id"))
+        }
+        if not wanted_names and not wanted_role_ids:
+            raise RuntimeError("Keine Empfänger für die Erstellungs-DM ausgewählt.")
+
+        discord_guild = self.get_guild(int(guild.discord_guild_id))
+        if discord_guild is None:
+            raise RuntimeError("Der konfigurierte Discord-Server ist nicht erreichbar.")
+
+        def matches(member: discord.Member) -> bool:
+            member_names = {
+                _emoji_key(getattr(member, "name", "")),
+                _emoji_key(getattr(member, "display_name", "")),
+                _emoji_key(getattr(member, "global_name", "")),
+            }
+            member_role_ids = {
+                clean(getattr(role, "id", "")) for role in getattr(member, "roles", [])
+            }
+            return bool(
+                wanted_names.intersection(member_names)
+                or wanted_role_ids.intersection(member_role_ids)
+            )
+
+        members = list(getattr(discord_guild, "members", []))
+        recipients = {
+            member.id: member
+            for member in members
+            if not getattr(member, "bot", False) and matches(member)
+        }
+        if not recipients:
+            try:
+                fetched_members = [member async for member in discord_guild.fetch_members(limit=None)]
+            except Exception as error:
+                raise RuntimeError(f"Discord-Mitglieder konnten nicht geladen werden: {error}") from error
+            recipients = {
+                member.id: member
+                for member in fetched_members
+                if not getattr(member, "bot", False) and matches(member)
+            }
+        if not recipients:
+            raise RuntimeError("Kein ausgewählter Discord-Empfänger wurde gefunden.")
+
+        raid_name = clean(payload.get("raidName") or payload.get("raid")) or "Raid"
+        raid_date = clean(payload.get("raidDate")) or "–"
+        raid_time = clean(payload.get("raidTime")) or "–"
+        channel_id = clean(payload.get("channelId") or payload.get("discordChannelId"))
+        signup_url = clean(payload.get("signupUrl"))
+        extra_message = clean(payload.get("announcementMessage"))
+        description_lines = [
+            f"Der Raidanmelder für **{raid_name}** wurde erstellt.",
+            "",
+            f"📅 **Termin:** {raid_date} · {raid_time} Uhr",
+        ]
+        if channel_id:
+            description_lines.append(f"💬 **Channel:** <#{channel_id}>")
+        if signup_url:
+            description_lines.append(f"🔗 **[Direkt zum Anmelder]({signup_url})**")
+        if extra_message:
+            description_lines.extend(("", f"📣 {extra_message}"))
+        embed = discord.Embed(
+            title="📣 Neuer Raidanmelder",
+            description="\n".join(description_lines),
+            color=0x8B5CF6,
+        )
+        embed.set_footer(text="Automatische Nachricht von LichtLoot")
+
+        delivered = 0
+        failures: list[str] = []
+        for member in recipients.values():
+            try:
+                await member.send(embed=embed)
+                delivered += 1
+            except Exception as error:
+                failures.append(f"{member}: {error}")
+        if delivered == 0:
+            detail = failures[0] if failures else "unbekannter Discord-Fehler"
+            raise RuntimeError(f"Erstellungs-DM konnte nicht zugestellt werden: {detail}")
+        if failures:
+            print(f"V2 Erstellungs-DM: {len(failures)} Zustellung(en) fehlgeschlagen.")
+        return delivered
 
     async def delete_queued_post(
         self, guild: GuildIdentity, payload: dict[str, Any]
