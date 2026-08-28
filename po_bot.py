@@ -220,6 +220,16 @@ def clean(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _raid_is_inactive(raid: dict[str, Any]) -> bool:
+    """Archivierte, geloeschte oder abgesagte Raids duerfen nie neu gepostet werden."""
+    status = clean(raid.get("status") or raid.get("Status")).casefold()
+    return status in {
+        "archiviert", "archive", "archived",
+        "gelöscht", "geloescht", "deleted",
+        "abgesagt", "cancelled", "canceled",
+    }
+
+
 def required(value: Any, field: str) -> str:
     result = clean(value)
     if not result:
@@ -774,6 +784,8 @@ class PoBotV2(discord.Client):
     ) -> DiscordPostIdentity:
         helper = await self.api.get_raid(guild, raid_id)
         raid = dict(helper.get("raid") or {})
+        if _raid_is_inactive(raid):
+            raise RuntimeError("Dieser Raid ist archiviert oder nicht mehr aktiv.")
         if raid_signup_enabled_override is not None:
             raid["raidHelperEnabled"] = raid_signup_enabled_override
             helper = {**helper, "raid": raid}
@@ -796,16 +808,9 @@ class PoBotV2(discord.Client):
         try:
             message = await channel.fetch_message(int(message_id))
         except discord.NotFound:
-            print(
-                f"V2 stellt fehlenden Discord-Post für {guild.guild_slug}/{raid_id} "
-                f"automatisch wieder her (alte Message-ID {message_id})."
-            )
-            return await self._create_or_replace_post_unlocked(
-                guild,
-                raid_id,
-                force_replace=True,
-                channel_id_override=channel_id,
-                raid_signup_enabled_override=raid_signup_enabled_override,
+            raise RuntimeError(
+                "Der gespeicherte Discord-Post wurde entfernt oder archiviert; "
+                "der automatische Refresh erstellt ihn nicht erneut."
             )
         if message.author.id != self.user.id:
             raise RuntimeError("Der gespeicherte Post gehört nicht zu diesem Bot.")
@@ -855,6 +860,8 @@ class PoBotV2(discord.Client):
     ) -> DiscordPostIdentity:
         helper = await self.api.get_raid(guild, raid_id)
         raid = dict(helper.get("raid") or {})
+        if _raid_is_inactive(raid):
+            raise RuntimeError("Dieser Raid ist archiviert oder nicht mehr aktiv.")
         if raid_signup_enabled_override is not None:
             raid["raidHelperEnabled"] = raid_signup_enabled_override
             helper = {**helper, "raid": raid}
@@ -1092,6 +1099,7 @@ class PoBotV2(discord.Client):
                             marker in clean(error).casefold()
                             for marker in (
                                 "raid wurde nicht gefunden",
+                                "raid ist archiviert oder nicht mehr aktiv",
                                 "gespeicherte discord-post fehlt",
                                 "pflichtfeld fehlt: raid_id",
                             )
