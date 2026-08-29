@@ -1574,7 +1574,6 @@ class RaidCharacterSelect(discord.ui.Select):
         options = [discord.SelectOption(
             label=clean(row.get("name"))[:100], value=str(index),
             description=" · ".join(filter(None, [clean(row.get("className")), clean(row.get("server"))]))[:100] or None,
-            emoji=_class_select_emoji(clean(row.get("className"))),
             default=index == 0,
         ) for index, row in enumerate(characters[:25])]
         super().__init__(placeholder="Gespeicherten LichtLoot-Charakter auswählen", options=options, row=0)
@@ -1633,10 +1632,21 @@ class RaidSignupSelectionView(discord.ui.View):
 
     @discord.ui.button(label="Charakter wechseln", style=discord.ButtonStyle.secondary, row=2)
     async def change_character(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if not any(isinstance(child, RaidCharacterSelect) for child in self.children):
-            self.add_item(RaidCharacterSelect(self, self.characters))
-        button.disabled = True
-        await interaction.response.edit_message(view=self)
+        # Discord erwartet innerhalb von rund drei Sekunden eine Antwort.
+        # Das Erzeugen der Select-Optionen und Aktualisieren der ephemeren
+        # Nachricht darf deshalb erst nach dem Defer erfolgen.
+        await interaction.response.defer()
+        try:
+            if not any(isinstance(child, RaidCharacterSelect) for child in self.children):
+                self.add_item(RaidCharacterSelect(self, self.characters))
+            button.disabled = True
+            await interaction.edit_original_response(view=self)
+        except Exception as error:
+            print(f"Charakterwechsel konnte nicht geöffnet werden: {error}", flush=True)
+            await interaction.followup.send(
+                f"⚠️ Charakterauswahl konnte nicht geöffnet werden: {error}",
+                ephemeral=True,
+            )
 
     @discord.ui.button(label="Raidanmeldung speichern", style=discord.ButtonStyle.success, row=2)
     async def submit(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
