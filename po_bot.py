@@ -2592,6 +2592,26 @@ def _fit_embed_to_discord_limit(embed: discord.Embed, maximum: int = 5900) -> di
     return embed
 
 
+def _canonical_raid_key(raid: dict[str, Any]) -> str:
+    raw = clean(raid.get("raid") or raid.get("raidName")).casefold()
+    normalized = _emoji_key(raw)
+    if normalized.startswith("zg") or "zulgurub" in normalized:
+        return "zg"
+    if normalized.startswith("naxx"):
+        return "naxx"
+    if normalized in {"bwl", "blackwinglair", "pechschwingenhort"}:
+        return "bwl"
+    if normalized in {"mc", "moltencore", "geschmolzenerkern"}:
+        return "mc"
+    if "aq40" in normalized or "ahnqiraj40" in normalized:
+        return "aq40"
+    if "aq20" in normalized or "ahnqiraj20" in normalized:
+        return "aq20"
+    if normalized.startswith("ony"):
+        return "ony"
+    return raw.lower().replace("_", "-")
+
+
 def _raid_embed_links(guild: GuildIdentity, raid: dict[str, Any]) -> list[str]:
     links: list[tuple[str, str, str]] = []
     raw_url = clean(raid.get("linkUrl"))
@@ -2607,9 +2627,7 @@ def _raid_embed_links(guild: GuildIdentity, raid: dict[str, Any]) -> list[str]:
     elif raw_url:
         links.append((clean(raid.get("linkIcon")), clean(raid.get("linkText")), raw_url))
 
-    raid_key = clean(raid.get("raid") or raid.get("raidName")).lower().replace("_", "-")
-    if raid_key.startswith("zg"):
-        raid_key = "zg"
+    raid_key = _canonical_raid_key(raid)
     prio_pin = clean(raid.get("playerPin") or raid.get("prioPin"))
     query = urllib.parse.urlencode({"guild": guild.guild_slug, "pin": prio_pin})
     if raid_key in {"mc", "bwl", "aq40", "naxx", "zg", "aq20", "ony"}:
@@ -2672,13 +2690,14 @@ def build_combined_embed(
     embed.set_footer(
         text=f"Gilden-ID: {guild.guild_id} · Raid-ID: {identity.raid_id}"
     )
-    image_url = clean(raid.get("raidImageUrl") or raid.get("imageUrl"))
-    if not image_url:
-        raid_key = clean(raid.get("raid") or raid.get("raidName")).lower().replace("_", "-")
-        if raid_key.startswith("zg"):
-            raid_key = "zg"
-        if raid_key in {"zg", "aq20", "aq40", "bwl", "mc", "naxx", "ony"}:
-            image_url = f"https://lichtloot-production.up.railway.app/images/raid-banners/{raid_key}.jpg"
+    raid_key = _canonical_raid_key(raid)
+    # Fuer bekannte Raids immer das kanonische LichtLoot-Bild verwenden.
+    # So kann eine alte oder versehentlich falsch gespeicherte Bild-URL (z. B.
+    # das War-Effort-Bild bei Naxxramas) nicht mehr im Discord-Post erscheinen.
+    if raid_key in {"zg", "aq20", "aq40", "bwl", "mc", "naxx", "ony"}:
+        image_url = f"https://lichtloot-production.up.railway.app/images/raid-templates/{raid_key}.jpg"
+    else:
+        image_url = clean(raid.get("raidImageUrl") or raid.get("imageUrl"))
     if image_url.startswith(("https://", "http://")):
         embed.set_image(url=image_url)
     return _fit_embed_to_discord_limit(embed)
