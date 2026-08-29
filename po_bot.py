@@ -2691,13 +2691,12 @@ def build_combined_embed(
         text=f"Gilden-ID: {guild.guild_id} · Raid-ID: {identity.raid_id}"
     )
     raid_key = _canonical_raid_key(raid)
-    # Fuer bekannte Raids immer das kanonische LichtLoot-Bild verwenden.
-    # So kann eine alte oder versehentlich falsch gespeicherte Bild-URL (z. B.
-    # das War-Effort-Bild bei Naxxramas) nicht mehr im Discord-Post erscheinen.
-    if raid_key in {"zg", "aq20", "aq40", "bwl", "mc", "naxx", "ony"}:
+    # Die API liefert hier vorrangig das in der Gildenleitung unter Layout
+    # gespeicherte Raidbild. Nur ohne Gildenbild wird die allgemeine Vorlage
+    # verwendet.
+    image_url = clean(raid.get("raidImageUrl") or raid.get("imageUrl"))
+    if not image_url and raid_key in {"zg", "aq20", "aq40", "bwl", "mc", "naxx", "ony"}:
         image_url = f"https://lichtloot-production.up.railway.app/images/raid-templates/{raid_key}.jpg"
-    else:
-        image_url = clean(raid.get("raidImageUrl") or raid.get("imageUrl"))
     if image_url.startswith(("https://", "http://")):
         embed.set_image(url=image_url)
     return _fit_embed_to_discord_limit(embed)
