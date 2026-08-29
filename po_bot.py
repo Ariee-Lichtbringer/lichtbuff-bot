@@ -1005,7 +1005,7 @@ class PoBotV2(discord.Client):
                         "raid_announcement,po_post,p0_post_refresh,"
                         "raid_announcement_delete,po_post_delete,"
                         "raid_announcement_role_notice,loot_master_leadpin_notice,"
-                        "player_login_granted_notice"
+                        "player_login_granted_notice,raid_missing_prio_reminder"
                     ),
                     limit="20",
                 )
@@ -1059,6 +1059,20 @@ class PoBotV2(discord.Client):
                             print(
                                 f"V2 SpielerLogin-Freischaltungs-DM verarbeitet: "
                                 f"{guild.guild_id}/{row_number} -> {delivered} Empfänger"
+                            )
+                            continue
+                        if queue_type == "raid_missing_prio_reminder":
+                            delivered = await self.send_missing_prio_reminder(guild, payload)
+                            await self.api.post(
+                                "lichtbotResolveQueue",
+                                guild=guild.guild_slug,
+                                guildId=guild.guild_id,
+                                guildSlug=guild.guild_slug,
+                                rowNumber=row_number,
+                            )
+                            print(
+                                f"V2 Prio-Erinnerung verarbeitet: "
+                                f"{guild.guild_id}/{row_number} -> {delivered} Charaktere"
                             )
                             continue
                         if queue_type in {"raid_announcement_delete", "po_post_delete"}:
@@ -1156,6 +1170,60 @@ class PoBotV2(discord.Client):
         )
         await user.send(message, silent=True)
         return 1
+
+    async def send_missing_prio_reminder(
+        self, guild: GuildIdentity, payload: dict[str, Any]
+    ) -> int:
+        channel_id = required(
+            payload.get("channelId") or payload.get("discordChannelId"),
+            "discord_channel_id",
+        )
+        if not clean(channel_id).isdigit():
+            raise ValueError("Discord-Channel-ID für die Prio-Erinnerung ist ungültig.")
+
+        discord_guild = self.get_guild(int(guild.discord_guild_id))
+        if discord_guild is None:
+            discord_guild = await self.fetch_guild(int(guild.discord_guild_id))
+        channel = discord_guild.get_channel(int(channel_id))
+        if channel is None:
+            channel = await discord_guild.fetch_channel(int(channel_id))
+        if not hasattr(channel, "send"):
+            raise ValueError("Der Discord-Channel kann keine Nachrichten empfangen.")
+
+        missing_characters: list[str] = []
+        seen: set[str] = set()
+        for raw_name in list(payload.get("missingCharacters") or []):
+            name = clean(raw_name)
+            key = name.casefold()
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            missing_characters.append(name)
+        if not missing_characters:
+            return 0
+
+        raid_name = clean(payload.get("raidName")) or clean(payload.get("raid")).upper() or "Raid"
+        raid_time = clean(payload.get("raidTime"))
+        prio_pin = clean(payload.get("prioPin"))
+        escaped_names = [discord.utils.escape_markdown(name) for name in missing_characters]
+        heading = f"⏰ **Prio-Erinnerung – {discord.utils.escape_markdown(raid_name)}"
+        if raid_time:
+            heading += f" um {discord.utils.escape_markdown(raid_time)} Uhr"
+        heading += "**\n\n"
+        message = (
+            heading
+            + "Diese angemeldeten Charaktere haben noch keine Prio eingetragen:\n"
+            + "\n".join(f"• **{name}**" for name in escaped_names)
+            + "\n\nBitte tragt eure Prio jetzt auf LichtLoot ein."
+        )
+        if prio_pin:
+            message += f"\n**Prio-PIN:** `{discord.utils.escape_markdown(prio_pin)}`"
+
+        await channel.send(
+            message[:2000],
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return len(missing_characters)
 
     async def send_raid_announcement_notice(
         self, guild: GuildIdentity, payload: dict[str, Any]
