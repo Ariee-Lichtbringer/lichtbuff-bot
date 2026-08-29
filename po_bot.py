@@ -1004,7 +1004,8 @@ class PoBotV2(discord.Client):
                     types=(
                         "raid_announcement,po_post,p0_post_refresh,"
                         "raid_announcement_delete,po_post_delete,"
-                        "raid_announcement_role_notice,loot_master_leadpin_notice"
+                        "raid_announcement_role_notice,loot_master_leadpin_notice,"
+                        "player_login_granted_notice"
                     ),
                     limit="20",
                 )
@@ -1043,6 +1044,20 @@ class PoBotV2(discord.Client):
                             )
                             print(
                                 f"V2 LeadPIN-DM verarbeitet: "
+                                f"{guild.guild_id}/{row_number} -> {delivered} Empfänger"
+                            )
+                            continue
+                        if queue_type == "player_login_granted_notice":
+                            delivered = await self.send_player_login_granted_notice(guild, payload)
+                            await self.api.post(
+                                "lichtbotResolveQueue",
+                                guild=guild.guild_slug,
+                                guildId=guild.guild_id,
+                                guildSlug=guild.guild_slug,
+                                rowNumber=row_number,
+                            )
+                            print(
+                                f"V2 SpielerLogin-Freischaltungs-DM verarbeitet: "
                                 f"{guild.guild_id}/{row_number} -> {delivered} Empfänger"
                             )
                             continue
@@ -1119,6 +1134,28 @@ class PoBotV2(discord.Client):
             except Exception as error:
                 print(f"V2 Queue konnte nicht geladen werden: {error}")
             await asyncio.sleep(5)
+
+    async def send_player_login_granted_notice(
+        self, guild: GuildIdentity, payload: dict[str, Any]
+    ) -> int:
+        discord_user_id = clean(payload.get("discordUserId"))
+        if not discord_user_id.isdigit():
+            raise ValueError("Discord-Benutzer-ID für die Freischaltungs-DM fehlt.")
+        user = self.get_user(int(discord_user_id))
+        if user is None:
+            user = await self.fetch_user(int(discord_user_id))
+        guild_name = clean(payload.get("guildName")) or guild.guild_slug
+        character = clean(payload.get("character")) or "dein Charakter"
+        server = clean(payload.get("server"))
+        character_label = f"{character}-{server}" if server else character
+        message = (
+            "✅ **Dein LichtLoot-SpielerAccount wurde freigeschaltet**\n\n"
+            f"**Gilde:** {guild_name}\n"
+            f"**Charakter:** {character_label}\n\n"
+            "Du kannst dich jetzt auf LichtLoot mit deinem SpielerLogin anmelden."
+        )
+        await user.send(message, silent=True)
+        return 1
 
     async def send_raid_announcement_notice(
         self, guild: GuildIdentity, payload: dict[str, Any]
