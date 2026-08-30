@@ -2811,8 +2811,6 @@ def build_combined_embed(
     if raid_signup_enabled:
         raid_key = _canonical_raid_key(raid)
         image_url = clean(raid.get("raidImageUrl") or raid.get("imageUrl"))
-        if guild.guild_slug == "lichtloot" and raid_key in {"zg", "aq20"} and (not image_url or f"/images/raid-templates/{raid_key}." in image_url.lower()):
-            image_url = f"https://lichtloot-production.up.railway.app/images/raid-templates/{raid_key}-banner.png"
         if not image_url and raid_key in {"zg", "aq20", "aq40", "bwl", "mc", "naxx", "ony"}:
             image_url = f"https://lichtloot-production.up.railway.app/images/raid-templates/{raid_key}.jpg"
         if image_url.startswith(("https://", "http://")):
