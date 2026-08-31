@@ -242,6 +242,7 @@ class GuildIdentity:
     guild_id: str
     guild_slug: str
     discord_guild_id: str
+    guild_name: str = ""
 
     @classmethod
     def from_api(cls, row: dict[str, Any]) -> "GuildIdentity":
@@ -249,7 +250,25 @@ class GuildIdentity:
             guild_id=required(row.get("id") or row.get("guildId"), "guild_id"),
             guild_slug=required(row.get("slug") or row.get("guildSlug"), "guild_slug").lower(),
             discord_guild_id=required(row.get("discordGuildId"), "discord_guild_id"),
+            guild_name=clean(row.get("name") or row.get("guildName")),
         )
+
+
+def _guild_site_name(guild: GuildIdentity) -> str:
+    known_names = {
+        "lichtloot": "LichtLoot",
+        "nachtloot": "NachtLoot",
+    }
+    return known_names.get(guild.guild_slug, guild.guild_name or guild.guild_slug)
+
+
+def _raid_loot_url(guild: GuildIdentity, raid: dict[str, Any]) -> str:
+    raid_key = _canonical_raid_key(raid)
+    if raid_key not in {"mc", "bwl", "aq40", "naxx", "zg", "aq20", "ony"}:
+        return ""
+    prio_pin = clean(raid.get("playerPin") or raid.get("prioPin"))
+    query = urllib.parse.urlencode({"guild": guild.guild_slug, "pin": prio_pin})
+    return f"{SITE_DEFAULT}/loot/{raid_key}-loot.html?{query}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1205,6 +1224,9 @@ class PoBotV2(discord.Client):
         raid_name = clean(payload.get("raidName")) or clean(payload.get("raid")).upper() or "Raid"
         raid_time = clean(payload.get("raidTime"))
         prio_pin = clean(payload.get("prioPin"))
+        site_name = discord.utils.escape_markdown(_guild_site_name(guild))
+        loot_url = _raid_loot_url(guild, payload)
+        site_link = f"[{site_name}]({loot_url})" if loot_url else site_name
         escaped_names = [discord.utils.escape_markdown(name) for name in missing_characters]
         heading = f"⏰ **Prio-Erinnerung – {discord.utils.escape_markdown(raid_name)}"
         if raid_time:
@@ -1214,7 +1236,7 @@ class PoBotV2(discord.Client):
             heading
             + "Diese angemeldeten Charaktere haben noch keine Prio eingetragen:\n"
             + "\n".join(f"• **{name}**" for name in escaped_names)
-            + "\n\nBitte tragt eure Prio jetzt auf LichtLoot ein."
+            + f"\n\nBitte tragt eure Prio jetzt auf {site_link} ein."
         )
         if prio_pin:
             message += f"\n**Prio-PIN:** `{discord.utils.escape_markdown(prio_pin)}`"
@@ -2742,11 +2764,11 @@ def _raid_embed_links(guild: GuildIdentity, raid: dict[str, Any]) -> list[str]:
     elif raw_url:
         links.append((clean(raid.get("linkIcon")), clean(raid.get("linkText")), raw_url))
 
-    raid_key = _canonical_raid_key(raid)
     prio_pin = clean(raid.get("playerPin") or raid.get("prioPin"))
     query = urllib.parse.urlencode({"guild": guild.guild_slug, "pin": prio_pin})
-    if raid_key in {"mc", "bwl", "aq40", "naxx", "zg", "aq20", "ony"}:
-        links.insert(0, ("🎒", "Lootseite", f"{SITE_DEFAULT}/loot/{raid_key}-loot.html?{query}"))
+    loot_url = _raid_loot_url(guild, raid)
+    if loot_url:
+        links.insert(0, ("🎒", "Lootseite", loot_url))
     links.insert(0, ("🌐", "Webansicht", f"{SITE_DEFAULT}/start.html?{query}"))
 
     result: list[str] = []
