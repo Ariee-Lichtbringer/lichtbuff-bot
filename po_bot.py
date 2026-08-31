@@ -1081,17 +1081,19 @@ class PoBotV2(discord.Client):
                             )
                             continue
                         if queue_type == "raid_missing_prio_reminder":
-                            delivered = await self.send_missing_prio_reminder(guild, payload)
+                            reminder_result = await self.send_missing_prio_reminder(guild, payload)
                             await self.api.post(
                                 "lichtbotResolveQueue",
                                 guild=guild.guild_slug,
                                 guildId=guild.guild_id,
                                 guildSlug=guild.guild_slug,
                                 rowNumber=row_number,
+                                messageId=reminder_result.get("messageId", ""),
                             )
                             print(
                                 f"V2 Prio-Erinnerung verarbeitet: "
-                                f"{guild.guild_id}/{row_number} -> {delivered} Charaktere"
+                                f"{guild.guild_id}/{row_number} -> "
+                                f"{reminder_result.get('count', 0)} Charaktere"
                             )
                             continue
                         if queue_type in {"raid_announcement_delete", "po_post_delete"}:
@@ -1192,7 +1194,7 @@ class PoBotV2(discord.Client):
 
     async def send_missing_prio_reminder(
         self, guild: GuildIdentity, payload: dict[str, Any]
-    ) -> int:
+    ) -> dict[str, Any]:
         channel_id = required(
             payload.get("channelId") or payload.get("discordChannelId"),
             "discord_channel_id",
@@ -1211,7 +1213,10 @@ class PoBotV2(discord.Client):
 
         missing_characters: list[str] = []
         seen: set[str] = set()
-        for raw_name in list(payload.get("missingCharacters") or []):
+        tracked_characters = list(
+            payload.get("trackedCharacters") or payload.get("missingCharacters") or []
+        )
+        for raw_name in tracked_characters:
             name = clean(raw_name)
             key = name.casefold()
             if not name or key in seen:
@@ -1219,7 +1224,14 @@ class PoBotV2(discord.Client):
             seen.add(key)
             missing_characters.append(name)
         if not missing_characters:
-            return 0
+            return {"count": 0, "messageId": clean(payload.get("messageId"))}
+
+        completed = {
+            clean(name).casefold()
+            for name in list(payload.get("completedCharacters") or [])
+            if clean(name)
+        }
+        all_completed = all(name.casefold() in completed for name in missing_characters)
 
         raid_name = clean(payload.get("raidName")) or clean(payload.get("raid")).upper() or "Raid"
         raid_time = clean(payload.get("raidTime"))
@@ -1234,18 +1246,37 @@ class PoBotV2(discord.Client):
         heading += "**\n\n"
         message = (
             heading
-            + "Diese angemeldeten Charaktere haben noch keine Prio eingetragen:\n"
-            + "\n".join(f"• **{name}**" for name in escaped_names)
-            + f"\n\nBitte tragt eure Prio jetzt auf {site_link} ein."
+            + "Prio-Status der angemeldeten Charaktere:\n"
+            + "\n".join(
+                f"• **{name}**{' ✅' if original.casefold() in completed else ''}"
+                for original, name in zip(missing_characters, escaped_names)
+            )
+            + (
+                "\n\n✅ Alle aufgeführten Charaktere haben ihre Prio eingetragen."
+                if all_completed
+                else f"\n\nBitte tragt eure Prio jetzt auf {site_link} ein."
+            )
         )
         if prio_pin:
             message += f"\n**Prio-PIN:** `{discord.utils.escape_markdown(prio_pin)}`"
 
-        await channel.send(
-            message[:2000],
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-        return len(missing_characters)
+        message_id = clean(payload.get("messageId"))
+        discord_message = None
+        if message_id.isdigit():
+            try:
+                discord_message = await channel.fetch_message(int(message_id))
+                await discord_message.edit(
+                    content=message[:2000],
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except (discord.NotFound, discord.Forbidden):
+                discord_message = None
+        if discord_message is None:
+            discord_message = await channel.send(
+                message[:2000],
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        return {"count": len(missing_characters), "messageId": str(discord_message.id)}
 
     async def send_raid_announcement_notice(
         self, guild: GuildIdentity, payload: dict[str, Any]
