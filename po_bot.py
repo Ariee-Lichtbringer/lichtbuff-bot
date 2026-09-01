@@ -582,7 +582,7 @@ class LichtLootApi:
         discord_name: str,
         channel_id: int | str,
         message_id: int | str,
-    ) -> None:
+    ) -> dict[str, Any]:
         result = await self.post(
             "lichtbotSaveP0Signup",
             guild=guild.guild_slug,
@@ -603,6 +603,7 @@ class LichtLootApi:
         identity = RaidIdentity.from_api(guild, dict(result.get("raid") or {}))
         if identity.raid_id != raid_id:
             raise RuntimeError("P0-Anmeldung wurde für einen anderen Raid beantwortet.")
+        return result
 
     async def delete_p0_signup(
         self,
@@ -788,11 +789,18 @@ class PoBotV2(discord.Client):
         guild: GuildIdentity,
         raid_id: str,
         raid_signup_enabled_override: bool | None = None,
+        *,
+        fallback_channel_id: int | str = "",
+        fallback_message_id: int | str = "",
+        fallback_p0_entries: list[dict[str, Any]] | None = None,
     ) -> DiscordPostIdentity:
         lock = self._post_locks.setdefault((guild.guild_id, raid_id), asyncio.Lock())
         async with lock:
             return await self._refresh_existing_post_unlocked(
-                guild, raid_id, raid_signup_enabled_override
+                guild, raid_id, raid_signup_enabled_override,
+                fallback_channel_id=fallback_channel_id,
+                fallback_message_id=fallback_message_id,
+                fallback_p0_entries=fallback_p0_entries,
             )
 
     async def _refresh_existing_post_unlocked(
@@ -800,6 +808,10 @@ class PoBotV2(discord.Client):
         guild: GuildIdentity,
         raid_id: str,
         raid_signup_enabled_override: bool | None = None,
+        *,
+        fallback_channel_id: int | str = "",
+        fallback_message_id: int | str = "",
+        fallback_p0_entries: list[dict[str, Any]] | None = None,
     ) -> DiscordPostIdentity:
         helper = await self.api.get_raid(guild, raid_id)
         raid = dict(helper.get("raid") or {})
@@ -809,8 +821,14 @@ class PoBotV2(discord.Client):
             raid["raidHelperEnabled"] = raid_signup_enabled_override
             helper = {**helper, "raid": raid}
         identity = RaidIdentity.from_api(guild, raid)
-        channel_id = required(raid.get("discordChannelId"), "discord_channel_id")
-        message_id = required(raid.get("discordMessageId"), "discord_message_id")
+        channel_id = required(
+            raid.get("discordChannelId") or fallback_channel_id,
+            "discord_channel_id",
+        )
+        message_id = required(
+            raid.get("discordMessageId") or fallback_message_id,
+            "discord_message_id",
+        )
         post = DiscordPostIdentity(
             guild_id=guild.guild_id,
             raid_id=identity.raid_id,
@@ -837,6 +855,8 @@ class PoBotV2(discord.Client):
             self.api.get_p0_context(guild, raid_id),
             self.api.get_p0_entries(guild, raid_id),
         )
+        if fallback_p0_entries:
+            p0_entries = [*p0_entries, *fallback_p0_entries]
         await message.edit(
             embed=build_combined_embed(guild, helper, p0_context, p0_entries),
             view=CombinedSignupView(
@@ -1946,7 +1966,12 @@ class P0DeleteCharacterView(discord.ui.View):
                 self.guild_identity, self.raid_id, player_pin="", character=self.character,
                 discord_user_id=self.discord_user_id,
             )
-            await self.bot.refresh_existing_post(self.guild_identity, self.raid_id)
+            await self.bot.refresh_existing_post(
+                self.guild_identity,
+                self.raid_id,
+                fallback_channel_id=channel_id,
+                fallback_message_id=message_id,
+            )
             await interaction.followup.send("✅ Deine P0-Anmeldung wurde gelöscht.", ephemeral=True)
             self.stop()
         except Exception as error:
@@ -2125,7 +2150,7 @@ class P0SignupSelectionView(discord.ui.View):
                 raid = dict(context.get("raid") or {})
                 channel_id = channel_id or clean(raid.get("discordChannelId"))
                 message_id = message_id or clean(raid.get("discordMessageId"))
-            await self.bot.api.save_p0_signup(
+            save_result = await self.bot.api.save_p0_signup(
                 self.guild_identity,
                 self.raid_id,
                 player_pin="",
@@ -2136,7 +2161,16 @@ class P0SignupSelectionView(discord.ui.View):
                 channel_id=clean(channel_id),
                 message_id=clean(message_id),
             )
-            await self.bot.refresh_existing_post(self.guild_identity, self.raid_id)
+            await self.bot.refresh_existing_post(
+                self.guild_identity,
+                self.raid_id,
+                fallback_channel_id=channel_id,
+                fallback_message_id=message_id,
+                fallback_p0_entries=[
+                    *list(save_result.get("itemSignups") or []),
+                    *([save_result.get("signup")] if save_result.get("signup") else []),
+                ],
+            )
             await interaction.followup.send("✅ P0-Anmeldung gespeichert.", ephemeral=True)
             self.stop()
         except Exception as error:
