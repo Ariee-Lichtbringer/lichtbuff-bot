@@ -1920,11 +1920,15 @@ class P0AccountLinkView(discord.ui.View):
 class P0DeleteModal(discord.ui.Modal, title="Eigene P0-Anmeldung löschen"):
     player_pin = discord.ui.TextInput(label="LichtLoot-/NachtLoot-SpielerLogin", required=True, max_length=40)
 
-    def __init__(self, bot: "PoBotV2", guild: GuildIdentity, raid_id: str, default_character: str = "") -> None:
+    def __init__(self, bot: "PoBotV2", guild: GuildIdentity, raid_id: str,
+                 channel_id: int | str, message_id: int | str,
+                 default_character: str = "") -> None:
         super().__init__()
         self.bot = bot
         self.guild_identity = guild
         self.raid_id = required(raid_id, "raid_id")
+        self.channel_id = clean(channel_id)
+        self.message_id = clean(message_id)
         self.default_character = clean(default_character)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
@@ -1940,7 +1944,8 @@ class P0DeleteModal(discord.ui.Modal, title="Eigene P0-Anmeldung löschen"):
                 "Wähle den gespeicherten Charakter, dessen P0-Anmeldung gelöscht werden soll:",
                 view=P0DeleteCharacterView(
                     self.bot, self.guild_identity, self.raid_id, characters,
-                    interaction.user.id, self.default_character,
+                    interaction.user.id, self.channel_id, self.message_id,
+                    self.default_character,
                 ),
                 ephemeral=True,
             )
@@ -1951,10 +1956,12 @@ class P0DeleteModal(discord.ui.Modal, title="Eigene P0-Anmeldung löschen"):
 class P0DeleteCharacterView(discord.ui.View):
     def __init__(self, bot: "PoBotV2", guild: GuildIdentity, raid_id: str,
                  characters: list[dict[str, Any]], discord_user_id: int | str,
+                 channel_id: int | str, message_id: int | str,
                  default_character: str = "") -> None:
         super().__init__(timeout=180)
         self.bot, self.guild_identity, self.raid_id = bot, guild, raid_id
         self.characters, self.discord_user_id = characters, discord_user_id
+        self.channel_id, self.message_id = clean(channel_id), clean(message_id)
         self.character = clean(default_character) or (clean(characters[0].get("name")) if characters else "")
         self.add_item(P0CharacterSelect(self, characters))
 
@@ -1969,8 +1976,8 @@ class P0DeleteCharacterView(discord.ui.View):
             await self.bot.refresh_existing_post(
                 self.guild_identity,
                 self.raid_id,
-                fallback_channel_id=channel_id,
-                fallback_message_id=message_id,
+                fallback_channel_id=self.channel_id,
+                fallback_message_id=self.message_id,
             )
             await interaction.followup.send("✅ Deine P0-Anmeldung wurde gelöscht.", ephemeral=True)
             self.stop()
@@ -2456,11 +2463,21 @@ class CombinedSignupView(discord.ui.View):
 
     @discord.ui.button(label="P0-Eintrag löschen", style=discord.ButtonStyle.danger, custom_id="p0v2:p0_delete", row=2)
     async def p0_delete(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        interaction_channel = getattr(interaction, "channel", None)
+        message_channel = getattr(getattr(interaction, "message", None), "channel", None)
+        channel_id = clean(
+            interaction.channel_id
+            or getattr(interaction_channel, "id", "")
+            or getattr(message_channel, "id", "")
+        )
+        message_id = clean(getattr(getattr(interaction, "message", None), "id", ""))
         await interaction.response.send_modal(
             P0DeleteModal(
                 self.bot,
                 self.guild_identity,
                 self.raid_id,
+                channel_id,
+                message_id,
             )
         )
 
