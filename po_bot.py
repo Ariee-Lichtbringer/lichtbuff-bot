@@ -1182,7 +1182,7 @@ class PoBotV2(discord.Client):
                             await self.api.post(
                                 "lichtbotResolveQueue", guild=guild.guild_slug,
                                 guildId=guild.guild_id, guildSlug=guild.guild_slug,
-                                rowNumber=row_number, messageId=str(message.id),
+                                rowNumber=row_number, messageId=str(message.id), messageChannelId=str(message.channel.id),
                             )
                             print(f"Raid-Auswertung zugestellt: {guild.guild_slug}/{payload.get('analysisId')} -> {message.id}")
                             continue
