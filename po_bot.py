@@ -19,6 +19,8 @@ import json
 import os
 import re
 import unicodedata
+import zipfile
+from io import BytesIO
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,6 +29,116 @@ from typing import Any
 
 import discord
 from discord import app_commands
+
+
+def xlsx_col_name(index):
+    name = ""
+    while index:
+        index, rem = divmod(index - 1, 26)
+        name = chr(65 + rem) + name
+    return name or "A"
+
+
+def xlsx_xml_escape(value):
+    return (
+        str(value if value is not None else "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def build_xlsx_file(sheets):
+    normalized_sheets = []
+    for idx, sheet in enumerate(sheets or []):
+        name = str(sheet.get("name") or f"Tabelle {idx + 1}").strip()[:31] or f"Tabelle {idx + 1}"
+        name = re.sub(r"[\[\]\*:/\\?]", "-", name)
+        rows = sheet.get("rows") if isinstance(sheet.get("rows"), list) else []
+        normalized_sheets.append({"name": name, "rows": rows})
+    if not normalized_sheets:
+        normalized_sheets = [{"name": "Daten", "rows": [["Keine Daten"]]}]
+
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+""" + "".join(
+            f'  <Override PartName="/xl/worksheets/sheet{i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>\n'
+            for i in range(len(normalized_sheets))
+        ) + "</Types>")
+        zf.writestr("_rels/.rels", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>""")
+        zf.writestr("xl/workbook.xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+""" + "".join(
+            f'    <sheet name="{xlsx_xml_escape(sheet["name"])}" sheetId="{i + 1}" r:id="rId{i + 1}"/>\n'
+            for i, sheet in enumerate(normalized_sheets)
+        ) + "  </sheets>\n</workbook>")
+        zf.writestr("xl/_rels/workbook.xml.rels", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+""" + "".join(
+            f'  <Relationship Id="rId{i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i + 1}.xml"/>\n'
+            for i in range(len(normalized_sheets))
+        ) + "</Relationships>")
+        for sheet_index, sheet in enumerate(normalized_sheets, start=1):
+            rows_xml = []
+            for row_index, row in enumerate(sheet["rows"], start=1):
+                values = row if isinstance(row, list) else [row]
+                cells = []
+                for col_index, value in enumerate(values, start=1):
+                    ref = f"{xlsx_col_name(col_index)}{row_index}"
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        cells.append(f'<c r="{ref}"><v>{value}</v></c>')
+                    else:
+                        cells.append(f'<c r="{ref}" t="inlineStr"><is><t>{xlsx_xml_escape(value)}</t></is></c>')
+                rows_xml.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+            zf.writestr(f"xl/worksheets/sheet{sheet_index}.xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+""" + "\n".join(rows_xml) + "\n  </sheetData>\n</worksheet>")
+    out.seek(0)
+    return out
+
+
+async def post_p0_backup_export(bot, guild, payload, queue_id):
+    """Send the queued snapshot; only acknowledge it after Discord confirms delivery."""
+    channel_id = clean(payload.get("channelId"))
+    sheets = payload.get("sheets")
+    if not channel_id.isdigit() or not queue_id:
+        raise ValueError("P0+-Sicherung: Channel-ID oder Auftrags-ID fehlt.")
+    if not isinstance(sheets, list) or not sheets:
+        raise ValueError("P0+-Sicherung enthält keine Tabellen.")
+    channel = bot.get_channel(int(channel_id)) or await bot.fetch_channel(int(channel_id))
+    if str(getattr(getattr(channel, "guild", None), "id", "")) != guild.discord_guild_id:
+        raise ValueError("P0+-Backup-Channel gehört nicht zur angegebenen Gilde.")
+    marker = f"LichtLoot P0+-Sicherung · Auftrag {queue_id}"
+    # A successful send followed by an API timeout must not create another file.
+    async for previous in channel.history(limit=100):
+        if previous.author.id == bot.user.id and previous.attachments and any(
+            getattr(embed.footer, "text", "") == marker for embed in previous.embeds
+        ):
+            return str(previous.id)
+    filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", clean(payload.get("filename"))).strip(".-") or "po-plus-backup.xlsx"
+    if not filename.lower().endswith(".xlsx"):
+        filename += ".xlsx"
+    data = build_xlsx_file(sheets)
+    limit = getattr(channel.guild, "filesize_limit", 10 * 1024 * 1024)
+    if data.getbuffer().nbytes > limit:
+        raise ValueError("P0+-Sicherung überschreitet das Discord-Dateilimit.")
+    embed = discord.Embed(title="P0+-Sicherung", color=0x2ECC71)
+    embed.add_field(name="Raid", value=clean(payload.get("raidName") or payload.get("raid")) or "–")
+    embed.add_field(name="Raid-Datum", value=clean(payload.get("raidDate")) or "–")
+    embed.description = "Gespeicherter Sicherungsstand aus der Warteschlange. Die Excel-Datei enthält Punkte und Vergabehistorie."
+    embed.set_footer(text=marker)
+    message = await channel.send(embed=embed, file=discord.File(data, filename=filename), allowed_mentions=discord.AllowedMentions.none(), silent=True)
+    return str(message.id)
 
 
 API_DEFAULT = "https://lichtloot-production.up.railway.app/api/apps-script"
@@ -1044,7 +1156,7 @@ class PoBotV2(discord.Client):
                         "raid_announcement,po_post,p0_post_refresh,"
                         "raid_announcement_delete,po_post_delete,"
                         "raid_announcement_role_notice,loot_master_leadpin_notice,"
-                        "player_login_granted_notice,raid_missing_prio_reminder"
+                        "player_login_granted_notice,raid_missing_prio_reminder,p0plus_backup_export,p0plus_transfer_export"
                     ),
                     limit="20",
                 )
@@ -1058,6 +1170,15 @@ class PoBotV2(discord.Client):
                         print(f"V2 Queue übersprungen: unbekannte Gilde {guild_slug}.")
                         continue
                     try:
+                        if queue_type in {"p0plus_backup_export", "p0plus_transfer_export"}:
+                            message_id = await post_p0_backup_export(self, guild, payload, row_number)
+                            await self.api.post(
+                                "lichtbotResolveQueue", guild=guild.guild_slug,
+                                guildId=guild.guild_id, guildSlug=guild.guild_slug,
+                                rowNumber=row_number, messageId=message_id,
+                            )
+                            print(f"P0+-Sicherung zugestellt: {guild.guild_slug}/{row_number} -> {message_id}")
+                            continue
                         if queue_type == "raid_announcement_role_notice":
                             delivered = await self.send_raid_announcement_notice(guild, payload)
                             await self.api.post(
