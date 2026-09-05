@@ -5199,6 +5199,7 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
         "worldbuff_update",
         "hordenbuff_update",
         "worldbuff_player_change_notice",
+        "player_mailbox_dm",
         "worldbuff_replacement",
         "boss_token_notice",
         "worldbuff_backup_export",
@@ -5245,6 +5246,8 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             await post_worldbuff_replacement_from_queue(payload)
         elif update_type == "boss_token_notice":
             await post_boss_token_notice_from_queue(payload)
+        elif update_type == "player_mailbox_dm":
+            await send_player_mailbox_dm(payload, lichtloot_post if resolve_old_queue else railway_post)
         elif update_type == "worldbuff_player_change_notice":
             await send_worldbuff_player_change_notice(payload)
         elif update_type == "worldbuff_update":
@@ -5264,6 +5267,55 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
     finally:
         LICHTLOOT_QUEUE_IN_PROGRESS.discard(queue_key)
 
+
+
+# Keep successful Discord sends across queue retries if the status callback times out.
+MAILBOX_DM_RESULTS = {}
+
+async def send_player_mailbox_dm(payload, delivery_post):
+    message_id = str(payload.get("messageId") or "")
+    guild_slug = str(payload.get("guildSlug") or current_guild_slug())
+    user_id = str(payload.get("discordUserId") or "")
+    if not message_id or not user_id.isdigit():
+        raise ValueError("Mailbox-DM: Empfaenger oder Nachrichten-ID fehlt.")
+    key = (guild_slug, message_id)
+    if key not in MAILBOX_DM_RESULTS:
+        previous = await asyncio.to_thread(delivery_post, {
+            "action": "getPlayerDiscordDmStatus", "guild": guild_slug,
+            "queueToken": LICHTBOT_QUEUE_TOKEN, "messageId": message_id,
+        })
+        if not previous.get("success"):
+            raise RuntimeError("Mailbox-DM: Auftrag konnte nicht geprüft werden.")
+        if previous.get("status") in {"delivered", "failed"}:
+            return
+        status, error = "delivered", ""
+        try:
+            user = client.get_user(int(user_id)) or await client.fetch_user(int(user_id))
+            sender = str(payload.get("sender") or "Spieler")[:100]
+            embed = discord.Embed(
+                title=str(payload.get("title") or "Nachricht")[:150],
+                description=str(payload.get("body") or "")[:1800],
+                color=0x8061D9,
+            )
+            embed.set_author(name=f"Nachricht von {sender}")
+            embed.set_footer(text=f"{guild_slug} · Über das LichtLoot-Postfach gesendet")
+            await user.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        except discord.Forbidden:
+            status, error = "failed", "Discord-DMs sind für diesen Empfänger gesperrt."
+        except discord.NotFound:
+            status, error = "failed", "Das verknüpfte Discord-Konto wurde nicht gefunden."
+        MAILBOX_DM_RESULTS[key] = (status, error)
+    status, error = MAILBOX_DM_RESULTS[key]
+    result = await asyncio.to_thread(delivery_post, {
+        "action": "completePlayerDiscordDm", "guild": guild_slug,
+        "queueToken": LICHTBOT_QUEUE_TOKEN, "messageId": message_id,
+        "status": status, "error": error,
+    })
+    if not result.get("success"):
+        raise RuntimeError("Mailbox-DM: Zustellstatus konnte nicht gespeichert werden.")
+    # Bound the retry cache; normal queue deduplication handles completed items.
+    if len(MAILBOX_DM_RESULTS) > 2000:
+        MAILBOX_DM_RESULTS.pop(next(iter(MAILBOX_DM_RESULTS)))
 
 
 async def send_worldbuff_player_change_notice(payload):
@@ -5420,7 +5472,7 @@ async def lichtloot_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
                 "limit": 500,
-                "types": "worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,worldbuff_replacement,boss_token_notice,worldbuff_backup_export",
+                "types": "worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,player_mailbox_dm,worldbuff_replacement,boss_token_notice,worldbuff_backup_export",
                 "t": int(time.time())
             })
 
@@ -5453,7 +5505,7 @@ async def lichtloot_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
                 "limit": 500,
-                "types": "worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,worldbuff_replacement,boss_token_notice,worldbuff_backup_export",
+                "types": "worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,player_mailbox_dm,worldbuff_replacement,boss_token_notice,worldbuff_backup_export",
                 "t": int(time.time())
             })
 
