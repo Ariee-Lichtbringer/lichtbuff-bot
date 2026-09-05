@@ -2527,10 +2527,6 @@ class CombinedSignupView(discord.ui.View):
         except Exception as error:
             await interaction.followup.send(f"⚠️ P0-Prüfung fehlgeschlagen: {error}", ephemeral=True)
 
-    @discord.ui.button(label="P0 freigeben", style=discord.ButtonStyle.success, custom_id="p0v2:p0_approve", row=2)
-    async def p0_approve(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self.open_p0_review(interaction, "approved")
-
     @discord.ui.button(label="P0 ablehnen", style=discord.ButtonStyle.danger, custom_id="p0v2:p0_reject", row=2)
     async def p0_reject(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self.open_p0_review(interaction, "rejected")
@@ -2588,10 +2584,8 @@ def _raid_signup_enabled(raid: dict[str, Any]) -> bool:
 def _prio_marker(row: dict[str, Any], p0_players: dict[str, str]) -> str:
     player_key = clean(row.get("player") or row.get("char")).casefold()
     po_status = clean(row.get("poApprovalStatus") or p0_players.get(player_key)).lower()
-    if po_status in {"approved", "freigegeben"}:
+    if po_status in {"approved", "freigegeben", "pending", "offen", "wartet"}:
         return f" {_emoji('Beutegrun', '🟢')}"
-    if po_status in {"pending", "offen", "wartet"}:
-        return f" {_emoji('beuteorange', '🟠')}"
     if _truthy(row.get("hasPrio")):
         return f" {_emoji('beutelilia', '🟣')}"
     return ""
@@ -2726,8 +2720,7 @@ def _add_p0_fields(
         name=f"📋 P0-Anmeldungen ({len(rows)})",
         value=(
             f"{_emoji('beutelilia', '🟣')} **P1–P3 Lootbag** · "
-            f"{_emoji('beuteorange', '🟠')} **eingetragen** · "
-            f"{_emoji('Beutegrun', '🟢')} **freigegeben**"
+            f"{_emoji('Beutegrun', '🟢')} **P0 eingetragen**"
         ),
         inline=False,
     )
@@ -2744,7 +2737,7 @@ def _add_p0_fields(
             for row in sorted(item_rows, key=lambda value: clean(value.get("player") or value.get("char")).casefold()):
                 player = clean(row.get("player") or row.get("char")) or "Unbekannt"
                 approval = clean(row.get("approvalStatus")).lower()
-                icon = _emoji("Beutegrun", "🟢") if approval in {"approved", "freigegeben"} else _emoji("beuteorange", "🟠")
+                icon = "❌" if approval in {"rejected", "abgelehnt"} else _emoji("Beutegrun", "🟢")
                 points = float(row.get("p0PlusPoints") or 0)
                 suffix = f" · **{points:g} P0+**" if points else ""
                 player_lines.append(f"{icon} `{player[:24]}`{suffix}")
@@ -2776,7 +2769,7 @@ def _add_p0_fields(
         for row in sorted(item_rows, key=lambda value: clean(value.get("player") or value.get("char")).casefold()):
             player = clean(row.get("player") or row.get("char")) or "Unbekannt"
             approval = clean(row.get("approvalStatus")).lower()
-            icon = _emoji("Beutegrun", "🟢") if approval in {"approved", "freigegeben"} else _emoji("beuteorange", "🟠")
+            icon = "❌" if approval in {"rejected", "abgelehnt"} else _emoji("Beutegrun", "🟢")
             points = float(row.get("p0PlusPoints") or 0)
             suffix = f" · **{points:g} P0+**" if points else ""
             player_lines.append(f"{icon} `{player[:24]}`{suffix}")
