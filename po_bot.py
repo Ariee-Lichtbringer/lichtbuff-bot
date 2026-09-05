@@ -2709,6 +2709,8 @@ def _add_p0_fields(
     *,
     separator: bool = True,
 ) -> None:
+    if separator:
+        embed.add_field(name="\u200b", value="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", inline=False)
     if not rows:
         embed.add_field(name="📋 P0-Anmeldungen (0)", value="Noch keine P0-Anmeldungen.", inline=False)
         return
