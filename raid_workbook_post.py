@@ -1,0 +1,74 @@
+"""Format and publish a guild-scoped raid workbook message without importing the bot."""
+import re
+import urllib.parse
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+
+def text(value):
+    return str(value or "").strip()
+
+
+def message_data(payload):
+    required = ("analysisId", "guildSlug", "guildName", "raidName", "channelId", "discordGuildId")
+    if any(not text(payload.get(key)) for key in required):
+        raise ValueError("Raid-Auswertung: Gilde, Raid oder Zielchannel fehlt.")
+    links = {}
+    for key in ("sheetUrl", "analysisUrl", "reportUrl"):
+        value = text(payload.get(key))
+        url = urllib.parse.urlparse(value)
+        if url.scheme != "https" or not url.hostname or url.username or url.password:
+            raise ValueError("Raid-Auswertung: Ungültiger Link.")
+        links[key] = value
+    page = urllib.parse.urlparse(links["analysisUrl"])
+    query = urllib.parse.parse_qs(page.query)
+    if query.get("guild") != [text(payload["guildSlug"])] or query.get("id") != [text(payload["analysisId"])]:
+        raise ValueError("Analyse-Link gehört nicht zur Gilde und zum Raid.")
+    expected_path = "/api/guilds/" + urllib.parse.quote(text(payload["guildSlug"]), safe="") + "/log-analyses/" + text(payload["analysisId"]) + "/workbook.xlsx"
+    if urllib.parse.urlparse(links["sheetUrl"]).path != expected_path:
+        raise ValueError("Excel-Link gehört nicht zur Gilde und zum Raid.")
+    report = urllib.parse.urlparse(links["reportUrl"])
+    if not (report.hostname == "warcraftlogs.com" or report.hostname.endswith(".warcraftlogs.com")) or not report.path.startswith("/reports/"):
+        raise ValueError("Ungültiger Warcraft-Logs-Report.")
+    if not re.fullmatch(r"[0-9]{17,20}", text(payload["channelId"])) or not re.fullmatch(r"[0-9]{17,20}", text(payload["discordGuildId"])):
+        raise ValueError("Ungültiger Discord-Zielchannel oder Server.")
+    date = text(payload.get("raidDate")) or "Nicht im Log erfasst"
+    time = text(payload.get("raidTime")) or "Nicht im Log erfasst"
+    started = text(payload.get("startedAt"))
+    if started:
+        dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            raise ValueError("Raidbeginn ohne Zeitzone.")
+        local = dt.astimezone(ZoneInfo("Europe/Berlin"))
+        date, time = local.strftime("%d.%m.%Y"), local.strftime("%H:%M %Z")
+    brand = {"nachtloot": "NachtLoot", "lichtloot": "LichtLoot"}.get(text(payload["guildSlug"]).lower(), "GuildLoot")
+    return {"brand": brand, "title": text(payload["raidName"])[:240], "guild": text(payload["guildName"])[:200], "date": date, "time": time,
+            "footer": "GuildLoot Raid-Auswertung " + text(payload["guildSlug"]) + "/" + text(payload["analysisId"]), **links}
+
+
+async def post_raid_workbook(client, payload, registry, discord):
+    data = message_data(payload)
+    entry = registry.get(text(payload["guildSlug"])) or {}
+    expected = text(entry.get("discordGuildId"))
+    if not expected or expected != text(payload["discordGuildId"]):
+        raise ValueError("Discord-Server stimmt nicht mit der registrierten Gilde überein.")
+    channel_id = int(payload["channelId"])
+    channel = client.get_channel(channel_id) or await client.fetch_channel(channel_id)
+    if text(getattr(getattr(channel, "guild", None), "id", "")) != expected:
+        raise ValueError("Analyse-Zielchannel gehört zu einer anderen Gilde.")
+    embed = discord.Embed(title=data["title"], url=data["analysisUrl"], color=0x4F7EA7)
+    embed.description = f"Dieses Sheet bietet eine kompakte Übersicht. Die ausführliche Analyse findest du auf [{data['brand']}]({data['analysisUrl']})."
+    embed.add_field(name="Gilde", value=discord.utils.escape_markdown(data["guild"]), inline=False)
+    embed.add_field(name="Datum", value=data["date"], inline=True)
+    embed.add_field(name="Uhrzeit", value=data["time"], inline=True)
+    embed.add_field(name="Auswertung", value=f"[Excel-Sheet öffnen]({data['sheetUrl']})\n[Ausführliche Analyse auf {data['brand']}]({data['analysisUrl']})\n[Warcraft Logs]({data['reportUrl']})", inline=False)
+    embed.set_footer(text=data["footer"])
+    view = discord.ui.View(timeout=None)
+    for label, key in (("Excel-Sheet", "sheetUrl"), (data["brand"] + "-Analyse", "analysisUrl"), ("Warcraft Logs", "reportUrl")):
+        view.add_item(discord.ui.Button(label=label, style=discord.ButtonStyle.link, url=data[key]))
+    # A crash after sending but before resolving the queue must not duplicate the post.
+    async for previous in channel.history(limit=100):
+        if previous.author.id == client.user.id and any(text(e.footer.text) == data["footer"] for e in previous.embeds):
+            await previous.edit(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+            return previous
+    return await channel.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none(), silent=True)

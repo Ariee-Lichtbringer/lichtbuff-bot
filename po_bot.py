@@ -29,6 +29,7 @@ from typing import Any
 
 import discord
 from discord import app_commands
+from raid_workbook_post import post_raid_workbook
 
 
 def xlsx_col_name(index):
@@ -1156,7 +1157,7 @@ class PoBotV2(discord.Client):
                         "raid_announcement,po_post,p0_post_refresh,"
                         "raid_announcement_delete,po_post_delete,"
                         "raid_announcement_role_notice,loot_master_leadpin_notice,"
-                        "player_login_granted_notice,raid_missing_prio_reminder,p0plus_backup_export,p0plus_transfer_export"
+                        "player_login_granted_notice,raid_missing_prio_reminder,p0plus_backup_export,p0plus_transfer_export,raid_workbook_post"
                     ),
                     limit="20",
                 )
@@ -1170,6 +1171,21 @@ class PoBotV2(discord.Client):
                         print(f"V2 Queue übersprungen: unbekannte Gilde {guild_slug}.")
                         continue
                     try:
+                        if queue_type == "raid_workbook_post":
+                            if clean(payload.get("guildId")) != guild.guild_id or clean(payload.get("guildSlug")) != guild.guild_slug:
+                                raise ValueError("Raid-Auswertung gehört nicht zur Queue-Gilde.")
+                            message = await post_raid_workbook(
+                                self, payload,
+                                {guild.guild_slug: {"discordGuildId": guild.discord_guild_id}},
+                                discord,
+                            )
+                            await self.api.post(
+                                "lichtbotResolveQueue", guild=guild.guild_slug,
+                                guildId=guild.guild_id, guildSlug=guild.guild_slug,
+                                rowNumber=row_number, messageId=str(message.id),
+                            )
+                            print(f"Raid-Auswertung zugestellt: {guild.guild_slug}/{payload.get('analysisId')} -> {message.id}")
+                            continue
                         if queue_type in {"p0plus_backup_export", "p0plus_transfer_export"}:
                             message_id = await post_p0_backup_export(self, guild, payload, row_number)
                             await self.api.post(
