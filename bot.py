@@ -1,3 +1,4 @@
+from copyright_notice import copyright_text, without_copyright
 import discord
 from discord import app_commands
 import re
@@ -825,7 +826,7 @@ async def delete_command_message(message):
 
 async def send_temp(channel, text, seconds=10):
     try:
-        await channel.send(text, delete_after=seconds)
+        await channel.send(copyright_text(text), delete_after=seconds)
     except:
         pass
 
@@ -1010,7 +1011,7 @@ class WorldbuffSignupModal(discord.ui.Modal):
             ""
         )
         if not interaction_guild_slug:
-            await interaction.response.send_message("Dieser Discord-Server ist keiner freigeschalteten Gilde zugeordnet.", ephemeral=True)
+            await interaction.response.send_message(copyright_text("Dieser Discord-Server ist keiner freigeschalteten Gilde zugeordnet."), ephemeral=True)
             return
         token = CURRENT_GUILD_SLUG.set(interaction_guild_slug)
         try:
@@ -1021,7 +1022,7 @@ class WorldbuffSignupModal(discord.ui.Modal):
                 interaction.user.display_name,
                 interaction.user.id
             )
-            await interaction.followup.send(result_text, ephemeral=True)
+            await interaction.followup.send(copyright_text(result_text), ephemeral=True)
         finally:
             CURRENT_GUILD_SLUG.reset(token)
 
@@ -1078,13 +1079,13 @@ class WorldbuffBuffButton(discord.ui.Button):
             ""
         )
         if not interaction_guild_slug:
-            await interaction.response.send_message("Dieser Discord-Server ist keiner freigeschalteten Gilde zugeordnet.", ephemeral=True)
+            await interaction.response.send_message(copyright_text("Dieser Discord-Server ist keiner freigeschalteten Gilde zugeordnet."), ephemeral=True)
             return
         token = CURRENT_GUILD_SLUG.set(interaction_guild_slug)
         try:
             if not lichtbuff_self_signup_buttons_enabled(interaction_guild_slug):
                 await interaction.response.send_message(
-                    "⚠️ Die Selbsteintragung ist für diese Gilde derzeit ausgeschaltet.",
+                    copyright_text("⚠️ Die Selbsteintragung ist für diese Gilde derzeit ausgeschaltet."),
                     ephemeral=True
                 )
                 return
@@ -1094,14 +1095,14 @@ class WorldbuffBuffButton(discord.ui.Button):
 
             if not slots:
                 await interaction.response.send_message(
-                    f"⚠️ Aktuell ist kein freier {buff}-Termin verfügbar.",
+                    copyright_text(f"⚠️ Aktuell ist kein freier {buff}-Termin verfügbar."),
                     ephemeral=True
                 )
                 return
 
             await interaction.response.send_message(
-                f"✅ **{buff} eintragen**\n"
-                "Wähle einen freien Termin aus. Danach öffnet sich das Feld für deinen Charakternamen.",
+                copyright_text(f"✅ **{buff} eintragen**\n"
+                "Wähle einen freien Termin aus. Danach öffnet sich das Feld für deinen Charakternamen."),
                 view=WorldbuffSignupView(slots[:25], buff_filter=buff),
                 ephemeral=True
             )
@@ -1315,7 +1316,7 @@ class RendActionModal(discord.ui.Modal):
             ""
         )
         if not interaction_guild_slug:
-            await interaction.response.send_message("Dieser Discord-Server ist keiner freigeschalteten Gilde zugeordnet.", ephemeral=True)
+            await interaction.response.send_message(copyright_text("Dieser Discord-Server ist keiner freigeschalteten Gilde zugeordnet."), ephemeral=True)
             return
         token = CURRENT_GUILD_SLUG.set(interaction_guild_slug)
         try:
@@ -1330,7 +1331,7 @@ class RendActionModal(discord.ui.Modal):
                     horde_char=horde_char,
                     author_name=interaction.user.display_name
                 )
-            await interaction.followup.send(result_text, ephemeral=True)
+            await interaction.followup.send(copyright_text(result_text), ephemeral=True)
         finally:
             CURRENT_GUILD_SLUG.reset(token)
 
@@ -2610,6 +2611,7 @@ def build_worldbuff_signup_embed():
         ),
         color=0x22C55E
     )
+    embed.set_footer(text=copyright_text())
 
     for buff in ["Hakkar", "Ony", "Nef"]:
         preview = []
@@ -2626,7 +2628,7 @@ def build_worldbuff_signup_embed():
             inline=True
         )
 
-    embed.set_footer(text="Ein belegter Termin kann nicht durch einen anderen Spieler überschrieben werden.")
+    embed.set_footer(text=copyright_text("Ein belegter Termin kann nicht durch einen anderen Spieler überschrieben werden.", limit=2048))
     return embed
 
 
@@ -2658,7 +2660,7 @@ def build_worldbuff_post_embed(overview_text, self_signup_enabled=True):
     embed.description = description
     if not self_signup_enabled:
         embed.clear_fields()
-        embed.set_footer(text=None)
+        embed.set_footer(text=copyright_text(None, limit=2048))
     return embed
 
 
@@ -2670,6 +2672,7 @@ def build_hordenbuff_guide_embed():
         description="Kurzanleitung für die Anmeldung per `!rend`.",
         color=0xED1C24
     )
+    embed.set_footer(text=copyright_text())
     embed.set_image(url=HORDENBUFF_GUIDE_IMAGE_URL)
     return embed
 
@@ -3517,7 +3520,8 @@ def build_hordenbuff_post_embed(rend, data):
         description=description,
         color=0xF97316,
     )
-    embed.set_footer(text="Alle Aktionen funktionieren über das Auswahlmenü unter diesem Embed.")
+    embed.set_footer(text=copyright_text())
+    embed.set_footer(text=copyright_text("Alle Aktionen funktionieren über das Auswahlmenü unter diesem Embed.", limit=2048))
     return embed
 
 
@@ -3560,7 +3564,7 @@ async def update_hordenbuff_post(force=False):
                 try:
                     await send_silent(
                         channel,
-                        "⚠️ Es wurde kein kommender Rend-Termin im Sheet gefunden.",
+                        copyright_text("⚠️ Es wurde kein kommender Rend-Termin im Sheet gefunden."),
                         delete_after=15
                     )
                 except discord.HTTPException as e:
@@ -3913,7 +3917,7 @@ async def process_hordenbuff_reminders_for_current_guild():
 
         if minute - 1 <= minutes_left <= minute and not already_sent:
             for channel in channels:
-                await send_silent(channel, reminder_text)
+                await send_silent(channel, copyright_text(reminder_text))
 
             data.setdefault("reminders_sent", [])
             data["reminders_sent"].append(str(minute))
@@ -4079,13 +4083,14 @@ def build_log_analysis_post_embed(payload):
         description="Die Auswertung ist bereit und kann über die Buttons geöffnet werden.",
         color=color
     )
+    embed.set_footer(text=copyright_text())
     embed.add_field(name="Raid", value=raid_label, inline=True)
     embed.add_field(name="Datum", value=raid_date, inline=True)
     if report_code:
         embed.add_field(name="Report", value=f"`{report_code}`", inline=True)
     if report_url:
         embed.url = report_url
-    embed.set_footer(text="LichtLoot · Warcraft Logs Auswertung")
+    embed.set_footer(text=copyright_text("LichtLoot · Warcraft Logs Auswertung", limit=2048))
     return embed
 
 def build_log_analysis_post_view(payload):
@@ -4239,7 +4244,7 @@ async def post_worldbuff_backup_export_from_queue(payload):
         raise RuntimeError(f"Worldbuff-Backup-Channel nicht erreichbar: {channel_id}")
     data = build_xlsx_file(sheets)
     file = discord.File(data, filename=safe_filename)
-    await send_silent(channel, build_worldbuff_backup_export_text(payload), file=file)
+    await send_silent(channel, copyright_text(build_worldbuff_backup_export_text(payload)), file=file)
     print(f"Worldbuff-Sicherung gepostet: {safe_filename} in {channel_id}")
 
 
@@ -4260,6 +4265,7 @@ def build_worldbuff_replacement_embed(payload, channel, worldbuff_channel_id="")
         color=0xF59E0B,
         url=channel_url or None,
     )
+    embed.set_footer(text=copyright_text())
     embed.add_field(name="🌍 Worldbuff", value=f"{buff_emoji} **{buff}**", inline=False)
     embed.add_field(name="📅 Datum", value=datum or "-", inline=True)
     embed.add_field(name="⏰ Uhrzeit", value=f"{uhrzeit} Uhr" if uhrzeit else "-", inline=True)
@@ -4278,7 +4284,7 @@ def build_worldbuff_replacement_embed(payload, channel, worldbuff_channel_id="")
         emoji_match = re.match(r"<a?:[^:]+:(\d+)>", str(buff_emoji))
         if emoji_match:
             embed.set_thumbnail(url=f"https://cdn.discordapp.com/emojis/{emoji_match.group(1)}.png?size=128&quality=lossless")
-    embed.set_footer(text="Automatische Nachricht des Lichtbuff-Bots")
+    embed.set_footer(text=copyright_text("Automatische Nachricht des Lichtbuff-Bots", limit=2048))
     return embed
 
 
@@ -4340,7 +4346,7 @@ async def post_boss_token_notice_from_queue(payload):
     channel = client.get_channel(int(channel_id))
     if channel is None:
         channel = await client.fetch_channel(int(channel_id))
-    await send_silent(channel, build_boss_token_notice_text(payload))
+    await send_silent(channel, copyright_text(build_boss_token_notice_text(payload)))
     print(f"Bosskopf-/Herz-Meldung gepostet in {channel_id}: {payload.get('player')} {payload.get('token')}")
 
 
@@ -4444,7 +4450,7 @@ async def post_player_login_approval_notice(payload):
     failed = []
     for member in recipients:
         try:
-            await member.send(message, silent=True)
+            await member.send(copyright_text(message), silent=True)
             delivered += 1
         except Exception as error:
             failed.append(f"{member} ({error})")
@@ -4941,8 +4947,8 @@ async def handle_log_analysis_message(message, announce=True):
     if announce and saved:
         try:
             await message.channel.send(
-                "✅ Loganalyse in LichtLoot aufgenommen: "
-                + ", ".join(f"`{code}`" for code in saved),
+                copyright_text("✅ Loganalyse in LichtLoot aufgenommen: "
+                + ", ".join(f"`{code}`" for code in saved)),
                 delete_after=30
             )
         except:
@@ -5297,8 +5303,9 @@ async def send_player_mailbox_dm(payload, delivery_post):
                 description=str(payload.get("body") or "")[:1800],
                 color=0x8061D9,
             )
+            embed.set_footer(text=copyright_text())
             embed.set_author(name=f"Nachricht von {sender}")
-            embed.set_footer(text=f"{guild_slug} · Über das LichtLoot-Postfach gesendet")
+            embed.set_footer(text=copyright_text(f"{guild_slug} · Über das LichtLoot-Postfach gesendet", limit=2048))
             await user.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         except discord.Forbidden:
             status, error = "failed", "Discord-DMs sind für diesen Empfänger gesperrt."
@@ -5386,8 +5393,9 @@ async def send_worldbuff_player_change_notice(payload):
                 description=player_descriptions.get(action, f"Dein Termin für **{buff or 'den Worldbuff'}** wurde aktualisiert."),
                 color=0x22C55E if action == "registered" else (0xEF4444 if action == "cancelled" else 0xF59E0B),
             )
+            player_embed.set_footer(text=copyright_text())
             add_appointment_fields(player_embed)
-            player_embed.set_footer(text="Automatische Nachricht des Lichtbuff-Bots")
+            player_embed.set_footer(text=copyright_text("Automatische Nachricht des Lichtbuff-Bots", limit=2048))
             await player_user.send(embed=player_embed)
             player_sent = True
             print(f"Worldbuff-Bestaetigung per DM an {player_user} gesendet.")
@@ -5410,12 +5418,13 @@ async def send_worldbuff_player_change_notice(payload):
         ),
         color=0x3B82F6 if action == "registered" else (0xEF4444 if action == "cancelled" else 0xF59E0B),
     )
+    staff_embed.set_footer(text=copyright_text())
     add_appointment_fields(staff_embed)
     if new_slot:
         staff_embed.add_field(name="➡️ Neuer Termin", value=new_slot, inline=False)
     if reason and reason != "-":
         staff_embed.add_field(name="📝 Grund", value=reason[:1024], inline=False)
-    staff_embed.set_footer(text="Automatische Nachricht des Lichtbuff-Bots")
+    staff_embed.set_footer(text=copyright_text("Automatische Nachricht des Lichtbuff-Bots", limit=2048))
 
     wanted_names = {
         normalized_discord_name(target.get("value") or target.get("name"))
@@ -5640,7 +5649,7 @@ async def send_long_discord_text(channel, text):
     if current:
         chunks.append(current)
     for chunk in chunks or ["-"]:
-        await channel.send(chunk)
+        await channel.send(copyright_text(chunk))
 
 
 
@@ -5874,16 +5883,16 @@ async def slash_worldbuff_update(interaction: discord.Interaction):
         if count:
             channel_id = get_configured_worldbuff_channel_id()
             await interaction.followup.send(
-                f"✅ Worldbuff-Liste aktualisiert. Ziel: <#{channel_id}>",
+                copyright_text(f"✅ Worldbuff-Liste aktualisiert. Ziel: <#{channel_id}>"),
                 ephemeral=True,
             )
         else:
             await interaction.followup.send(
-                "⚠️ Worldbuff-Liste wurde nicht aktualisiert. Bitte Worldbuff-Channel und Termine prüfen.",
+                copyright_text("⚠️ Worldbuff-Liste wurde nicht aktualisiert. Bitte Worldbuff-Channel und Termine prüfen."),
                 ephemeral=True,
             )
     except Exception as error:
-        await interaction.followup.send(f"⚠️ Worldbuff-Update fehlgeschlagen: {error}", ephemeral=True)
+        await interaction.followup.send(copyright_text(f"⚠️ Worldbuff-Update fehlgeschlagen: {error}"), ephemeral=True)
     finally:
         if token is not None:
             CURRENT_GUILD_SLUG.reset(token)
@@ -5920,7 +5929,7 @@ async def slash_worldbuff_term(
             parsed_time = datetime.strptime(uhrzeit.strip(), "%H:%M")
         except ValueError:
             await interaction.followup.send(
-                "⚠️ Bitte Datum als `JJJJ-MM-TT` und Uhrzeit als `HH:MM` eingeben.",
+                copyright_text("⚠️ Bitte Datum als `JJJJ-MM-TT` und Uhrzeit als `HH:MM` eingeben."),
                 ephemeral=True,
             )
             return
@@ -5944,11 +5953,11 @@ async def slash_worldbuff_term(
 
         await update_worldbuff_post(sync_ticker=False, force_repost=False)
         await interaction.followup.send(
-            f"✅ {buff.value} am {parsed_date.strftime('%d.%m.%Y')} um {parsed_time.strftime('%H:%M')} wurde in LichtLoot gespeichert.",
+            copyright_text(f"✅ {buff.value} am {parsed_date.strftime('%d.%m.%Y')} um {parsed_time.strftime('%H:%M')} wurde in LichtLoot gespeichert."),
             ephemeral=True,
         )
     except Exception as error:
-        await interaction.followup.send(f"⚠️ Worldbuff-Termin konnte nicht gespeichert werden: {error}", ephemeral=True)
+        await interaction.followup.send(copyright_text(f"⚠️ Worldbuff-Termin konnte nicht gespeichert werden: {error}"), ephemeral=True)
     finally:
         if token is not None:
             CURRENT_GUILD_SLUG.reset(token)
@@ -5961,9 +5970,9 @@ async def slash_worldbuff_term_error(interaction: discord.Interaction, error):
     else:
         text = f"⚠️ Worldbuff-Termin konnte nicht gestartet werden: {error}"
     if interaction.response.is_done():
-        await interaction.followup.send(text, ephemeral=True)
+        await interaction.followup.send(copyright_text(text), ephemeral=True)
     else:
-        await interaction.response.send_message(text, ephemeral=True)
+        await interaction.response.send_message(copyright_text(text), ephemeral=True)
 
 
 command_tree.add_command(worldbuff_commands)
@@ -5978,16 +5987,16 @@ async def slash_hordenbuff_update(interaction: discord.Interaction):
         count = await asyncio.wait_for(update_hordenbuff_post(force=True), timeout=45)
         if count:
             await interaction.followup.send(
-                f"✅ Hordenbuff-Anmelder aktualisiert. Posts: {count}",
+                copyright_text(f"✅ Hordenbuff-Anmelder aktualisiert. Posts: {count}"),
                 ephemeral=True,
             )
         else:
             await interaction.followup.send(
-                "⚠️ Hordenbuff wurde nicht aktualisiert. Bitte Hordenbuff-Channel und kommenden Rend-Termin prüfen.",
+                copyright_text("⚠️ Hordenbuff wurde nicht aktualisiert. Bitte Hordenbuff-Channel und kommenden Rend-Termin prüfen."),
                 ephemeral=True,
             )
     except Exception as error:
-        await interaction.followup.send(f"⚠️ Hordenbuff-Update fehlgeschlagen: {error}", ephemeral=True)
+        await interaction.followup.send(copyright_text(f"⚠️ Hordenbuff-Update fehlgeschlagen: {error}"), ephemeral=True)
     finally:
         if token is not None:
             CURRENT_GUILD_SLUG.reset(token)
@@ -6095,24 +6104,24 @@ async def on_message(message):
         try:
             result = await sync_accessible_discord_channels()
             saved = int(result.get("saved", 0) or 0)
-            await message.channel.send(f"✅ Discord-Channel neu synchronisiert: **{saved}** Channel gespeichert.", delete_after=30)
+            await message.channel.send(copyright_text(f"✅ Discord-Channel neu synchronisiert: **{saved}** Channel gespeichert."), delete_after=30)
         except Exception as e:
-            await message.channel.send(f"⚠️ Channel-Sync fehlgeschlagen: `{e}`", delete_after=30)
+            await message.channel.send(copyright_text(f"⚠️ Channel-Sync fehlgeschlagen: `{e}`"), delete_after=30)
         return
 
     if is_logsync_command(content):
         if int(message.channel.id) not in LOG_ANALYSIS_CHANNEL_IDS:
-            await message.channel.send("⚠️ Dieser Befehl funktioniert nur im Loganalyse-Channel.", delete_after=20)
+            await message.channel.send(copyright_text("⚠️ Dieser Befehl funktioniert nur im Loganalyse-Channel."), delete_after=20)
             return
         saved = await sync_recent_log_analyses_from_channel(message.channel.id)
         await message.channel.send(
-            f"✅ {len(saved)} Warcraft-Logs aus der Channel-History an LichtLoot gesendet.",
+            copyright_text(f"✅ {len(saved)} Warcraft-Logs aus der Channel-History an LichtLoot gesendet."),
             delete_after=30
         )
         return
 
     if lower == "!wb":
-        status_message = await message.channel.send("🔄 **Worldbuffs und Hordenbuffs werden aktualisiert...**")
+        status_message = await message.channel.send(copyright_text("🔄 **Worldbuffs und Hordenbuffs werden aktualisiert...**"))
         try:
             worldbuff_count = await asyncio.wait_for(
                 update_worldbuff_post(sync_ticker=current_guild_slug() == LICHTLOOT_GUILD_SLUG),
@@ -6121,25 +6130,25 @@ async def on_message(message):
             hordenbuff_count = await asyncio.wait_for(update_hordenbuff_post(force=True), timeout=45)
             await status_message.edit(
                 content=(
-                    "✅ **Buff-Posts aktualisiert.**\n"
+                    copyright_text("✅ **Buff-Posts aktualisiert.**\n"
                     f"Worldbuff-Post: **{worldbuff_count or 0}** | "
-                    f"Hordenbuff-Post: **{hordenbuff_count or 0}**"
+                    f"Hordenbuff-Post: **{hordenbuff_count or 0}**")
                 )
             )
             client.loop.create_task(delete_message_later(status_message, 25))
         except asyncio.TimeoutError:
-            await status_message.edit(content="⏱️ **Buff-Update dauert zu lange.** Bitte in Railway prüfen, der Bot hängt beim Laden der Buff-Daten.")
+            await status_message.edit(content=copyright_text("⏱️ **Buff-Update dauert zu lange.** Bitte in Railway prüfen, der Bot hängt beim Laden der Buff-Daten."))
         except Exception as e:
             err = str(e)
             if len(err) > 1200:
                 err = err[:1200] + " …"
-            await status_message.edit(content=f"⚠️ **Buff-Update Fehler:**\n```{err}```")
+            await status_message.edit(content=copyright_text(f"⚠️ **Buff-Update Fehler:**\n```{err}```"))
         await delete_command_message(message)
         return
 
 
     if lower in ["!worldbuff", "!worldbuffs"]:
-        status_message = await message.channel.send("🔄 **Worldbuff-Post wird aktualisiert...**")
+        status_message = await message.channel.send(copyright_text("🔄 **Worldbuff-Post wird aktualisiert...**"))
         try:
             # Vor dem Posten nur den letzten lesbaren Ticker-Post einlesen.
             # Der Sync durchsucht nicht mehr die komplette Channel-Historie.
@@ -6154,39 +6163,39 @@ async def on_message(message):
                 target_channel_id = get_configured_worldbuff_channel_id()
                 await status_message.edit(
                     content=(
-                        f"✅ **Worldbuff-Post aktualisiert.** Posts: **{count}** · "
-                        f"Ziel: <#{target_channel_id}>"
+                        copyright_text(f"✅ **Worldbuff-Post aktualisiert.** Posts: **{count}** · "
+                        f"Ziel: <#{target_channel_id}>")
                     )
                 )
             else:
-                await status_message.edit(content="⚠️ **Worldbuff-Post wurde nicht aktualisiert.** Kein Zielchannel oder keine Termine gefunden.")
+                await status_message.edit(content=copyright_text("⚠️ **Worldbuff-Post wurde nicht aktualisiert.** Kein Zielchannel oder keine Termine gefunden."))
             client.loop.create_task(delete_message_later(status_message, 15))
         except asyncio.TimeoutError:
-            await status_message.edit(content="⏱️ **Worldbuff-Update dauert zu lange.** Bitte Railway-Logs prüfen.")
+            await status_message.edit(content=copyright_text("⏱️ **Worldbuff-Update dauert zu lange.** Bitte Railway-Logs prüfen."))
         except Exception as error:
             print(f"Manuelles Worldbuff-Update fehlgeschlagen: {error}")
             await status_message.edit(
-                content="⚠️ **Worldbuff-Post fehlgeschlagen.** Der genaue Fehler steht in den Railway-Logs."
+                content=copyright_text("⚠️ **Worldbuff-Post fehlgeschlagen.** Der genaue Fehler steht in den Railway-Logs.")
             )
         await delete_command_message(message)
         return
 
     if lower in ["!hordenbuff", "!hordebuff", "!horde"]:
-        status_message = await message.channel.send("🔄 **Hordenbuff-Post wird aktualisiert...**")
+        status_message = await message.channel.send(copyright_text("🔄 **Hordenbuff-Post wird aktualisiert...**"))
         try:
             hordenbuff_count = await asyncio.wait_for(update_hordenbuff_post(force=True), timeout=45)
             if hordenbuff_count:
-                await status_message.edit(content=f"✅ **Hordenbuff-Post aktualisiert.** Posts: **{hordenbuff_count}**")
+                await status_message.edit(content=copyright_text(f"✅ **Hordenbuff-Post aktualisiert.** Posts: **{hordenbuff_count}**"))
             else:
-                await status_message.edit(content="⚠️ **Hordenbuff wurde nicht aktualisiert.** Kein Zielpost oder kein kommender Rend-Termin gefunden.")
+                await status_message.edit(content=copyright_text("⚠️ **Hordenbuff wurde nicht aktualisiert.** Kein Zielpost oder kein kommender Rend-Termin gefunden."))
             client.loop.create_task(delete_message_later(status_message, 25))
         except asyncio.TimeoutError:
-            await status_message.edit(content="⏱️ **Hordenbuff-Update dauert zu lange.** Bitte Railway-Logs prüfen.")
+            await status_message.edit(content=copyright_text("⏱️ **Hordenbuff-Update dauert zu lange.** Bitte Railway-Logs prüfen."))
         except Exception as e:
             err = str(e)
             if len(err) > 1200:
                 err = err[:1200] + " …"
-            await status_message.edit(content=f"⚠️ **Hordenbuff-Update Fehler:**\n```{err}```")
+            await status_message.edit(content=copyright_text(f"⚠️ **Hordenbuff-Update Fehler:**\n```{err}```"))
         await delete_command_message(message)
         return
 
@@ -6270,9 +6279,9 @@ async def on_message(message):
 
         if not charakter:
             await message.channel.send(
-                "✅ **Rend-Anmeldung**\n"
+                copyright_text("✅ **Rend-Anmeldung**\n"
                 "Klick auf den Button und trage ein, was passt:\n"
-                "Ally-Char = braucht Rend, Horden-Char = kann helfen.",
+                "Ally-Char = braucht Rend, Horden-Char = kann helfen."),
                 view=RendSignupView(),
                 delete_after=180
             )
@@ -6284,9 +6293,9 @@ async def on_message(message):
 
     if lower == "!rend":
         await message.channel.send(
-            "✅ **Rend-Anmeldung**\n"
+            copyright_text("✅ **Rend-Anmeldung**\n"
             "Klick auf den Button und trage ein, was passt:\n"
-            "Ally-Char = braucht Rend, Horden-Char = kann helfen.",
+            "Ally-Char = braucht Rend, Horden-Char = kann helfen."),
             view=RendSignupView(),
             delete_after=180
         )
@@ -6314,7 +6323,7 @@ async def on_message(message):
 
         if len(parts) < 3:
             await message.channel.send(
-                "Bitte nutze den Befehl so: `!wurf hakkar Charaktername`."
+                copyright_text("Bitte nutze den Befehl so: `!wurf hakkar Charaktername`.")
             )
             return
 
@@ -6323,7 +6332,7 @@ async def on_message(message):
 
         if buff not in ["Hakkar", "Ony", "Nef", "Rend"]:
             await message.channel.send(
-                "Diesen Buff kenne ich nicht. Nutze: `hakkar`, `ony`, `nef` oder `rend`."
+                copyright_text("Diesen Buff kenne ich nicht. Nutze: `hakkar`, `ony`, `nef` oder `rend`.")
             )
             return
 
@@ -6337,8 +6346,8 @@ async def on_message(message):
 
             if result.get("success"):
                 await message.channel.send(
-                    f"✅ **{charakter}** wurde für **{result.get('buff')}** eingetragen: "
-                    f"{result.get('datum')} um {result.get('uhrzeit')}."
+                    copyright_text(f"✅ **{charakter}** wurde für **{result.get('buff')}** eingetragen: "
+                    f"{result.get('datum')} um {result.get('uhrzeit')}.")
                 )
 
                 await update_worldbuff_post()
@@ -6348,13 +6357,13 @@ async def on_message(message):
 
             else:
                 await message.channel.send(
-                    f"⚠️ Apps-Script-Antwort:\n```{result}```"
+                    copyright_text(f"⚠️ Apps-Script-Antwort:\n```{result}```")
                 )
 
         except Exception as e:
             print(f"Fehler bei !wurf: {e}")
             await message.channel.send(
-                "⚠️ Beim Eintragen ist ein Fehler passiert. Bitte prüfe Apps Script und Sheet."
+                copyright_text("⚠️ Beim Eintragen ist ein Fehler passiert. Bitte prüfe Apps Script und Sheet.")
             )
 
         return

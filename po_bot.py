@@ -13,6 +13,7 @@ einer Gilde oder eines Raids verwendet werden.
 
 from __future__ import annotations
 
+from copyright_notice import copyright_text, without_copyright
 import asyncio
 import hashlib
 import json
@@ -123,7 +124,7 @@ async def post_p0_backup_export(bot, guild, payload, queue_id):
     # A successful send followed by an API timeout must not create another file.
     async for previous in channel.history(limit=100):
         if previous.author.id == bot.user.id and previous.attachments and any(
-            getattr(embed.footer, "text", "") == marker for embed in previous.embeds
+            without_copyright(getattr(embed.footer, "text", "")) == marker for embed in previous.embeds
         ):
             return str(previous.id)
     filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", clean(payload.get("filename"))).strip(".-") or "po-plus-backup.xlsx"
@@ -134,10 +135,11 @@ async def post_p0_backup_export(bot, guild, payload, queue_id):
     if data.getbuffer().nbytes > limit:
         raise ValueError("P0+-Sicherung überschreitet das Discord-Dateilimit.")
     embed = discord.Embed(title="P0+-Sicherung", color=0x2ECC71)
+    embed.set_footer(text=copyright_text())
     embed.add_field(name="Raid", value=clean(payload.get("raidName") or payload.get("raid")) or "–")
     embed.add_field(name="Raid-Datum", value=clean(payload.get("raidDate")) or "–")
     embed.description = "Gespeicherter Sicherungsstand aus der Warteschlange. Die Excel-Datei enthält Punkte und Vergabehistorie."
-    embed.set_footer(text=marker)
+    embed.set_footer(text=copyright_text(marker, limit=2048))
     message = await channel.send(embed=embed, file=discord.File(data, filename=filename), allowed_mentions=discord.AllowedMentions.none(), silent=True)
     return str(message.id)
 
@@ -879,12 +881,12 @@ class PoBotV2(discord.Client):
                 except Exception as error:
                     print(f"V2-Post wurde gespeichert, aber Buttons fehlen vorübergehend: {error}")
                 await interaction.followup.send(
-                    f"✅ Post für Raid-ID `{raid_id}` wurde im konfigurierten Kanal "
-                    f"<#{configured_channel_id}> erstellt und eindeutig gespeichert.",
+                    copyright_text(f"✅ Post für Raid-ID `{raid_id}` wurde im konfigurierten Kanal "
+                    f"<#{configured_channel_id}> erstellt und eindeutig gespeichert."),
                     ephemeral=True,
                 )
             except Exception as error:
-                await interaction.followup.send(f"⚠️ Post wurde nicht erstellt: {error}", ephemeral=True)
+                await interaction.followup.send(copyright_text(f"⚠️ Post wurde nicht erstellt: {error}"), ephemeral=True)
 
         @self.tree.command(name="p0_post_aktualisieren", description="Aktualisiert ausschließlich einen vorhandenen Raid-/P0-Post.")
         @app_commands.default_permissions(manage_guild=True)
@@ -893,9 +895,9 @@ class PoBotV2(discord.Client):
             try:
                 guild = self.identities.for_discord_guild(interaction.guild_id)
                 state = await self.refresh_existing_post(guild, raid_id)
-                await interaction.followup.send(f"✅ Vorhandener Post aktualisiert: `{state.discord_message_id}`.", ephemeral=True)
+                await interaction.followup.send(copyright_text(f"✅ Vorhandener Post aktualisiert: `{state.discord_message_id}`."), ephemeral=True)
             except Exception as error:
-                await interaction.followup.send(f"⚠️ Kein Post wurde erstellt oder ersetzt: {error}", ephemeral=True)
+                await interaction.followup.send(copyright_text(f"⚠️ Kein Post wurde erstellt oder ersetzt: {error}"), ephemeral=True)
 
     async def refresh_existing_post(
         self,
@@ -1099,7 +1101,7 @@ class PoBotV2(discord.Client):
                 is_same_v2_post = any(marker in footer for footer in footer_texts)
                 legacy_marker = f"Post-ID: {clean(legacy_post_key)}"
                 is_legacy_post = bool(legacy_post_key) and any(
-                    footer == legacy_marker for footer in footer_texts
+                    without_copyright(footer) == legacy_marker for footer in footer_texts
                 )
                 if not is_same_v2_post and not is_legacy_post:
                     continue
@@ -1346,7 +1348,7 @@ class PoBotV2(discord.Client):
             f"**Charakter:** {character_label}\n\n"
             "Du kannst dich jetzt auf LichtLoot mit deinem SpielerLogin anmelden."
         )
-        await user.send(message, silent=True)
+        await user.send(copyright_text(message), silent=True)
         return 1
 
     async def send_missing_prio_reminder(
@@ -1423,14 +1425,14 @@ class PoBotV2(discord.Client):
             try:
                 discord_message = await channel.fetch_message(int(message_id))
                 await discord_message.edit(
-                    content=message[:2000],
+                    content=copyright_text(message[:2000]),
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
             except (discord.NotFound, discord.Forbidden):
                 discord_message = None
         if discord_message is None:
             discord_message = await channel.send(
-                message[:2000],
+                copyright_text(message[:2000]),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         return {"count": len(missing_characters), "messageId": str(discord_message.id)}
@@ -1513,7 +1515,8 @@ class PoBotV2(discord.Client):
             description="\n".join(description_lines),
             color=0x8B5CF6,
         )
-        embed.set_footer(text="Automatische Nachricht von LichtLoot")
+        embed.set_footer(text=copyright_text())
+        embed.set_footer(text=copyright_text("Automatische Nachricht von LichtLoot", limit=2048))
 
         delivered = 0
         failures: list[str] = []
@@ -1615,7 +1618,8 @@ class PoBotV2(discord.Client):
             description=description,
             color=0xD4AF37,
         )
-        embed.set_footer(text="Automatische Nachricht von LichtLoot")
+        embed.set_footer(text=copyright_text())
+        embed.set_footer(text=copyright_text("Automatische Nachricht von LichtLoot", limit=2048))
 
         delivered = 0
         failures: list[str] = []
@@ -1734,27 +1738,27 @@ class PoBotV2(discord.Client):
         try:
             guild = self.identities.for_discord_guild(message.guild.id)
         except Exception as error:
-            await message.channel.send(f"⚠️ {error}", delete_after=20)
+            await message.channel.send(copyright_text(f"⚠️ {error}"), delete_after=20)
             return
         permissions = getattr(message.author, "guild_permissions", None)
         if not permissions or not (
             permissions.administrator or permissions.manage_messages
         ):
             await message.channel.send(
-                "⚠️ Dafür wird die Discord-Berechtigung „Nachrichten verwalten“ benötigt.",
+                copyright_text("⚠️ Dafür wird die Discord-Berechtigung „Nachrichten verwalten“ benötigt."),
                 delete_after=20,
             )
             return
         if command != "!clearchannel bestätigen":
             await message.channel.send(
-                "⚠️ Dadurch werden alle nicht angehefteten Nachrichten außer aktiven "
+                copyright_text("⚠️ Dadurch werden alle nicht angehefteten Nachrichten außer aktiven "
                 "Raid-/P0-Posts in diesem Kanal gelöscht. Bestätige mit "
-                "`!clearchannel bestätigen`.",
+                "`!clearchannel bestätigen`."),
                 delete_after=30,
             )
             return
         if not hasattr(message.channel, "purge"):
-            await message.channel.send("⚠️ Dieser Kanal kann nicht geleert werden.", delete_after=20)
+            await message.channel.send(copyright_text("⚠️ Dieser Kanal kann nicht geleert werden."), delete_after=20)
             return
         try:
             raids = await self.api.get_active_raids(guild)
@@ -1773,18 +1777,18 @@ class PoBotV2(discord.Client):
                 reason=f"!clearchannel von {message.author} ({message.author.id})",
             )
             await message.channel.send(
-                f"✅ Kanal geleert: **{len(deleted)}** Nachrichten gelöscht; "
-                f"**{len(protected_message_ids)}** aktive Raid-/P0-Posts geschützt.",
+                copyright_text(f"✅ Kanal geleert: **{len(deleted)}** Nachrichten gelöscht; "
+                f"**{len(protected_message_ids)}** aktive Raid-/P0-Posts geschützt."),
                 delete_after=15,
             )
         except discord.Forbidden:
             await message.channel.send(
-                "⚠️ Dem Bot fehlt die Discord-Berechtigung „Nachrichten verwalten“.",
+                copyright_text("⚠️ Dem Bot fehlt die Discord-Berechtigung „Nachrichten verwalten“."),
                 delete_after=20,
             )
         except Exception as error:
             await message.channel.send(
-                f"⚠️ Kanal wurde nicht geleert: {error}", delete_after=30
+                copyright_text(f"⚠️ Kanal wurde nicht geleert: {error}"), delete_after=30
             )
 
 
@@ -1839,14 +1843,14 @@ class RaidSignupModal(discord.ui.Modal, title="LichtLoot-Account verknüpfen"):
                 discord_name=interaction.user.display_name,
             )
             await interaction.followup.send(
-                "✅ Account verknüpft. Wähle jetzt den gespeicherten Charakter und seine Skillung:",
+                copyright_text("✅ Account verknüpft. Wähle jetzt den gespeicherten Charakter und seine Skillung:"),
                 view=RaidSignupSelectionView(
                     self.bot, self.guild_identity, self.raid_id, self.channel_id, self.message_id,
                     characters, self.preset_status, interaction.user.id, interaction.user.display_name,
                 ), ephemeral=True,
             )
         except Exception as error:
-            await interaction.followup.send(f"⚠️ Verknüpfung fehlgeschlagen: {error}", ephemeral=True)
+            await interaction.followup.send(copyright_text(f"⚠️ Verknüpfung fehlgeschlagen: {error}"), ephemeral=True)
 
 
 class RaidAccountLinkView(discord.ui.View):
@@ -1959,7 +1963,7 @@ class RaidSignupSelectionView(discord.ui.View):
         except Exception as error:
             print(f"Charakterwechsel konnte nicht geöffnet werden: {error}", flush=True)
             await interaction.followup.send(
-                f"⚠️ Charakterauswahl konnte nicht geöffnet werden: {error}",
+                copyright_text(f"⚠️ Charakterauswahl konnte nicht geöffnet werden: {error}"),
                 ephemeral=True,
             )
 
@@ -1974,10 +1978,10 @@ class RaidSignupSelectionView(discord.ui.View):
                 channel_id=self.channel_id, message_id=self.message_id,
             )
             await self.bot.refresh_existing_post(self.guild_identity, self.raid_id)
-            await interaction.followup.send("✅ Raidanmeldung gespeichert.", ephemeral=True)
+            await interaction.followup.send(copyright_text("✅ Raidanmeldung gespeichert."), ephemeral=True)
             self.stop()
         except Exception as error:
-            await interaction.followup.send(f"⚠️ Raidanmeldung fehlgeschlagen: {error}", ephemeral=True)
+            await interaction.followup.send(copyright_text(f"⚠️ Raidanmeldung fehlgeschlagen: {error}"), ephemeral=True)
 
 
 class P0SignupModal(discord.ui.Modal, title="SpielerLogin verknüpfen"):
@@ -2012,7 +2016,7 @@ class P0SignupModal(discord.ui.Modal, title="SpielerLogin verknüpfen"):
             if not items:
                 raise RuntimeError("Für diesen Raid ist keine P0-Lootliste konfiguriert.")
             await interaction.followup.send(
-                "✅ SpielerLogin gefunden. **2. Wähle jetzt deinen Charakter:**",
+                copyright_text("✅ SpielerLogin gefunden. **2. Wähle jetzt deinen Charakter:**"),
                 view=P0CharacterSelectionView(
                     self.bot, self.guild_identity, self.raid_id, self.channel_id, self.message_id,
                     characters, items, interaction.user.id, interaction.user.display_name,
@@ -2020,7 +2024,7 @@ class P0SignupModal(discord.ui.Modal, title="SpielerLogin verknüpfen"):
                 ephemeral=True,
             )
         except Exception as error:
-            await interaction.followup.send(f"⚠️ Verknüpfung fehlgeschlagen: {error}", ephemeral=True)
+            await interaction.followup.send(copyright_text(f"⚠️ Verknüpfung fehlgeschlagen: {error}"), ephemeral=True)
 
 
 class P0AccountLinkView(discord.ui.View):
@@ -2078,7 +2082,7 @@ class P0DeleteModal(discord.ui.Modal, title="Eigene P0-Anmeldung löschen"):
                 discord_name=interaction.user.display_name,
             )
             await interaction.followup.send(
-                "Wähle den gespeicherten Charakter, dessen P0-Anmeldung gelöscht werden soll:",
+                copyright_text("Wähle den gespeicherten Charakter, dessen P0-Anmeldung gelöscht werden soll:"),
                 view=P0DeleteCharacterView(
                     self.bot, self.guild_identity, self.raid_id, characters,
                     interaction.user.id, self.channel_id, self.message_id,
@@ -2087,7 +2091,7 @@ class P0DeleteModal(discord.ui.Modal, title="Eigene P0-Anmeldung löschen"):
                 ephemeral=True,
             )
         except Exception as error:
-            await interaction.followup.send(f"⚠️ P0-Löschung fehlgeschlagen: {error}", ephemeral=True)
+            await interaction.followup.send(copyright_text(f"⚠️ P0-Löschung fehlgeschlagen: {error}"), ephemeral=True)
 
 
 class P0DeleteCharacterView(discord.ui.View):
@@ -2116,10 +2120,10 @@ class P0DeleteCharacterView(discord.ui.View):
                 fallback_channel_id=self.channel_id,
                 fallback_message_id=self.message_id,
             )
-            await interaction.followup.send("✅ Deine P0-Anmeldung wurde gelöscht.", ephemeral=True)
+            await interaction.followup.send(copyright_text("✅ Deine P0-Anmeldung wurde gelöscht."), ephemeral=True)
             self.stop()
         except Exception as error:
-            await interaction.followup.send(f"⚠️ P0-Löschung fehlgeschlagen: {error}", ephemeral=True)
+            await interaction.followup.send(copyright_text(f"⚠️ P0-Löschung fehlgeschlagen: {error}"), ephemeral=True)
 
 
 class P0CharacterSelect(discord.ui.Select):
@@ -2193,7 +2197,7 @@ class P0ItemSearchModal(discord.ui.Modal, title="P0-Item suchen"):
         ]
         if not matches:
             await interaction.followup.send(
-                "⚠️ Kein gespeichertes LichtLoot-Item passt zu dieser Suche.", ephemeral=True
+                copyright_text("⚠️ Kein gespeichertes LichtLoot-Item passt zu dieser Suche."), ephemeral=True
             )
             return
         result_view = P0SignupSelectionView(
@@ -2211,7 +2215,7 @@ class P0ItemSearchModal(discord.ui.Modal, title="P0-Item suchen"):
         )
         suffix = " (erste 25 Treffer)" if len(matches) > 25 else ""
         await interaction.followup.send(
-            f"🔎 **4. {len(matches)} Item(s) gefunden{suffix}:** Wähle das richtige Item aus.",
+            copyright_text(f"🔎 **4. {len(matches)} Item(s) gefunden{suffix}:** Wähle das richtige Item aus."),
             view=result_view,
             ephemeral=True,
         )
@@ -2315,10 +2319,10 @@ class P0SignupSelectionView(discord.ui.View):
                     *([save_result.get("signup")] if save_result.get("signup") else []),
                 ],
             )
-            await interaction.followup.send("✅ P0-Anmeldung gespeichert.", ephemeral=True)
+            await interaction.followup.send(copyright_text("✅ P0-Anmeldung gespeichert."), ephemeral=True)
             self.stop()
         except Exception as error:
-            await interaction.followup.send(f"⚠️ P0-Anmeldung fehlgeschlagen: {error}", ephemeral=True)
+            await interaction.followup.send(copyright_text(f"⚠️ P0-Anmeldung fehlgeschlagen: {error}"), ephemeral=True)
 
 
 class P0ReviewSelect(discord.ui.Select):
@@ -2387,9 +2391,9 @@ class P0ReviewSelect(discord.ui.Select):
                 )
             await self.bot.refresh_existing_post(self.guild_identity, self.raid_id)
             label = "freigegeben" if self.review_status == "approved" else "abgelehnt"
-            await interaction.followup.send(f"✅ P0-Eintrag wurde {label}.", ephemeral=True)
+            await interaction.followup.send(copyright_text(f"✅ P0-Eintrag wurde {label}."), ephemeral=True)
         except Exception as error:
-            await interaction.followup.send(f"⚠️ Prüfung fehlgeschlagen: {error}", ephemeral=True)
+            await interaction.followup.send(copyright_text(f"⚠️ Prüfung fehlgeschlagen: {error}"), ephemeral=True)
 
 
 class P0ReviewView(discord.ui.View):
@@ -2424,7 +2428,7 @@ class P0PointsSearchModal(discord.ui.Modal, title="P0+-Punkte suchen"):
             ]
             if not matches:
                 await interaction.followup.send(
-                    f'🔎 Keine P0+-Punkte für „{query}“ gefunden.',
+                    copyright_text(f'🔎 Keine P0+-Punkte für „{query}“ gefunden.'),
                     ephemeral=True,
                 )
                 return
@@ -2447,9 +2451,9 @@ class P0PointsSearchModal(discord.ui.Modal, title="P0+-Punkte suchen"):
             result = f'🏆 **P0+-Suche: „{query}“**\n' + "\n".join(lines)
             if hidden:
                 result += f"\n… und {hidden} weitere Treffer. Bitte genauer suchen."
-            await interaction.followup.send(result, ephemeral=True)
+            await interaction.followup.send(copyright_text(result), ephemeral=True)
         except Exception as error:
-            await interaction.followup.send(f"⚠️ P0+-Suche fehlgeschlagen: {error}", ephemeral=True)
+            await interaction.followup.send(copyright_text(f"⚠️ P0+-Suche fehlgeschlagen: {error}"), ephemeral=True)
 
 
 class CombinedSignupView(discord.ui.View):
@@ -2481,9 +2485,9 @@ class CombinedSignupView(discord.ui.View):
             return True
         except Exception as error:
             if interaction.response.is_done():
-                await interaction.followup.send(f"⚠️ {error}", ephemeral=True)
+                await interaction.followup.send(copyright_text(f"⚠️ {error}"), ephemeral=True)
             else:
-                await interaction.response.send_message(f"⚠️ {error}", ephemeral=True)
+                await interaction.response.send_message(copyright_text(f"⚠️ {error}"), ephemeral=True)
             return False
 
     async def open_raid_modal(self, interaction: discord.Interaction, status: str) -> None:
@@ -2496,7 +2500,7 @@ class CombinedSignupView(discord.ui.View):
             )
             if not linked:
                 await interaction.followup.send(
-                    "Für deinen Discord-Account ist noch kein LichtLoot-Charakter verknüpft.",
+                    copyright_text("Für deinen Discord-Account ist noch kein LichtLoot-Charakter verknüpft."),
                     view=RaidAccountLinkView(
                         self.bot, self.guild_identity, self.raid_id, interaction.channel_id,
                         interaction.message.id, status,
@@ -2505,9 +2509,9 @@ class CombinedSignupView(discord.ui.View):
                 )
                 return
             await interaction.followup.send(
-                "Vorausgewählter LichtLoot-Charakter: **{}**. Wähle nur noch die Skillung:".format(
+                copyright_text("Vorausgewählter LichtLoot-Charakter: **{}**. Wähle nur noch die Skillung:".format(
                     clean(linked[0].get("name"))
-                ),
+                )),
                 view=RaidSignupSelectionView(
                     self.bot, self.guild_identity, self.raid_id, interaction.channel_id,
                     interaction.message.id, linked, status, interaction.user.id,
@@ -2517,7 +2521,7 @@ class CombinedSignupView(discord.ui.View):
             )
         except Exception as error:
             await interaction.followup.send(
-                f"⚠️ LichtLoot-Charaktere konnten nicht geladen werden: {error}",
+                copyright_text(f"⚠️ LichtLoot-Charaktere konnten nicht geladen werden: {error}"),
                 ephemeral=True,
             )
 
@@ -2562,7 +2566,7 @@ class CombinedSignupView(discord.ui.View):
             )
             if not characters:
                 await interaction.followup.send(
-                    "Dein Discord-Account ist noch nicht mit LichtLoot verknüpft.",
+                    copyright_text("Dein Discord-Account ist noch nicht mit LichtLoot verknüpft."),
                     view=P0AccountLinkView(
                         self.bot,
                         self.guild_identity,
@@ -2581,7 +2585,7 @@ class CombinedSignupView(discord.ui.View):
             if not items:
                 raise RuntimeError("Für diesen Raid ist keine P0-Lootliste konfiguriert.")
             await interaction.followup.send(
-                "Wähle deinen gespeicherten Charakter und das gewünschte P0-Item:",
+                copyright_text("Wähle deinen gespeicherten Charakter und das gewünschte P0-Item:"),
                 view=P0CharacterSelectionView(
                     self.bot,
                     self.guild_identity,
@@ -2596,7 +2600,7 @@ class CombinedSignupView(discord.ui.View):
                 ephemeral=True,
             )
         except Exception as error:
-            await interaction.followup.send(f"⚠️ P0-Anmeldung fehlgeschlagen: {error}", ephemeral=True)
+            await interaction.followup.send(copyright_text(f"⚠️ P0-Anmeldung fehlgeschlagen: {error}"), ephemeral=True)
 
     @discord.ui.button(label="P0-Eintrag löschen", style=discord.ButtonStyle.danger, custom_id="p0v2:p0_delete", row=2)
     async def p0_delete(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -2631,7 +2635,7 @@ class CombinedSignupView(discord.ui.View):
             )
             if not allowed:
                 await interaction.followup.send(
-                    "⚠️ Deine Rolle ist auf der Gildenleitungsseite nicht für die P0-Prüfung freigegeben.",
+                    copyright_text("⚠️ Deine Rolle ist auf der Gildenleitungsseite nicht für die P0-Prüfung freigegeben."),
                     ephemeral=True,
                 )
                 return
@@ -2654,15 +2658,15 @@ class CombinedSignupView(discord.ui.View):
                 seen.add(key)
                 entries.append(row)
             if not entries:
-                await interaction.followup.send("ℹ️ Kein passender P0-Eintrag vorhanden.", ephemeral=True)
+                await interaction.followup.send(copyright_text("ℹ️ Kein passender P0-Eintrag vorhanden."), ephemeral=True)
                 return
             await interaction.followup.send(
-                "P0-Eintrag auswählen:",
+                copyright_text("P0-Eintrag auswählen:"),
                 view=P0ReviewView(P0ReviewSelect(self.bot, self.guild_identity, self.raid_id, entries, status)),
                 ephemeral=True,
             )
         except Exception as error:
-            await interaction.followup.send(f"⚠️ P0-Prüfung fehlgeschlagen: {error}", ephemeral=True)
+            await interaction.followup.send(copyright_text(f"⚠️ P0-Prüfung fehlgeschlagen: {error}"), ephemeral=True)
 
     @discord.ui.button(label="P0 ablehnen", style=discord.ButtonStyle.danger, custom_id="p0v2:p0_reject", row=2)
     async def p0_reject(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -3015,6 +3019,7 @@ def build_combined_embed(
         description=(configured_description or "Raidanmeldung ist geöffnet.")[:4096],
         color=0x7C3AED,
     )
+    embed.set_footer(text=copyright_text())
     embed.add_field(name="Raidlead", value=clean(raid.get("createdBy") or raid.get("raidLead")) or "Gildenleitung", inline=True)
     embed.add_field(name="Termin", value=f"**__{raid_date} · {raid_time} Uhr__**", inline=True)
     prio_pin = clean(raid.get("playerPin") or raid.get("prioPin"))
@@ -3039,7 +3044,7 @@ def build_combined_embed(
         _add_roster_fields(embed, raid_rows, p0_rows, clean(raid.get("maxPlayers")))
     _add_p0_fields(embed, p0_rows, separator=raid_signup_enabled)
     embed.set_footer(
-        text=f"Gilden-ID: {guild.guild_id} · Raid-ID: {identity.raid_id}"
+        text=copyright_text(f"Gilden-ID: {guild.guild_id} · Raid-ID: {identity.raid_id}", limit=2048)
     )
     # Reine P0-Anmelder bleiben in Discord bewusst kompakt und erhalten kein
     # grosses Raidbild. Nur der kombinierte Raid-/P0-Anmelder zeigt das in der

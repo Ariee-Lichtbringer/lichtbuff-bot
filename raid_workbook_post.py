@@ -1,4 +1,5 @@
 """Format and publish a guild-scoped raid workbook message without importing the bot."""
+from copyright_notice import copyright_text, without_copyright
 import re
 import urllib.parse
 from datetime import datetime
@@ -77,7 +78,7 @@ async def remove_previous_post(client,payload,data,message):
     except Exception as error:
         if getattr(error,"status",None)==404:return
         raise
-    if previous.author.id!=client.user.id or not any(text(e.footer.text)==data["footer"] for e in previous.embeds):raise ValueError("Vorheriger Post stimmt nicht mit dieser Auswertung überein.")
+    if previous.author.id!=client.user.id or not any(without_copyright(e.footer.text)==data["footer"] for e in previous.embeds):raise ValueError("Vorheriger Post stimmt nicht mit dieser Auswertung überein.")
     await previous.delete()
 
 
@@ -93,18 +94,19 @@ async def post_raid_workbook(client, payload, registry, discord):
         raise ValueError("Analyse-Zielchannel gehört zu einer anderen Gilde.")
     channel = await raid_destination(channel,payload,discord)
     embed = discord.Embed(title=data["title"], url=data["analysisUrl"], color=0x4F7EA7)
+    embed.set_footer(text=copyright_text())
     embed.description = f"Dieses Sheet bietet eine kompakte Übersicht. Die ausführliche Analyse findest du auf [{data['brand']}]({data['analysisUrl']})."
     embed.add_field(name="Gilde", value=discord.utils.escape_markdown(data["guild"]), inline=False)
     embed.add_field(name="Datum", value=data["date"], inline=True)
     embed.add_field(name="Uhrzeit", value=data["time"], inline=True)
     embed.add_field(name="Auswertung", value=f"[Google Sheet öffnen]({data['sheetUrl']})\n[Ausführliche Analyse auf {data['brand']}]({data['analysisUrl']})\n[Warcraft Logs]({data['reportUrl']})", inline=False)
-    embed.set_footer(text=data["footer"])
+    embed.set_footer(text=copyright_text(data["footer"], limit=2048))
     view = discord.ui.View(timeout=None)
     for label, key in (("Google Sheet", "sheetUrl"), (data["brand"] + "-Analyse", "analysisUrl"), ("Warcraft Logs", "reportUrl")):
         view.add_item(discord.ui.Button(label=label, style=discord.ButtonStyle.link, url=data[key]))
     # A crash after sending but before resolving the queue must not duplicate the post.
     async for previous in channel.history(limit=100):
-        if previous.author.id == client.user.id and any(text(e.footer.text) == data["footer"] for e in previous.embeds):
+        if previous.author.id == client.user.id and any(without_copyright(e.footer.text) == data["footer"] for e in previous.embeds):
             await previous.edit(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
             await remove_previous_post(client,payload,data,previous)
             return previous
