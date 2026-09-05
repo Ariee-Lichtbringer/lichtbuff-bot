@@ -31,6 +31,7 @@ from typing import Any
 import discord
 from discord import app_commands
 from raid_workbook_post import post_raid_workbook
+from player_analysis_dm import deliver_player_analysis
 
 
 def xlsx_col_name(index):
@@ -1159,7 +1160,7 @@ class PoBotV2(discord.Client):
                         "raid_announcement,po_post,p0_post_refresh,"
                         "raid_announcement_delete,po_post_delete,"
                         "raid_announcement_role_notice,loot_master_leadpin_notice,"
-                        "player_login_granted_notice,raid_missing_prio_reminder,p0plus_backup_export,p0plus_transfer_export,raid_workbook_post"
+                        "player_login_granted_notice,raid_missing_prio_reminder,p0plus_backup_export,p0plus_transfer_export,raid_workbook_post,player_analysis_dm"
                     ),
                     limit="20",
                 )
@@ -1173,6 +1174,9 @@ class PoBotV2(discord.Client):
                         print(f"V2 Queue übersprungen: unbekannte Gilde {guild_slug}.")
                         continue
                     try:
+                        if queue_type == "player_analysis_dm":
+                            await deliver_player_analysis(self, guild, payload, row_number, discord, copyright_text)
+                            continue
                         if queue_type == "raid_workbook_post":
                             if clean(payload.get("guildId")) != guild.guild_id or clean(payload.get("guildSlug")) != guild.guild_slug:
                                 raise ValueError("Raid-Auswertung gehört nicht zur Queue-Gilde.")
