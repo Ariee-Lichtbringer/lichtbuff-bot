@@ -25,7 +25,10 @@ async def send_offline_notice(bot, payload, queue_id, discord):
         message = await channel.fetch_message(int(message_id))
         if message.author.id != bot.user.id:
             raise ValueError("Hinweis wurde nicht von diesem Bot gesendet")
-        content = "✅ **PO Bot ist wieder erreichbar.**" if kind == "bot" else "✅ **GuildLoot ist wieder erreichbar.**"
+        if payload.get("noticeState", "online") == "online":
+            content = "✅ **PO Bot ist wieder erreichbar.**" if kind == "bot" else "✅ **GuildLoot ist wieder erreichbar.**"
+        elif payload.get("noticeState") != "offline":
+            raise ValueError("Unbekannter Hinweis-Status")
         await message.edit(content=content, allowed_mentions=discord.AllowedMentions.none())
     else:
         message = await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
