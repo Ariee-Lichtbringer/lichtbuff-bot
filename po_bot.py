@@ -1190,7 +1190,7 @@ class PoBotV2(discord.Client):
                 result = await self.api.get(
                     "lichtbotGetQueueAllGuilds",
                     types=(
-                        "po_support_notice,active_signup_refresh,po_offline_notice,raid_announcement,po_post,p0_post_refresh,"
+                        "po_support_notice,active_signup_refresh,po_offline_notice,raid_announcement,raid_announcement_refresh,po_post,p0_post_refresh,"
                         "raid_announcement_delete,po_post_delete,"
                         "raid_announcement_role_notice,loot_master_leadpin_notice,"
                         "player_login_granted_notice,raid_missing_prio_reminder,dkp_discord_post,p0plus_backup_export,p0plus_transfer_export,raid_workbook_post,player_analysis_dm"
@@ -1351,6 +1351,11 @@ class PoBotV2(discord.Client):
                                 f"{guild.guild_id}/{row_number}"
                             )
                             continue
+                        if queue_type == "raid_announcement_refresh":
+                            await self.refresh_existing_post(guild, required(payload.get("raidId"), "raid_id"))
+                            await self.api.post("lichtbotResolveQueue", guild=guild.guild_slug,
+                                                guildId=guild.guild_id, rowNumber=row_number)
+                            continue
                         raid_id = required(
                             payload.get("raidId") or payload.get("lichtlootRaidId"),
                             "raid_id",
@@ -1386,6 +1391,16 @@ class PoBotV2(discord.Client):
                         print(f"V2 Queue verarbeitet: {guild.guild_id}/{raid_id} -> {row_number}")
                     except Exception as error:
                         print(f"V2 Queue fehlgeschlagen ({guild.guild_id}/{row_number}): {error}")
+                        permanent_target_error = (
+                            isinstance(error, discord.NotFound) or any(marker in clean(error).casefold() for marker in (
+                                "anderen discord-gilde", "backup-channel gehört nicht", "gespeicherte discord-post wurde entfernt",
+                                "gespeicherte post gehört nicht", "gespeicherte discord-kanal existiert nicht",
+                            ))
+                        )
+                        if permanent_target_error:
+                            await self.api.post("lichtbotFailQueue", guild=guild.guild_slug, guildId=guild.guild_id,
+                                                rowNumber=row_number, reason=str(error))
+                            continue
                         terminal_error = any(
                             marker in clean(error).casefold()
                             for marker in (
