@@ -367,7 +367,7 @@ def _raid_is_inactive(raid: dict[str, Any]) -> bool:
 
 
 def _active_signup_refresh_allowed(raid):
-    if _raid_is_inactive(raid) or clean(raid.get("status")).casefold() in {"geschlossen", "closed", "beendet", "finished", "completed"} or raid.get("deletedAt"):
+    if _raid_is_inactive(raid) or clean(raid.get("status")).casefold() in {"beendet", "finished", "completed"} or raid.get("deletedAt"):
         return False
     try:
         start = datetime.fromisoformat(clean(raid.get("raidDate"))[:10] + "T" + clean(raid.get("raidTime")))
