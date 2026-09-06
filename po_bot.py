@@ -25,6 +25,8 @@ from io import BytesIO
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
+import pytz
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,6 +34,23 @@ import discord
 from discord import app_commands
 from raid_workbook_post import post_raid_workbook
 from player_analysis_dm import deliver_player_analysis
+
+
+def reminder_delivery_skip_reason(payload: dict[str, Any], now: datetime | None = None) -> str:
+    """Validate the snapshot immediately before touching Discord, including retries."""
+    try:
+        date = str(payload.get("raidDate") or "").strip()
+        time = str(payload.get("raidTime") or "").strip()
+        start = pytz.timezone("Europe/Berlin").localize(
+            datetime.fromisoformat(f"{date}T{time}"), is_dst=None
+        )
+    except (ValueError, TypeError, pytz.InvalidTimeError):
+        return "invalid_raid_datetime"
+    if start <= (now or datetime.now(timezone.utc)):
+        return "raid_already_started"
+    if (payload.get("source") == "prio_saved_refresh" or payload.get("editOnly")) and not str(payload.get("messageId") or "").isdigit():
+        return "refresh_message_missing"
+    return ""
 
 
 def xlsx_col_name(index):
@@ -1358,6 +1377,9 @@ class PoBotV2(discord.Client):
     async def send_missing_prio_reminder(
         self, guild: GuildIdentity, payload: dict[str, Any]
     ) -> dict[str, Any]:
+        skip_reason = reminder_delivery_skip_reason(payload)
+        if skip_reason:
+            return {"count": 0, "messageId": clean(payload.get("messageId")), "skipped": skip_reason}
         channel_id = required(
             payload.get("channelId") or payload.get("discordChannelId"),
             "discord_channel_id",
@@ -1404,6 +1426,7 @@ class PoBotV2(discord.Client):
         site_link = f"[{site_name}]({loot_url})" if loot_url else site_name
         escaped_names = [discord.utils.escape_markdown(name) for name in missing_characters]
         heading = f"⏰ **Prio-Erinnerung – {discord.utils.escape_markdown(raid_name)}"
+        heading += f" am {discord.utils.escape_markdown(clean(payload.get('raidDate')))}"
         if raid_time:
             heading += f" um {discord.utils.escape_markdown(raid_time)} Uhr"
         heading += "**\n\n"
@@ -1433,7 +1456,9 @@ class PoBotV2(discord.Client):
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
             except (discord.NotFound, discord.Forbidden):
-                discord_message = None
+                # A refresh edits one existing reminder; it must never recreate
+                # a removed message or post duplicates after a restart/retry.
+                return {"count": 0, "messageId": message_id, "skipped": "original_message_unavailable"}
         if discord_message is None:
             discord_message = await channel.send(
                 copyright_text(message[:2000]),
