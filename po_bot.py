@@ -13,6 +13,7 @@ einer Gilde oder eines Raids verwendet werden.
 
 from __future__ import annotations
 
+from bot_offline_notice import send_offline_notice
 from copyright_notice import copyright_text, without_copyright
 import asyncio
 import hashlib
@@ -363,6 +364,17 @@ def _raid_is_inactive(raid: dict[str, Any]) -> bool:
         "gelöscht", "geloescht", "deleted",
         "abgesagt", "cancelled", "canceled",
     }
+
+
+def _active_signup_refresh_allowed(raid):
+    if _raid_is_inactive(raid) or clean(raid.get("status")).casefold() in {"geschlossen", "closed", "beendet", "finished", "completed"} or raid.get("deletedAt"):
+        return False
+    try:
+        start = datetime.fromisoformat(clean(raid.get("raidDate"))[:10] + "T" + clean(raid.get("raidTime")))
+        start = pytz.timezone("Europe/Berlin").localize(start)
+        return start > datetime.now(pytz.UTC)
+    except (TypeError, ValueError):
+        return False
 
 
 def required(value: Any, field: str) -> str:
@@ -1176,7 +1188,7 @@ class PoBotV2(discord.Client):
                 result = await self.api.get(
                     "lichtbotGetQueueAllGuilds",
                     types=(
-                        "raid_announcement,po_post,p0_post_refresh,"
+                        "active_signup_refresh,po_offline_notice,raid_announcement,po_post,p0_post_refresh,"
                         "raid_announcement_delete,po_post_delete,"
                         "raid_announcement_role_notice,loot_master_leadpin_notice,"
                         "player_login_granted_notice,raid_missing_prio_reminder,p0plus_backup_export,p0plus_transfer_export,raid_workbook_post,player_analysis_dm"
@@ -1193,6 +1205,20 @@ class PoBotV2(discord.Client):
                         print(f"V2 Queue übersprungen: unbekannte Gilde {guild_slug}.")
                         continue
                     try:
+                        if queue_type == "active_signup_refresh":
+                            raid_id = required(payload.get("raidId"), "raid_id")
+                            helper = await self.api.get_raid(guild, raid_id)
+                            raid = dict(helper.get("raid") or {})
+                            if _active_signup_refresh_allowed(raid):
+                                await self.refresh_existing_post(guild, raid_id)
+                            await self.api.post("lichtbotResolveQueue", guild=guild.guild_slug,
+                                                guildId=guild.guild_id, rowNumber=row_number)
+                            continue
+                        if queue_type == "po_offline_notice":
+                            notice_message_id = await send_offline_notice(self, payload, row_number, discord)
+                            await self.api.post("lichtbotResolveQueue", guild=guild.guild_slug,
+                                                guildId=guild.guild_id, rowNumber=row_number, messageId=notice_message_id)
+                            continue
                         if queue_type == "player_analysis_dm":
                             await deliver_player_analysis(self, guild, payload, row_number, discord, copyright_text)
                             continue

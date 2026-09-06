@@ -1,3 +1,4 @@
+from bot_offline_notice import send_offline_notice
 from copyright_notice import copyright_text, without_copyright
 import discord
 from discord import app_commands
@@ -5202,6 +5203,7 @@ def hordenbuff_sheet_delete(rend, name):
 async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
     update_type = str(item.get("type") or "").strip()
     owned_types = {
+        "lichtbuff_offline_notice",
         "worldbuff_update",
         "hordenbuff_update",
         "worldbuff_player_change_notice",
@@ -5244,7 +5246,17 @@ async def handle_lichtloot_queue_item(item, resolve_old_queue=True):
             removed = await asyncio.to_thread(remove_deleted_worldbuff_from_all_caches, payload)
             print(f"Worldbuff-Loeschung verarbeitet, {removed} Cache-Eintraege entfernt.")
 
-        if update_type == "log_analysis_post":
+        if update_type == "lichtbuff_offline_notice":
+            notice_message_id = await send_offline_notice(client, payload, row_number, discord)
+            # Persist the Discord message ID before marking the job complete,
+            # so the return-online action can edit it after a bot restart.
+            notice_result = await asyncio.to_thread(lichtloot_post if resolve_old_queue else railway_post, {
+                "action": "lichtbotResolveQueue", "queueToken": LICHTBOT_QUEUE_TOKEN,
+                "rowNumber": row_number, "messageId": notice_message_id,
+            })
+            if not notice_result.get("success"):
+                raise RuntimeError("Hinweis-Nachrichten-ID konnte nicht gespeichert werden")
+        elif update_type == "log_analysis_post":
             await post_log_analysis_from_queue(payload)
         elif update_type == "worldbuff_backup_export":
             await post_worldbuff_backup_export_from_queue(payload)
@@ -5481,7 +5493,7 @@ async def lichtloot_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
                 "limit": 500,
-                "types": "worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,player_mailbox_dm,worldbuff_replacement,boss_token_notice,worldbuff_backup_export",
+                "types": "lichtbuff_offline_notice,worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,player_mailbox_dm,worldbuff_replacement,boss_token_notice,worldbuff_backup_export",
                 "t": int(time.time())
             })
 
@@ -5514,7 +5526,7 @@ async def lichtloot_queue_loop():
                 "action": "lichtbotGetQueueAllGuilds",
                 "queueToken": LICHTBOT_QUEUE_TOKEN,
                 "limit": 500,
-                "types": "worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,player_mailbox_dm,worldbuff_replacement,boss_token_notice,worldbuff_backup_export",
+                "types": "lichtbuff_offline_notice,worldbuff_update,hordenbuff_update,worldbuff_player_change_notice,player_mailbox_dm,worldbuff_replacement,boss_token_notice,worldbuff_backup_export",
                 "t": int(time.time())
             })
 
