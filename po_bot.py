@@ -13,6 +13,7 @@ einer Gilde oder eines Raids verwendet werden.
 
 from __future__ import annotations
 
+from support_notice import deliver_support_notice
 from bot_offline_notice import send_offline_notice
 from copyright_notice import copyright_text, without_copyright
 import asyncio
@@ -1188,7 +1189,7 @@ class PoBotV2(discord.Client):
                 result = await self.api.get(
                     "lichtbotGetQueueAllGuilds",
                     types=(
-                        "active_signup_refresh,po_offline_notice,raid_announcement,po_post,p0_post_refresh,"
+                        "po_support_notice,active_signup_refresh,po_offline_notice,raid_announcement,po_post,p0_post_refresh,"
                         "raid_announcement_delete,po_post_delete,"
                         "raid_announcement_role_notice,loot_master_leadpin_notice,"
                         "player_login_granted_notice,raid_missing_prio_reminder,p0plus_backup_export,p0plus_transfer_export,raid_workbook_post,player_analysis_dm"
@@ -1205,6 +1206,20 @@ class PoBotV2(discord.Client):
                         print(f"V2 Queue übersprungen: unbekannte Gilde {guild_slug}.")
                         continue
                     try:
+                        if queue_type == "po_support_notice":
+                            claim = await self.api.post("botClaimSupportNotice", id=row_number)
+                            if not claim.get("claimed"):
+                                await self.api.post("lichtbotResolveQueue", guild=guild.guild_slug,
+                                                    guildId=guild.guild_id, rowNumber=row_number)
+                                continue
+                            try:
+                                message_id = await deliver_support_notice(self, claim["payload"], discord)
+                                state, delivery_error = "sent", ""
+                            except Exception as error:
+                                message_id, state, delivery_error = "", "failed", type(error).__name__
+                            await self.api.post("botFinishSupportNotice", id=row_number,
+                                                state=state, messageId=message_id, error=delivery_error)
+                            continue
                         if queue_type == "active_signup_refresh":
                             raid_id = required(payload.get("raidId"), "raid_id")
                             helper = await self.api.get_raid(guild, raid_id)
