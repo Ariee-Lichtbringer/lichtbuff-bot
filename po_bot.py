@@ -12,6 +12,7 @@ einer Gilde oder eines Raids verwendet werden.
 """
 
 from __future__ import annotations
+from dkp_notice import send_dkp_notice
 
 from support_notice import deliver_support_notice
 from bot_offline_notice import send_offline_notice
@@ -1192,7 +1193,7 @@ class PoBotV2(discord.Client):
                         "po_support_notice,active_signup_refresh,po_offline_notice,raid_announcement,po_post,p0_post_refresh,"
                         "raid_announcement_delete,po_post_delete,"
                         "raid_announcement_role_notice,loot_master_leadpin_notice,"
-                        "player_login_granted_notice,raid_missing_prio_reminder,p0plus_backup_export,p0plus_transfer_export,raid_workbook_post,player_analysis_dm"
+                        "player_login_granted_notice,raid_missing_prio_reminder,dkp_discord_post,p0plus_backup_export,p0plus_transfer_export,raid_workbook_post,player_analysis_dm"
                     ),
                     limit="20",
                 )
@@ -1302,8 +1303,26 @@ class PoBotV2(discord.Client):
                                 f"{guild.guild_id}/{row_number} -> {delivered} Empfänger"
                             )
                             continue
+                        if queue_type == "dkp_discord_post":
+                            message_id = await send_dkp_notice(self, guild, payload, row_number, discord)
+                            await self.api.post("lichtbotResolveQueue", guild=guild.guild_slug,
+                                                guildId=guild.guild_id, rowNumber=row_number, messageId=message_id)
+                            continue
                         if queue_type == "raid_missing_prio_reminder":
-                            reminder_result = await self.send_missing_prio_reminder(guild, payload)
+                            prepared = await self.api.post(
+                                "lichtbotPreparePrioReminder", guild=guild.guild_slug,
+                                guildId=guild.guild_id, rowNumber=row_number,
+                            )
+                            if prepared.get("skipped"):
+                                reminder_result = {"skipped": prepared["skipped"]}
+                            else:
+                                reminder_result = await self.send_missing_prio_reminder(guild, prepared["payload"])
+                                if reminder_result.get("messageId"):
+                                    await self.api.post(
+                                        "lichtbotCompletePrioReminder", guild=guild.guild_slug,
+                                        guildId=guild.guild_id, postId=prepared["postId"],
+                                        leaseToken=prepared["leaseToken"], messageId=reminder_result["messageId"],
+                                    )
                             await self.api.post(
                                 "lichtbotResolveQueue",
                                 guild=guild.guild_slug,
@@ -1448,8 +1467,8 @@ class PoBotV2(discord.Client):
                 continue
             seen.add(key)
             missing_characters.append(name)
-        if not missing_characters:
-            return {"count": 0, "messageId": clean(payload.get("messageId"))}
+        if not missing_characters and not clean(payload.get("messageId")):
+            return {"count": 0, "messageId": ""}
 
         completed = {
             clean(name).casefold()
@@ -1486,24 +1505,36 @@ class PoBotV2(discord.Client):
         if prio_pin:
             message += f"\n**Prio-PIN:** `{discord.utils.escape_markdown(prio_pin)}`"
 
+        if not missing_characters:
+            message = heading + "Keine aktiven Anmeldungen für diesen Raid."
+        marker = f"Post-ID: {clean(payload.get('postId'))}" if payload.get("postId") else ""
+        content = copyright_text(message[:1800] + ("\n" + marker if marker else ""))
         message_id = clean(payload.get("messageId"))
         discord_message = None
-        if message_id.isdigit():
-            try:
-                discord_message = await channel.fetch_message(int(message_id))
-                await discord_message.edit(
-                    content=copyright_text(message[:2000]),
-                    allowed_mentions=discord.AllowedMentions.none(),
+        # Recover a send whose acknowledgement was lost, and the first legacy post.
+        # A failed history request raises: uncertainty must never trigger a new post.
+        if payload.get("postId") and (not message_id or payload.get("reconcileOriginal")):
+            async for previous in channel.history(limit=None, oldest_first=True):
+                if previous.author.id != self.user.id:
+                    continue
+                previous_content = clean(previous.content)
+                legacy_match = previous_content.startswith(heading.strip()) and (
+                    not prio_pin or f"**Prio-PIN:** `{discord.utils.escape_markdown(prio_pin)}`" in previous_content
                 )
-            except (discord.NotFound, discord.Forbidden):
-                # A refresh edits one existing reminder; it must never recreate
-                # a removed message or post duplicates after a restart/retry.
-                return {"count": 0, "messageId": message_id, "skipped": "original_message_unavailable"}
-        if discord_message is None:
-            discord_message = await channel.send(
-                copyright_text(message[:2000]),
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
+                if marker in previous_content or legacy_match:
+                    discord_message = previous
+                    message_id = str(previous.id)
+                    break
+        if discord_message is None and message_id.isdigit():
+            # Missing/forbidden original posts remain errors; never replace them.
+            discord_message = await channel.fetch_message(int(message_id))
+        if discord_message is not None:
+            if getattr(discord_message, "content", None) != content:
+                await discord_message.edit(content=content, allowed_mentions=discord.AllowedMentions.none())
+        else:
+            if payload.get("editOnly") or payload.get("source") == "prio_saved_refresh":
+                raise RuntimeError("Die Post-ID der ursprünglichen Erinnerung fehlt. Kein neuer Beitrag erstellt.")
+            discord_message = await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
         return {"count": len(missing_characters), "messageId": str(discord_message.id)}
 
     async def send_raid_announcement_notice(
