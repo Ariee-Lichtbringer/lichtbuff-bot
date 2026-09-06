@@ -19,6 +19,7 @@ from support_notice import deliver_support_notice
 from bot_offline_notice import send_offline_notice
 from copyright_notice import copyright_text, without_copyright
 import asyncio
+from interaction_ack import acknowledge_interaction
 import hashlib
 import json
 import os
@@ -154,7 +155,7 @@ async def post_p0_backup_export(bot, guild, payload, queue_id):
     filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", clean(payload.get("filename"))).strip(".-") or "po-plus-backup.xlsx"
     if not filename.lower().endswith(".xlsx"):
         filename += ".xlsx"
-    data = build_xlsx_file(sheets)
+    data = await asyncio.to_thread(build_xlsx_file, sheets)
     limit = getattr(channel.guild, "filesize_limit", 10 * 1024 * 1024)
     if data.getbuffer().nbytes > limit:
         raise ValueError("P0+-Sicherung überschreitet das Discord-Dateilimit.")
@@ -871,7 +872,8 @@ class PoBotV2(discord.Client):
         @self.tree.command(name="p0_post_erstellen", description="Erstellt den kombinierten Raid-/P0-Post explizit.")
         @app_commands.default_permissions(manage_guild=True)
         async def create_post(interaction: discord.Interaction, raid_id: str) -> None:
-            await interaction.response.defer(ephemeral=True, thinking=True)
+            if not await acknowledge_interaction(interaction, ephemeral=True, thinking=True):
+                return
             try:
                 guild = self.identities.for_discord_guild(interaction.guild_id)
                 helper = await self.api.get_raid(guild, raid_id)
@@ -926,7 +928,8 @@ class PoBotV2(discord.Client):
         @self.tree.command(name="p0_post_aktualisieren", description="Aktualisiert ausschließlich einen vorhandenen Raid-/P0-Post.")
         @app_commands.default_permissions(manage_guild=True)
         async def refresh_post(interaction: discord.Interaction, raid_id: str) -> None:
-            await interaction.response.defer(ephemeral=True, thinking=True)
+            if not await acknowledge_interaction(interaction, ephemeral=True, thinking=True):
+                return
             try:
                 guild = self.identities.for_discord_guild(interaction.guild_id)
                 state = await self.refresh_existing_post(guild, raid_id)
@@ -1988,7 +1991,8 @@ class RaidSignupModal(discord.ui.Modal, title="LichtLoot-Account verknüpfen"):
         self.preset_status = required(preset_status, "signup_status").lower()
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await acknowledge_interaction(interaction, ephemeral=True, thinking=True):
+            return
         try:
             characters = await self.bot.api.link_discord_account(
                 self.guild_identity,
@@ -2056,7 +2060,8 @@ class RaidCharacterSelect(discord.ui.Select):
         # Den Dropdown-Klick sofort quittieren. Ein direktes edit_message als
         # erste Antwort kann bei Discord unter Last die Drei-Sekunden-Frist
         # überschreiten, obwohl die Auswahl anschließend korrekt verarbeitet wird.
-        await interaction.response.defer()
+        if not await acknowledge_interaction(interaction):
+            return
         selected_index = int(self.values[0])
         self.parent_view.set_character(selected_index)
         for option in self.options:
@@ -2080,8 +2085,9 @@ class RaidSpecSelect(discord.ui.Select):
         super().__init__(placeholder="Skillung auswählen", options=options, row=1)
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        if not await acknowledge_interaction(interaction):
+            return
         self.parent_view.spec_name, self.parent_view.role = self.values[0].split("|", 1)
-        await interaction.response.defer()
 
 
 class RaidSignupSelectionView(discord.ui.View):
@@ -2109,7 +2115,8 @@ class RaidSignupSelectionView(discord.ui.View):
         # Discord erwartet innerhalb von rund drei Sekunden eine Antwort.
         # Das Erzeugen der Select-Optionen und Aktualisieren der ephemeren
         # Nachricht darf deshalb erst nach dem Defer erfolgen.
-        await interaction.response.defer()
+        if not await acknowledge_interaction(interaction):
+            return
         try:
             if not any(isinstance(child, RaidCharacterSelect) for child in self.children):
                 self.add_item(RaidCharacterSelect(self, self.characters))
@@ -2124,7 +2131,8 @@ class RaidSignupSelectionView(discord.ui.View):
 
     @discord.ui.button(label="Raidanmeldung speichern", style=discord.ButtonStyle.success, row=2)
     async def submit(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await acknowledge_interaction(interaction, ephemeral=True, thinking=True):
+            return
         try:
             await self.bot.api.save_raid_signup(
                 self.guild_identity, self.raid_id, player_pin="", character=self.character,
@@ -2158,7 +2166,8 @@ class P0SignupModal(discord.ui.Modal, title="SpielerLogin verknüpfen"):
         self.message_id = clean(message_id)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await acknowledge_interaction(interaction, ephemeral=True, thinking=True):
+            return
         try:
             characters = await self.bot.api.link_discord_account(
                 self.guild_identity,
@@ -2228,7 +2237,8 @@ class P0DeleteModal(discord.ui.Modal, title="Eigene P0-Anmeldung löschen"):
         self.default_character = clean(default_character)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await acknowledge_interaction(interaction, ephemeral=True, thinking=True):
+            return
         try:
             characters = await self.bot.api.link_discord_account(
                 self.guild_identity,
@@ -2263,7 +2273,8 @@ class P0DeleteCharacterView(discord.ui.View):
 
     @discord.ui.button(label="P0-Anmeldung löschen", style=discord.ButtonStyle.danger, row=1)
     async def delete_signup(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await acknowledge_interaction(interaction, ephemeral=True, thinking=True):
+            return
         try:
             await self.bot.api.delete_p0_signup(
                 self.guild_identity, self.raid_id, player_pin="", character=self.character,
@@ -2300,8 +2311,9 @@ class P0CharacterSelect(discord.ui.Select):
         super().__init__(placeholder="Charakter suchen und auswählen", options=options, row=0)
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        if not await acknowledge_interaction(interaction):
+            return
         self.parent_view.character = self.character_names[self.values[0]]
-        await interaction.response.defer()
 
 
 class P0ItemSelect(discord.ui.Select):
@@ -2327,8 +2339,9 @@ class P0ItemSelect(discord.ui.Select):
         super().__init__(placeholder="P0-Item suchen und auswählen", options=options, row=1)
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        if not await acknowledge_interaction(interaction):
+            return
         self.parent_view.item_name = self.item_names[self.values[0]]
-        await interaction.response.defer()
 
 
 class P0ItemSearchModal(discord.ui.Modal, title="P0-Item suchen"):
@@ -2344,7 +2357,8 @@ class P0ItemSearchModal(discord.ui.Modal, title="P0-Item suchen"):
         self.parent_view = parent
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await acknowledge_interaction(interaction, ephemeral=True, thinking=True):
+            return
         query = clean(str(self.search)).casefold()
         matches = [
             row for row in self.parent_view.all_items
@@ -2439,7 +2453,8 @@ class P0SignupSelectionView(discord.ui.View):
 
     @discord.ui.button(label="P0 verbindlich eintragen", style=discord.ButtonStyle.success, row=2)
     async def submit(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await acknowledge_interaction(interaction, ephemeral=True, thinking=True):
+            return
         try:
             interaction_channel = getattr(interaction, "channel", None)
             channel_id = clean(
@@ -2522,7 +2537,8 @@ class P0ReviewSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await acknowledge_interaction(interaction, ephemeral=True, thinking=True):
+            return
         try:
             selected_value = self.values[0]
             selected = self.entries_by_value[selected_value]
@@ -2571,7 +2587,8 @@ class P0PointsSearchModal(discord.ui.Modal, title="P0+-Punkte suchen"):
         self.guild_identity = guild
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await acknowledge_interaction(interaction, ephemeral=True, thinking=True):
+            return
         try:
             query = clean(self.search.value)
             query_key = _emoji_key(query)
@@ -2648,7 +2665,8 @@ class CombinedSignupView(discord.ui.View):
     async def open_raid_modal(self, interaction: discord.Interaction, status: str) -> None:
         # Discord verlangt innerhalb von rund drei Sekunden eine erste Antwort.
         # Die LichtLoot-Abfrage darf deshalb niemals vor dem Defer stattfinden.
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await acknowledge_interaction(interaction, ephemeral=True, thinking=True):
+            return
         try:
             linked = await self.bot.api.get_linked_characters(
                 self.guild_identity, interaction.user.id, self.raid_id
@@ -2706,7 +2724,8 @@ class CombinedSignupView(discord.ui.View):
 
     @discord.ui.button(label="P0 eintragen", style=discord.ButtonStyle.success, custom_id="p0v2:p0_signup", row=2)
     async def p0_signup(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await acknowledge_interaction(interaction, ephemeral=True, thinking=True):
+            return
         try:
             interaction_channel = getattr(interaction, "channel", None)
             message_channel = getattr(getattr(interaction, "message", None), "channel", None)
@@ -2778,7 +2797,8 @@ class CombinedSignupView(discord.ui.View):
         )
 
     async def open_p0_review(self, interaction: discord.Interaction, status: str) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await acknowledge_interaction(interaction, ephemeral=True, thinking=True):
+            return
         try:
             allowed = await self.bot.api.can_review_p0(
                 self.guild_identity,
