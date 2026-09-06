@@ -1202,15 +1202,14 @@ class PoBotV2(discord.Client):
                     guild = self.identities.by_slug.get(guild_slug)
                     payload = dict(item.get("payload") or {})
                     row_number = clean(item.get("rowNumber"))
-                    if guild is None:
+                    if guild is None and queue_type != "po_support_notice":
                         print(f"V2 Queue übersprungen: unbekannte Gilde {guild_slug}.")
                         continue
                     try:
                         if queue_type == "po_support_notice":
                             claim = await self.api.post("botClaimSupportNotice", id=row_number)
                             if not claim.get("claimed"):
-                                await self.api.post("lichtbotResolveQueue", guild=guild.guild_slug,
-                                                    guildId=guild.guild_id, rowNumber=row_number)
+                                await self.api.post("lichtbotResolveQueue", guild=guild_slug, rowNumber=row_number)
                                 continue
                             try:
                                 message_id = await deliver_support_notice(self, claim["payload"], discord)
