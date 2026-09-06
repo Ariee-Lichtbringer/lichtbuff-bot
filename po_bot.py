@@ -12,6 +12,7 @@ einer Gilde oder eines Raids verwendet werden.
 """
 
 from __future__ import annotations
+from queue_notices import NOTICE_TYPES, deliver_queue_notice
 from dkp_notice import send_dkp_notice
 
 from support_notice import deliver_support_notice
@@ -1000,10 +1001,8 @@ class PoBotV2(discord.Client):
             )
         if message.author.id != self.user.id:
             raise RuntimeError("Der gespeicherte Post gehört nicht zu diesem Bot.")
-        p0_context, p0_entries = await asyncio.gather(
-            self.api.get_p0_context(guild, raid_id),
-            self.api.get_p0_entries(guild, raid_id),
-        )
+        p0_context = await self.api.get_p0_context(guild, raid_id)
+        p0_entries = []
         if fallback_p0_entries:
             p0_entries = [*p0_entries, *fallback_p0_entries]
         await message.edit(
@@ -1012,7 +1011,7 @@ class PoBotV2(discord.Client):
                 self, guild, raid_id, message_id, _raid_signup_enabled(raid)
             ),
         )
-        await self.remove_duplicate_raid_posts(channel, raid_id, message_id)
+        await self.remove_duplicate_raid_posts(channel, raid_id, message_id, guild_id=guild.guild_id)
         return post
 
     async def create_or_replace_post(
@@ -1024,6 +1023,7 @@ class PoBotV2(discord.Client):
         channel_id_override: str = "",
         raid_signup_enabled_override: bool | None = None,
         legacy_post_key: str = "",
+        force_origin_message_id: str | None = None,
     ) -> DiscordPostIdentity:
         lock = self._post_locks.setdefault((guild.guild_id, raid_id), asyncio.Lock())
         async with lock:
@@ -1034,6 +1034,7 @@ class PoBotV2(discord.Client):
                 channel_id_override=channel_id_override,
                 raid_signup_enabled_override=raid_signup_enabled_override,
                 legacy_post_key=legacy_post_key,
+                force_origin_message_id=force_origin_message_id,
             )
 
     async def _create_or_replace_post_unlocked(
@@ -1045,6 +1046,7 @@ class PoBotV2(discord.Client):
         channel_id_override: str = "",
         raid_signup_enabled_override: bool | None = None,
         legacy_post_key: str = "",
+        force_origin_message_id: str | None = None,
     ) -> DiscordPostIdentity:
         helper = await self.api.get_raid(guild, raid_id)
         raid = dict(helper.get("raid") or {})
@@ -1055,16 +1057,16 @@ class PoBotV2(discord.Client):
             helper = {**helper, "raid": raid}
         identity = RaidIdentity.from_api(guild, raid)
         existing_message_id = clean(raid.get("discordMessageId"))
+        if force_replace and force_origin_message_id is not None and existing_message_id != force_origin_message_id:
+            force_replace = False
         if existing_message_id and not force_replace:
             return await self._refresh_existing_post_unlocked(
                 guild,
                 raid_id,
                 raid_signup_enabled_override=raid_signup_enabled_override,
             )
-        p0_context, p0_entries = await asyncio.gather(
-            self.api.get_p0_context(guild, raid_id),
-            self.api.get_p0_entries(guild, raid_id),
-        )
+        p0_context = await self.api.get_p0_context(guild, raid_id)
+        p0_entries = []
         channel_id = required(
             channel_id_override or raid.get("discordChannelId"),
             "raid.discord_channel_id",
@@ -1075,36 +1077,43 @@ class PoBotV2(discord.Client):
         channel = discord_guild.get_channel(int(channel_id))
         if channel is None:
             channel = await self.fetch_channel(int(channel_id))
+        if clean(getattr(getattr(channel, "guild", None), "id", "")) != guild.discord_guild_id:
+            raise RuntimeError("Der Zielkanal gehört zu einer anderen Discord-Gilde.")
         if not hasattr(channel, "send"):
             raise RuntimeError("Der konfigurierte Discord-Kanal kann keine Nachrichten empfangen.")
-        message = await channel.send(
-            embed=build_combined_embed(guild, helper, p0_context, p0_entries),
-            view=CombinedSignupView(
-                self, guild, raid_id, "pending", _raid_signup_enabled(raid)
-            ),
+        # Recover an earlier send whose API acknowledgement was lost. Never
+        # publish a second post merely because a network response was missing.
+        message = None
+        expected_footer = f"Gilden-ID: {guild.guild_id} · Raid-ID: {raid_id}"
+        if hasattr(channel, "history"):
+            async for candidate in channel.history(limit=None, oldest_first=True):
+                if force_replace and existing_message_id and int(candidate.id) <= int(existing_message_id):
+                    continue
+                if candidate.author.id == self.user.id and any(
+                    without_copyright(clean(embed.footer.text)) == expected_footer
+                    for embed in candidate.embeds if embed.footer
+                ):
+                    message = candidate
+                    break
+        if message is None:
+            message = await channel.send(
+                embed=build_combined_embed(guild, helper, p0_context, p0_entries),
+                view=CombinedSignupView(self, guild, raid_id, "pending", _raid_signup_enabled(raid)),
+            )
+        # Both an uncertain save and a failed edit must preserve the message.
+        # Retry/recovery will reuse it and restore the view.
+        await self.api.save_discord_post(
+            guild, raid_id, message.channel.id, message.id,
+            replace_existing=force_replace,
         )
-        try:
-            await self.api.save_discord_post(
-                guild,
-                raid_id,
-                message.channel.id,
-                message.id,
-                replace_existing=force_replace,
-            )
-            await message.edit(
-                view=CombinedSignupView(
-                    self, guild, raid_id, message.id, _raid_signup_enabled(raid)
-                )
-            )
-        except Exception:
-            await message.delete()
-            raise
+        await message.edit(view=CombinedSignupView(self, guild, raid_id, message.id, _raid_signup_enabled(raid)))
         if force_replace:
             await self.remove_duplicate_raid_posts(
                 channel,
                 raid_id,
                 message.id,
                 legacy_post_key=legacy_post_key,
+                guild_id=guild.guild_id,
             )
         return DiscordPostIdentity(
             guild_id=guild.guild_id,
@@ -1120,6 +1129,7 @@ class PoBotV2(discord.Client):
         raid_id: str,
         canonical_message_id: int | str,
         legacy_post_key: str = "",
+        guild_id: str = "",
     ) -> None:
         if not hasattr(channel, "history"):
             return
@@ -1132,7 +1142,11 @@ class PoBotV2(discord.Client):
                 if not self.user or candidate.author.id != self.user.id:
                     continue
                 footer_texts = [clean(embed.footer.text) for embed in candidate.embeds if embed.footer]
-                is_same_v2_post = any(marker in footer for footer in footer_texts)
+                is_same_v2_post = any(
+                    without_copyright(footer).split(" · ")[-1].strip() == marker
+                    and (not guild_id or without_copyright(footer) == f"Gilden-ID: {guild_id} · {marker}")
+                    for footer in footer_texts
+                )
                 legacy_marker = f"Post-ID: {clean(legacy_post_key)}"
                 is_legacy_post = bool(legacy_post_key) and any(
                     without_copyright(footer) == legacy_marker for footer in footer_texts
@@ -1193,7 +1207,8 @@ class PoBotV2(discord.Client):
                         "po_support_notice,active_signup_refresh,po_offline_notice,raid_announcement,raid_announcement_refresh,po_post,p0_post_refresh,"
                         "raid_announcement_delete,po_post_delete,"
                         "raid_announcement_role_notice,loot_master_leadpin_notice,"
-                        "player_login_granted_notice,raid_missing_prio_reminder,dkp_discord_post,p0plus_backup_export,p0plus_transfer_export,raid_workbook_post,player_analysis_dm"
+                        "player_login_granted_notice,raid_missing_prio_reminder,dkp_discord_post,p0plus_backup_export,p0plus_transfer_export,raid_workbook_post,player_analysis_dm,"
+                        "p0plus_resolution_notice,player_login_approval_notice,po_approval_notice,po_rejection_notice,po_release_request_notice,raid_calendar,raid_signup_notice,raid_status_staff_notice"
                     ),
                     limit="20",
                 )
@@ -1207,6 +1222,13 @@ class PoBotV2(discord.Client):
                         print(f"V2 Queue übersprungen: unbekannte Gilde {guild_slug}.")
                         continue
                     try:
+                        if queue_type in NOTICE_TYPES:
+                            try:
+                                mid=await deliver_queue_notice(self,guild,queue_type,payload,row_number,discord)
+                                await self.api.post("lichtbotResolveQueue",guild=guild.guild_slug,guildId=guild.guild_id,rowNumber=row_number,messageId=mid)
+                            except (ValueError, discord.Forbidden, discord.NotFound) as error:
+                                await self.api.post("lichtbotFailQueue",guild=guild.guild_slug,guildId=guild.guild_id,rowNumber=row_number,reason=str(error))
+                            continue
                         if queue_type == "po_support_notice":
                             claim = await self.api.post("botClaimSupportNotice", id=row_number)
                             if not claim.get("claimed"):
@@ -1372,6 +1394,7 @@ class PoBotV2(discord.Client):
                             guild,
                             raid_id,
                             force_replace=force_new,
+                            force_origin_message_id=clean(payload.get("discordMessageId") or payload.get("messageId")),
                             channel_id_override=clean(
                                 payload.get("channelId")
                                 or payload.get("discordChannelId")
