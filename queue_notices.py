@@ -6,7 +6,7 @@ NOTICE_TYPES = {"p0plus_resolution_notice", "player_login_approval_notice", "po_
 def render_notice(kind, p, guild):
     titles={"po_approval_notice":"P0-Anmeldung freigegeben","po_rejection_notice":"P0-Anmeldung abgelehnt","p0plus_resolution_notice":"P0+-Meldung bearbeitet","player_login_approval_notice":"SpielerLogin wartet auf Freigabe","po_release_request_notice":"Neue P0-Freigabeanfrage","raid_signup_notice":"Raidanmeldung geändert","raid_status_staff_notice":"Raidstatus geändert","raid_calendar":"Raidkalender"}
     lines=[titles[kind],guild.guild_slug]
-    for key in ("character","player","server","raidName","raid","raidDate","raidTime","item","reason","message"):
+    for key in ("character","player","server","raidName","raid","raidDate","raidTime","item","requestType","reason","message"):
         if p.get(key):lines.append(str(p[key]))
     if "correctedPoints" in p:lines.append(f"Korrigierter Punktestand: {p['correctedPoints']}")
     link="https://lichtloot.de/gildenleitung.html?"+urlencode({"guild":guild.guild_slug})
@@ -49,15 +49,17 @@ async def deliver_queue_notice(bot, guild, kind, payload, queue_id, discord):
                     channel=await member.create_dm();channels[str(channel.id)]=channel
     if not channels:raise ValueError("Kein konfigurierter Empfänger gefunden")
     receipts=payload.get("deliveryReceipts") or {};last=""
-    marker=f"GuildLoot-Auftrag: {queue_id}"
+    marker=f"GuildLoot-Kalender: {guild.guild_id}" if kind=="raid_calendar" else f"GuildLoot-Auftrag: {queue_id}"
     for key,channel in channels.items():
         if receipts.get(key):last=str(receipts[key]);continue
         message=None
         async for candidate in channel.history(limit=100):
             if candidate.author.id==bot.user.id and any(getattr(e.footer,"text",None)==marker for e in candidate.embeds):message=candidate;break
+        embed=discord.Embed(description=render_notice(kind,payload,guild));embed.set_footer(text=marker)
         if message is None:
-            embed=discord.Embed(description=render_notice(kind,payload,guild));embed.set_footer(text=marker)
             message=await channel.send(embed=embed,allowed_mentions=discord.AllowedMentions.none())
+        elif kind=="raid_calendar":
+            await message.edit(embed=embed,allowed_mentions=discord.AllowedMentions.none())
         last=str(message.id)
         await bot.api.post("lichtbotRecordNoticeDelivery",guild=guild.guild_slug,guildId=guild.guild_id,rowNumber=queue_id,targetId=key,messageId=last)
     return last

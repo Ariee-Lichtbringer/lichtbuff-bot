@@ -11,7 +11,7 @@ class NoticeTests(unittest.IsolatedAsyncioTestCase):
         async def history(**kw):
             for m in messages:yield m
         async def send(**kw):
-            m=N(id=123456789012345678,author=N(id=7),embeds=[kw['embed']]);messages.append(m);return m
+            m=N(id=123456789012345678,author=N(id=7),embeds=[kw['embed']],edit=AsyncMock());messages.append(m);return m
         channel=N(id=223456789012345678,guild=N(id=9),history=history,send=AsyncMock(side_effect=send))
         post=AsyncMock(side_effect=[RuntimeError('lost receipt'),{'success':True}]);bot=N(user=N(id=7),get_guild=lambda _:N(),get_channel=lambda _:channel,api=N(post=post))
         discord=N(Embed=Embed,AllowedMentions=N(none=lambda:None));guild=N(discord_guild_id='9',guild_slug='g',guild_id='internal');p={'channelId':str(channel.id),'events':[]}
