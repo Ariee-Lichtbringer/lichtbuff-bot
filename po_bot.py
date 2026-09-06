@@ -20,6 +20,7 @@ from bot_offline_notice import send_offline_notice
 from copyright_notice import copyright_text, without_copyright
 import asyncio
 from interaction_ack import acknowledge_interaction
+from scheduled_channel_cleanup import cleanup_scheduled_channel
 import hashlib
 import json
 import os
@@ -1411,16 +1412,9 @@ class PoBotV2(discord.Client):
                                 or payload.get("postId")
                             ),
                         )
-                        if payload.get("source") == "raid_helper_schedule" and payload.get("clearChannelBeforePost"):
-                            previous_id = clean(payload.get("previousMessageId"))
-                            if previous_id and previous_id != posted.discord_message_id:
-                                channel = await self.fetch_channel(int(posted.discord_channel_id))
-                                try:
-                                    previous = await channel.fetch_message(int(previous_id))
-                                    if previous.author.id == self.user.id:
-                                        await previous.delete()
-                                except discord.NotFound:
-                                    pass
+                        if payload.get("source") == "raid_helper_schedule" and _truthy(payload.get("clearChannelBeforePost")):
+                            removed = await cleanup_scheduled_channel(self, guild, posted, discord)
+                            print(f"V2 Wochenrhythmus-Kanalbereinigung: {removed} ältere Nachrichten entfernt; neuer Post {posted.discord_message_id} bleibt erhalten.")
                         await self.api.post(
                             "lichtbotResolveQueue",
                             guild=guild.guild_slug,
