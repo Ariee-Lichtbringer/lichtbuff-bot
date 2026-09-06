@@ -1364,7 +1364,11 @@ class PoBotV2(discord.Client):
                             "1", "true", "yes", "ja"
                         }
                         raid_signup_override = _queue_raid_signup_override(payload)
-                        await self.create_or_replace_post(
+                        if payload.get("source") == "raid_helper_schedule":
+                            scheduled_helper = await self.api.get_raid(guild, raid_id)
+                            if clean(scheduled_helper.get("raid", {}).get("raidDate")) != clean(payload.get("raidDate")):
+                                raise RuntimeError("Wochenrhythmus: Raidtermin stimmt nicht mit dem Auftrag überein.")
+                        posted = await self.create_or_replace_post(
                             guild,
                             raid_id,
                             force_replace=force_new,
@@ -1381,12 +1385,23 @@ class PoBotV2(discord.Client):
                                 or payload.get("postId")
                             ),
                         )
+                        if payload.get("source") == "raid_helper_schedule" and payload.get("clearChannelBeforePost"):
+                            previous_id = clean(payload.get("previousMessageId"))
+                            if previous_id and previous_id != posted.discord_message_id:
+                                channel = await self.fetch_channel(int(posted.discord_channel_id))
+                                try:
+                                    previous = await channel.fetch_message(int(previous_id))
+                                    if previous.author.id == self.user.id:
+                                        await previous.delete()
+                                except discord.NotFound:
+                                    pass
                         await self.api.post(
                             "lichtbotResolveQueue",
                             guild=guild.guild_slug,
                             guildId=guild.guild_id,
                             guildSlug=guild.guild_slug,
                             rowNumber=row_number,
+                            messageId=posted.discord_message_id,
                         )
                         print(f"V2 Queue verarbeitet: {guild.guild_id}/{raid_id} -> {row_number}")
                     except Exception as error:
@@ -1397,7 +1412,9 @@ class PoBotV2(discord.Client):
                                 "gespeicherte post gehört nicht", "gespeicherte discord-kanal existiert nicht",
                             ))
                         )
-                        if permanent_target_error:
+                        if permanent_target_error or (payload.get("source") == "raid_helper_schedule" and any(
+                            marker in clean(error).casefold() for marker in ("raid wurde nicht gefunden", "raid ist archiviert", "raidtermin stimmt nicht")
+                        )):
                             await self.api.post("lichtbotFailQueue", guild=guild.guild_slug, guildId=guild.guild_id,
                                                 rowNumber=row_number, reason=str(error))
                             continue
