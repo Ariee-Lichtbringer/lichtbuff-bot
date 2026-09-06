@@ -2,23 +2,56 @@ import unittest
 from types import SimpleNamespace as N
 from unittest.mock import AsyncMock
 from queue_notices import deliver_queue_notice,render_notice,NOTICE_TYPES
+class Embed:
+    def __init__(self,**kw):self.footer=None
+    def set_footer(self,text):self.footer=N(text=text)
+class Forbidden(Exception):pass
 class NoticeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_receipt_failure_does_not_repeat_delivery(self):
-        class Embed:
-            def __init__(self,**kw):self.footer=None
-            def set_footer(self,text):self.footer=N(text=text)
-        messages=[]
+    def setUp(self):
+        self.discord=N(Embed=Embed,AllowedMentions=N(none=lambda:None))
+        self.guild=N(discord_guild_id='9',guild_slug='g',guild_id='internal')
+    async def test_old_calendar_recovered_once_then_loaded_by_id(self):
+        old=N(id=123456789012345678,author=N(id=7),embeds=[N(footer=N(text='GuildLoot-Kalender: internal'))],edit=AsyncMock())
+        newer=[N(id=n,author=N(id=8),embeds=[]) for n in range(200)]
+        async def history(limit,oldest_first=False):
+            self.assertIsNone(limit)
+            for m in ([old]+newer if oldest_first else newer+[old]):yield m
+        channel=N(id=223456789012345678,guild=N(id=9),history=history,send=AsyncMock(),fetch_message=AsyncMock(return_value=old))
+        state={'messageId':'','fail':True}
+        async def post(action,**kw):
+            if action=='lichtbotPrepareCalendarPost':return {'claimed':True,'leaseToken':'token','messageId':state['messageId']}
+            if action=='lichtbotCompleteCalendarPost':
+                state['messageId']=kw['messageId']
+                if state['fail']:state['fail']=False;raise RuntimeError('ack lost after persistence')
+            return {'success':True}
+        bot=N(user=N(id=7),get_guild=lambda _:N(),get_channel=lambda _:channel,api=N(post=post))
+        payload={'channelId':str(channel.id),'events':[]}
+        with self.assertRaises(RuntimeError):await deliver_queue_notice(bot,self.guild,'raid_calendar',payload,'q',self.discord)
+        result=await deliver_queue_notice(bot,self.guild,'raid_calendar',payload,'q',self.discord)
+        self.assertEqual(result,str(old.id));channel.send.assert_not_awaited();channel.fetch_message.assert_awaited_once_with(old.id)
+        with self.assertRaises(ValueError):await deliver_queue_notice(bot,N(discord_guild_id='10',guild_slug='g'),'raid_calendar',payload,'q',self.discord)
+    async def test_blocked_recipient_does_not_stop_others_or_resend_success(self):
         async def history(**kw):
-            for m in messages:yield m
-        async def send(**kw):
-            m=N(id=123456789012345678,author=N(id=7),embeds=[kw['embed']],edit=AsyncMock());messages.append(m);return m
-        channel=N(id=223456789012345678,guild=N(id=9),history=history,send=AsyncMock(side_effect=send))
-        post=AsyncMock(side_effect=[RuntimeError('lost receipt'),{'success':True}]);bot=N(user=N(id=7),get_guild=lambda _:N(),get_channel=lambda _:channel,api=N(post=post))
-        discord=N(Embed=Embed,AllowedMentions=N(none=lambda:None));guild=N(discord_guild_id='9',guild_slug='g',guild_id='internal');p={'channelId':str(channel.id),'events':[]}
-        with self.assertRaises(RuntimeError):await deliver_queue_notice(bot,guild,'raid_calendar',p,'q',discord)
-        await deliver_queue_notice(bot,guild,'raid_calendar',p,'q',discord)
-        self.assertEqual(channel.send.await_count,1)
-        with self.assertRaises(ValueError):await deliver_queue_notice(bot,N(discord_guild_id='10',guild_slug='g'),'raid_calendar',p,'other',discord)
+            if False:yield None
+        good=N(id=88,history=history,send=AsyncMock(return_value=N(id=99)))
+        bad=N(id=77,history=history,send=AsyncMock(side_effect=Forbidden('DM blocked')))
+        first=N(id=11,bot=False,name='a',display_name='a',roles=[N(id=44)],create_dm=AsyncMock(return_value=bad))
+        second=N(id=22,bot=False,name='b',display_name='b',roles=[N(id=44)],create_dm=AsyncMock(return_value=good))
+        server=N(members=[first,second],chunked=True);receipts={};errors={}
+        async def post(action,**kw):
+            if kw.get('error'):errors[kw['targetId']]=kw['error']
+            else:receipts[kw['targetId']]=kw['messageId']
+            return {'success':True}
+        bot=N(user=N(id=7),get_guild=lambda _:server,api=N(post=post));payload={'targets':[{'type':'role','value':'44'}]}
+        with self.assertRaises(ValueError):await deliver_queue_notice(bot,self.guild,'po_release_request_notice',payload,'q',self.discord)
+        self.assertEqual(receipts,{'22':'99'});self.assertIn('11',errors);good.send.assert_awaited_once()
+        payload['deliveryReceipts']=receipts
+        with self.assertRaises(ValueError):await deliver_queue_notice(bot,self.guild,'po_release_request_notice',payload,'q',self.discord)
+        good.send.assert_awaited_once()
+        first.create_dm.side_effect=Forbidden('cannot open DM')
+        payload['deliveryReceipts']={}
+        with self.assertRaises(ValueError):await deliver_queue_notice(bot,self.guild,'po_release_request_notice',payload,'q2',self.discord)
+        self.assertEqual(good.send.await_count,2)
     def test_each_type_renders_without_account_secrets(self):
         for kind in NOTICE_TYPES:
             body=render_notice(kind,{'playerPin':'SECRET','character':'Tester'},N(guild_slug='g'))

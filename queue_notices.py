@@ -21,45 +21,83 @@ def render_notice(kind, p, guild):
         return template[:3900]
     return "\n".join(lines)[:3900]
 
+async def deliver_calendar(bot, guild, payload, queue_id, discord):
+    channel_id=str(payload.get("channelId") or "")
+    if not channel_id.isdigit():raise ValueError("Kalenderkanal fehlt")
+    channel=bot.get_channel(int(channel_id)) or await bot.fetch_channel(int(channel_id))
+    if str(getattr(getattr(channel,"guild",None),"id",""))!=guild.discord_guild_id:
+        raise ValueError("Ziel gehört zu einer anderen Discord-Gilde")
+    prepared=await bot.api.post("lichtbotPrepareCalendarPost",guild=guild.guild_slug,guildId=guild.guild_id,channelId=channel_id)
+    if not prepared.get("claimed"):raise RuntimeError("Kalender wird bereits verarbeitet; später erneut versuchen")
+    token=prepared["leaseToken"]
+    marker=f"GuildLoot-Kalender: {guild.guild_id}"
+    try:
+        message=None
+        if prepared.get("messageId"):
+            message=await channel.fetch_message(int(prepared["messageId"]))
+            if message.author.id!=bot.user.id:raise ValueError("Gespeicherter Kalenderpost gehört nicht zu diesem Bot")
+        else:
+            # One-time recovery includes the complete history and keeps the
+            # original (oldest) post, regardless of how far it has scrolled.
+            async for candidate in channel.history(limit=None,oldest_first=True):
+                if candidate.author.id==bot.user.id and any(getattr(e.footer,"text",None)==marker for e in candidate.embeds):
+                    message=candidate;break
+        embed=discord.Embed(description=render_notice("raid_calendar",payload,guild));embed.set_footer(text=marker)
+        if message is None:message=await channel.send(embed=embed,allowed_mentions=discord.AllowedMentions.none())
+        else:await message.edit(embed=embed,allowed_mentions=discord.AllowedMentions.none())
+        mid=str(message.id)
+        await bot.api.post("lichtbotCompleteCalendarPost",guild=guild.guild_slug,guildId=guild.guild_id,channelId=channel_id,leaseToken=token,messageId=mid)
+        await bot.api.post("lichtbotRecordNoticeDelivery",guild=guild.guild_slug,guildId=guild.guild_id,rowNumber=queue_id,targetId=channel_id,messageId=mid)
+        return mid
+    finally:
+        try:await bot.api.post("lichtbotReleaseCalendarPost",guild=guild.guild_slug,guildId=guild.guild_id,channelId=channel_id,leaseToken=token)
+        except Exception:pass  # The persisted lease expires; never delete the post.
+
 async def deliver_queue_notice(bot, guild, kind, payload, queue_id, discord):
     server=bot.get_guild(int(guild.discord_guild_id))
     if server is None:raise RuntimeError("Discord-Server nicht erreichbar")
-    channels={}
-    if kind=="raid_calendar":
-        channel=bot.get_channel(int(payload.get("channelId") or 0)) or await bot.fetch_channel(int(payload.get("channelId") or 0))
-        if str(getattr(getattr(channel,"guild",None),"id",""))!=guild.discord_guild_id:raise ValueError("Ziel gehört zu einer anderen Discord-Gilde")
-        channels[str(channel.id)]=channel
+    if kind=="raid_calendar":return await deliver_calendar(bot,guild,payload,queue_id,discord)
+    recipients={}
+    uid=str(payload.get("discordUserId") or payload.get("userId") or "")
+    if uid.isdigit():
+        recipients[uid]=None  # Resolve membership inside this recipient's try block.
     else:
-        uid=str(payload.get("discordUserId") or payload.get("userId") or "")
-        if uid.isdigit():
-            # Membership is checked before delivering guild-specific contents.
-            member=server.get_member(int(uid)) or await server.fetch_member(int(uid))
-            channel=await member.create_dm();channels[str(channel.id)]=channel
-        else:
-            targets=payload.get("targets") or []
-            roles={str(x) for x in payload.get("notificationRoleIds",[])}|{str(t.get("value")) for t in targets if t.get("type")=="role"}
-            names={str(x).strip().casefold() for x in payload.get("notificationNames",[])}|{str(t.get("value","")).strip().casefold() for t in targets if t.get("type")=="name"}
-            if not roles and not names:raise ValueError("Keine Benachrichtigungsempfänger konfiguriert")
-            members=list(server.members)
-            if not getattr(server,"chunked",False):members=[m async for m in server.fetch_members(limit=None)]
-            for member in members:
-                if member.bot:continue
-                member_names={str(getattr(member,k,"")).strip().casefold() for k in ("name","display_name","global_name")}
-                if roles.intersection(str(r.id) for r in member.roles) or names.intersection(member_names):
-                    channel=await member.create_dm();channels[str(channel.id)]=channel
-    if not channels:raise ValueError("Kein konfigurierter Empfänger gefunden")
-    receipts=payload.get("deliveryReceipts") or {};last=""
-    marker=f"GuildLoot-Kalender: {guild.guild_id}" if kind=="raid_calendar" else f"GuildLoot-Auftrag: {queue_id}"
-    for key,channel in channels.items():
-        if receipts.get(key):last=str(receipts[key]);continue
-        message=None
-        async for candidate in channel.history(limit=100):
-            if candidate.author.id==bot.user.id and any(getattr(e.footer,"text",None)==marker for e in candidate.embeds):message=candidate;break
-        embed=discord.Embed(description=render_notice(kind,payload,guild));embed.set_footer(text=marker)
-        if message is None:
-            message=await channel.send(embed=embed,allowed_mentions=discord.AllowedMentions.none())
-        elif kind=="raid_calendar":
-            await message.edit(embed=embed,allowed_mentions=discord.AllowedMentions.none())
-        last=str(message.id)
-        await bot.api.post("lichtbotRecordNoticeDelivery",guild=guild.guild_slug,guildId=guild.guild_id,rowNumber=queue_id,targetId=key,messageId=last)
+        targets=payload.get("targets") or []
+        roles={str(x) for x in payload.get("notificationRoleIds",[])}|{str(t.get("value")) for t in targets if t.get("type")=="role"}
+        names={str(x).strip().casefold() for x in payload.get("notificationNames",[])}|{str(t.get("value","")).strip().casefold() for t in targets if t.get("type")=="name"}
+        if not roles and not names:raise ValueError("Keine Benachrichtigungsempfänger konfiguriert")
+        members=list(server.members)
+        if not getattr(server,"chunked",False):members=[m async for m in server.fetch_members(limit=None)]
+        for member in members:
+            if member.bot:continue
+            member_names={str(getattr(member,k,"")).strip().casefold() for k in ("name","display_name","global_name")}
+            if roles.intersection(str(r.id) for r in member.roles) or names.intersection(member_names):recipients[str(member.id)]=member
+    if not recipients:raise ValueError("Kein konfigurierter Empfänger gefunden")
+    receipts=payload.get("deliveryReceipts") or {};last="";failures=[];retryable=False
+    marker=f"GuildLoot-Auftrag: {queue_id}"
+    for uid,member in recipients.items():
+        if receipts.get(uid):last=str(receipts[uid]);continue
+        try:
+            member=member or server.get_member(int(uid)) or await server.fetch_member(int(uid))
+            channel=await member.create_dm()
+            # Older receipts were keyed by DM-channel ID.
+            if receipts.get(str(channel.id)):last=str(receipts[str(channel.id)]);continue
+            message=None
+            async for candidate in channel.history(limit=None):
+                if candidate.author.id==bot.user.id and any(getattr(e.footer,"text",None)==marker for e in candidate.embeds):message=candidate;break
+            if message is None:
+                embed=discord.Embed(description=render_notice(kind,payload,guild));embed.set_footer(text=marker)
+                message=await channel.send(embed=embed,allowed_mentions=discord.AllowedMentions.none())
+            last=str(message.id)
+            await bot.api.post("lichtbotRecordNoticeDelivery",guild=guild.guild_slug,guildId=guild.guild_id,rowNumber=queue_id,targetId=uid,messageId=last)
+        except Exception as error:
+            failures.append(f"{uid}: {type(error).__name__}: {error}")
+            if type(error).__name__ not in {"Forbidden","NotFound","ValueError"}:retryable=True
+            try:await bot.api.post("lichtbotRecordNoticeDelivery",guild=guild.guild_slug,guildId=guild.guild_id,rowNumber=queue_id,targetId=uid,error=str(error)[:500] or type(error).__name__)
+            except Exception:retryable=True
+            # A blocked DM never prevents delivery to the remaining recipients.
+    if failures:
+        message="Benachrichtigung teilweise fehlgeschlagen: "+"; ".join(failures)
+        if retryable:raise RuntimeError(message)
+        raise ValueError(message)
     return last
