@@ -2022,14 +2022,14 @@ class RaidSignupModal(discord.ui.Modal, title="LichtLoot-Account verknüpfen"):
                 discord_name=interaction.user.display_name,
             )
             await interaction.followup.send(
-                copyright_text("✅ Account verknüpft. Wähle jetzt den gespeicherten Charakter und seine Skillung:"),
+                "✅ Account verknüpft. Wähle jetzt den gespeicherten Charakter und seine Skillung:",
                 view=RaidSignupSelectionView(
                     self.bot, self.guild_identity, self.raid_id, self.channel_id, self.message_id,
                     characters, self.preset_status, interaction.user.id, interaction.user.display_name,
                 ), ephemeral=True,
             )
         except Exception as error:
-            await interaction.followup.send(copyright_text(f"⚠️ Verknüpfung fehlgeschlagen: {error}"), ephemeral=True)
+            await interaction.followup.send(f"⚠️ Verknüpfung fehlgeschlagen: {error}", ephemeral=True)
 
 
 class RaidAccountLinkView(discord.ui.View):
@@ -2145,7 +2145,7 @@ class RaidSignupSelectionView(discord.ui.View):
         except Exception as error:
             print(f"Charakterwechsel konnte nicht geöffnet werden: {error}", flush=True)
             await interaction.followup.send(
-                copyright_text(f"⚠️ Charakterauswahl konnte nicht geöffnet werden: {error}"),
+                f"⚠️ Charakterauswahl konnte nicht geöffnet werden: {error}",
                 ephemeral=True,
             )
 
@@ -2161,10 +2161,10 @@ class RaidSignupSelectionView(discord.ui.View):
                 channel_id=self.channel_id, message_id=self.message_id,
             )
             await self.bot.refresh_existing_post(self.guild_identity, self.raid_id)
-            await interaction.followup.send(copyright_text("✅ Raidanmeldung gespeichert."), ephemeral=True)
+            await interaction.followup.send("✅ Raidanmeldung gespeichert.", ephemeral=True)
             self.stop()
         except Exception as error:
-            await interaction.followup.send(copyright_text(f"⚠️ Raidanmeldung fehlgeschlagen: {error}"), ephemeral=True)
+            await interaction.followup.send(f"⚠️ Raidanmeldung fehlgeschlagen: {error}", ephemeral=True)
 
 
 class P0SignupModal(discord.ui.Modal, title="SpielerLogin verknüpfen"):
@@ -2200,7 +2200,7 @@ class P0SignupModal(discord.ui.Modal, title="SpielerLogin verknüpfen"):
             if not items:
                 raise RuntimeError("Für diesen Raid ist keine P0-Lootliste konfiguriert.")
             await interaction.followup.send(
-                copyright_text("✅ SpielerLogin gefunden. **2. Wähle jetzt deinen Charakter:**"),
+                "✅ SpielerLogin gefunden. **2. Wähle jetzt deinen Charakter:**",
                 view=P0CharacterSelectionView(
                     self.bot, self.guild_identity, self.raid_id, self.channel_id, self.message_id,
                     characters, items, interaction.user.id, interaction.user.display_name,
@@ -2208,7 +2208,7 @@ class P0SignupModal(discord.ui.Modal, title="SpielerLogin verknüpfen"):
                 ephemeral=True,
             )
         except Exception as error:
-            await interaction.followup.send(copyright_text(f"⚠️ Verknüpfung fehlgeschlagen: {error}"), ephemeral=True)
+            await interaction.followup.send(f"⚠️ Verknüpfung fehlgeschlagen: {error}", ephemeral=True)
 
 
 class P0AccountLinkView(discord.ui.View):
@@ -2267,7 +2267,7 @@ class P0DeleteModal(discord.ui.Modal, title="Eigene P0-Anmeldung löschen"):
                 discord_name=interaction.user.display_name,
             )
             await interaction.followup.send(
-                copyright_text("Wähle den gespeicherten Charakter, dessen P0-Anmeldung gelöscht werden soll:"),
+                "Wähle den gespeicherten Charakter, dessen P0-Anmeldung gelöscht werden soll:",
                 view=P0DeleteCharacterView(
                     self.bot, self.guild_identity, self.raid_id, characters,
                     interaction.user.id, self.channel_id, self.message_id,
@@ -2276,7 +2276,7 @@ class P0DeleteModal(discord.ui.Modal, title="Eigene P0-Anmeldung löschen"):
                 ephemeral=True,
             )
         except Exception as error:
-            await interaction.followup.send(copyright_text(f"⚠️ P0-Löschung fehlgeschlagen: {error}"), ephemeral=True)
+            await interaction.followup.send(f"⚠️ P0-Löschung fehlgeschlagen: {error}", ephemeral=True)
 
 
 class P0DeleteCharacterView(discord.ui.View):
@@ -2306,10 +2306,10 @@ class P0DeleteCharacterView(discord.ui.View):
                 fallback_channel_id=self.channel_id,
                 fallback_message_id=self.message_id,
             )
-            await interaction.followup.send(copyright_text("✅ Deine P0-Anmeldung wurde gelöscht."), ephemeral=True)
+            await interaction.followup.send("✅ Deine P0-Anmeldung wurde gelöscht.", ephemeral=True)
             self.stop()
         except Exception as error:
-            await interaction.followup.send(copyright_text(f"⚠️ P0-Löschung fehlgeschlagen: {error}"), ephemeral=True)
+            await interaction.followup.send(f"⚠️ P0-Löschung fehlgeschlagen: {error}", ephemeral=True)
 
 
 class P0CharacterSelect(discord.ui.Select):
@@ -2386,7 +2386,7 @@ class P0ItemSearchModal(discord.ui.Modal, title="P0-Item suchen"):
         ]
         if not matches:
             await interaction.followup.send(
-                copyright_text("⚠️ Kein gespeichertes LichtLoot-Item passt zu dieser Suche."), ephemeral=True
+                "⚠️ Kein gespeichertes LichtLoot-Item passt zu dieser Suche.", ephemeral=True
             )
             return
         result_view = P0SignupSelectionView(
@@ -2404,7 +2404,7 @@ class P0ItemSearchModal(discord.ui.Modal, title="P0-Item suchen"):
         )
         suffix = " (erste 25 Treffer)" if len(matches) > 25 else ""
         await interaction.followup.send(
-            copyright_text(f"🔎 **4. {len(matches)} Item(s) gefunden{suffix}:** Wähle das richtige Item aus."),
+            f"🔎 **4. {len(matches)} Item(s) gefunden{suffix}:** Wähle das richtige Item aus.",
             view=result_view,
             ephemeral=True,
         )
@@ -2509,10 +2509,10 @@ class P0SignupSelectionView(discord.ui.View):
                     *([save_result.get("signup")] if save_result.get("signup") else []),
                 ],
             )
-            await interaction.followup.send(copyright_text("✅ P0-Anmeldung gespeichert."), ephemeral=True)
+            await interaction.followup.send("✅ P0-Anmeldung gespeichert.", ephemeral=True)
             self.stop()
         except Exception as error:
-            await interaction.followup.send(copyright_text(f"⚠️ P0-Anmeldung fehlgeschlagen: {error}"), ephemeral=True)
+            await interaction.followup.send(f"⚠️ P0-Anmeldung fehlgeschlagen: {error}", ephemeral=True)
 
 
 class P0ReviewSelect(discord.ui.Select):
@@ -2582,9 +2582,9 @@ class P0ReviewSelect(discord.ui.Select):
                 )
             await self.bot.refresh_existing_post(self.guild_identity, self.raid_id)
             label = "freigegeben" if self.review_status == "approved" else "abgelehnt"
-            await interaction.followup.send(copyright_text(f"✅ P0-Eintrag wurde {label}."), ephemeral=True)
+            await interaction.followup.send(f"✅ P0-Eintrag wurde {label}.", ephemeral=True)
         except Exception as error:
-            await interaction.followup.send(copyright_text(f"⚠️ Prüfung fehlgeschlagen: {error}"), ephemeral=True)
+            await interaction.followup.send(f"⚠️ Prüfung fehlgeschlagen: {error}", ephemeral=True)
 
 
 class P0ReviewView(discord.ui.View):
@@ -2620,7 +2620,7 @@ class P0PointsSearchModal(discord.ui.Modal, title="P0+-Punkte suchen"):
             ]
             if not matches:
                 await interaction.followup.send(
-                    copyright_text(f'🔎 Keine P0+-Punkte für „{query}“ gefunden.'),
+                    f'🔎 Keine P0+-Punkte für „{query}“ gefunden.',
                     ephemeral=True,
                 )
                 return
@@ -2643,9 +2643,9 @@ class P0PointsSearchModal(discord.ui.Modal, title="P0+-Punkte suchen"):
             result = f'🏆 **P0+-Suche: „{query}“**\n' + "\n".join(lines)
             if hidden:
                 result += f"\n… und {hidden} weitere Treffer. Bitte genauer suchen."
-            await interaction.followup.send(copyright_text(result), ephemeral=True)
+            await interaction.followup.send(result, ephemeral=True)
         except Exception as error:
-            await interaction.followup.send(copyright_text(f"⚠️ P0+-Suche fehlgeschlagen: {error}"), ephemeral=True)
+            await interaction.followup.send(f"⚠️ P0+-Suche fehlgeschlagen: {error}", ephemeral=True)
 
 
 class CombinedSignupView(discord.ui.View):
@@ -2677,9 +2677,9 @@ class CombinedSignupView(discord.ui.View):
             return True
         except Exception as error:
             if interaction.response.is_done():
-                await interaction.followup.send(copyright_text(f"⚠️ {error}"), ephemeral=True)
+                await interaction.followup.send(f"⚠️ {error}", ephemeral=True)
             else:
-                await interaction.response.send_message(copyright_text(f"⚠️ {error}"), ephemeral=True)
+                await interaction.response.send_message(f"⚠️ {error}", ephemeral=True)
             return False
 
     async def open_raid_modal(self, interaction: discord.Interaction, status: str) -> None:
@@ -2693,7 +2693,7 @@ class CombinedSignupView(discord.ui.View):
             )
             if not linked:
                 await interaction.followup.send(
-                    copyright_text("Für deinen Discord-Account ist noch kein LichtLoot-Charakter verknüpft."),
+                    "Für deinen Discord-Account ist noch kein LichtLoot-Charakter verknüpft.",
                     view=RaidAccountLinkView(
                         self.bot, self.guild_identity, self.raid_id, interaction.channel_id,
                         interaction.message.id, status,
@@ -2702,9 +2702,9 @@ class CombinedSignupView(discord.ui.View):
                 )
                 return
             await interaction.followup.send(
-                copyright_text("Vorausgewählter LichtLoot-Charakter: **{}**. Wähle nur noch die Skillung:".format(
+                "Vorausgewählter LichtLoot-Charakter: **{}**. Wähle nur noch die Skillung:".format(
                     clean(linked[0].get("name"))
-                )),
+                ),
                 view=RaidSignupSelectionView(
                     self.bot, self.guild_identity, self.raid_id, interaction.channel_id,
                     interaction.message.id, linked, status, interaction.user.id,
@@ -2714,7 +2714,7 @@ class CombinedSignupView(discord.ui.View):
             )
         except Exception as error:
             await interaction.followup.send(
-                copyright_text(f"⚠️ LichtLoot-Charaktere konnten nicht geladen werden: {error}"),
+                f"⚠️ LichtLoot-Charaktere konnten nicht geladen werden: {error}",
                 ephemeral=True,
             )
 
@@ -2760,7 +2760,7 @@ class CombinedSignupView(discord.ui.View):
             )
             if not characters:
                 await interaction.followup.send(
-                    copyright_text("Dein Discord-Account ist noch nicht mit LichtLoot verknüpft."),
+                    "Dein Discord-Account ist noch nicht mit LichtLoot verknüpft.",
                     view=P0AccountLinkView(
                         self.bot,
                         self.guild_identity,
@@ -2779,7 +2779,7 @@ class CombinedSignupView(discord.ui.View):
             if not items:
                 raise RuntimeError("Für diesen Raid ist keine P0-Lootliste konfiguriert.")
             await interaction.followup.send(
-                copyright_text("Wähle deinen gespeicherten Charakter und das gewünschte P0-Item:"),
+                "Wähle deinen gespeicherten Charakter und das gewünschte P0-Item:",
                 view=P0CharacterSelectionView(
                     self.bot,
                     self.guild_identity,
@@ -2794,7 +2794,7 @@ class CombinedSignupView(discord.ui.View):
                 ephemeral=True,
             )
         except Exception as error:
-            await interaction.followup.send(copyright_text(f"⚠️ P0-Anmeldung fehlgeschlagen: {error}"), ephemeral=True)
+            await interaction.followup.send(f"⚠️ P0-Anmeldung fehlgeschlagen: {error}", ephemeral=True)
 
     @discord.ui.button(label="P0-Eintrag löschen", style=discord.ButtonStyle.danger, custom_id="p0v2:p0_delete", row=2)
     async def p0_delete(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -2830,7 +2830,7 @@ class CombinedSignupView(discord.ui.View):
             )
             if not allowed:
                 await interaction.followup.send(
-                    copyright_text("⚠️ Deine Rolle ist auf der Gildenleitungsseite nicht für die P0-Prüfung freigegeben."),
+                    "⚠️ Deine Rolle ist auf der Gildenleitungsseite nicht für die P0-Prüfung freigegeben.",
                     ephemeral=True,
                 )
                 return
@@ -2853,15 +2853,15 @@ class CombinedSignupView(discord.ui.View):
                 seen.add(key)
                 entries.append(row)
             if not entries:
-                await interaction.followup.send(copyright_text("ℹ️ Kein passender P0-Eintrag vorhanden."), ephemeral=True)
+                await interaction.followup.send("ℹ️ Kein passender P0-Eintrag vorhanden.", ephemeral=True)
                 return
             await interaction.followup.send(
-                copyright_text("P0-Eintrag auswählen:"),
+                "P0-Eintrag auswählen:",
                 view=P0ReviewView(P0ReviewSelect(self.bot, self.guild_identity, self.raid_id, entries, status)),
                 ephemeral=True,
             )
         except Exception as error:
-            await interaction.followup.send(copyright_text(f"⚠️ P0-Prüfung fehlgeschlagen: {error}"), ephemeral=True)
+            await interaction.followup.send(f"⚠️ P0-Prüfung fehlgeschlagen: {error}", ephemeral=True)
 
     @discord.ui.button(label="P0 ablehnen", style=discord.ButtonStyle.danger, custom_id="p0v2:p0_reject", row=2)
     async def p0_reject(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
