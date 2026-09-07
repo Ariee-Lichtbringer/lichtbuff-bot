@@ -20,6 +20,7 @@ from bot_offline_notice import send_offline_notice
 from copyright_notice import copyright_text, without_copyright
 import asyncio
 from interaction_ack import acknowledge_interaction
+from signup_feedback import confirm_saved_action
 from scheduled_channel_cleanup import cleanup_scheduled_channel
 import hashlib
 import json
@@ -2086,7 +2087,10 @@ class RaidCharacterSelect(discord.ui.Select):
         self.parent_view.set_character(selected_index)
         for option in self.options:
             option.default = option.value == str(selected_index)
-        await interaction.edit_original_response(view=self.parent_view)
+        await interaction.edit_original_response(
+            content=f"Ausgewählter LichtLoot-Charakter: **{self.parent_view.character}**. Wähle nur noch die Skillung:",
+            view=self.parent_view,
+        )
 
 
 class RaidSpecSelect(discord.ui.Select):
@@ -2160,11 +2164,14 @@ class RaidSignupSelectionView(discord.ui.View):
                 discord_user_id=self.discord_user_id, discord_name=self.discord_name,
                 channel_id=self.channel_id, message_id=self.message_id,
             )
-            await self.bot.refresh_existing_post(self.guild_identity, self.raid_id)
-            await interaction.followup.send("✅ Raidanmeldung gespeichert.", ephemeral=True)
-            self.stop()
         except Exception as error:
             await interaction.followup.send(f"⚠️ Raidanmeldung fehlgeschlagen: {error}", ephemeral=True)
+            return
+        self.stop()
+        await confirm_saved_action(
+            interaction, self.bot, self.guild_identity, self.raid_id,
+            '✅ Raidanmeldung gespeichert.',
+        )
 
 
 class P0SignupModal(discord.ui.Modal, title="SpielerLogin verknüpfen"):
@@ -2300,16 +2307,16 @@ class P0DeleteCharacterView(discord.ui.View):
                 self.guild_identity, self.raid_id, player_pin="", character=self.character,
                 discord_user_id=self.discord_user_id,
             )
-            await self.bot.refresh_existing_post(
-                self.guild_identity,
-                self.raid_id,
-                fallback_channel_id=self.channel_id,
-                fallback_message_id=self.message_id,
-            )
-            await interaction.followup.send("✅ Deine P0-Anmeldung wurde gelöscht.", ephemeral=True)
-            self.stop()
         except Exception as error:
             await interaction.followup.send(f"⚠️ P0-Löschung fehlgeschlagen: {error}", ephemeral=True)
+            return
+        self.stop()
+        await confirm_saved_action(
+            interaction, self.bot, self.guild_identity, self.raid_id,
+            '✅ Deine P0-Anmeldung wurde gelöscht.',
+            fallback_channel_id=self.channel_id,
+            fallback_message_id=self.message_id,
+        )
 
 
 class P0CharacterSelect(discord.ui.Select):
@@ -2499,20 +2506,20 @@ class P0SignupSelectionView(discord.ui.View):
                 channel_id=clean(channel_id),
                 message_id=clean(message_id),
             )
-            await self.bot.refresh_existing_post(
-                self.guild_identity,
-                self.raid_id,
-                fallback_channel_id=channel_id,
-                fallback_message_id=message_id,
-                fallback_p0_entries=[
-                    *list(save_result.get("itemSignups") or []),
-                    *([save_result.get("signup")] if save_result.get("signup") else []),
-                ],
-            )
-            await interaction.followup.send("✅ P0-Anmeldung gespeichert.", ephemeral=True)
-            self.stop()
         except Exception as error:
             await interaction.followup.send(f"⚠️ P0-Anmeldung fehlgeschlagen: {error}", ephemeral=True)
+            return
+        self.stop()
+        await confirm_saved_action(
+            interaction, self.bot, self.guild_identity, self.raid_id,
+            '✅ P0-Anmeldung gespeichert.',
+            fallback_channel_id=channel_id,
+            fallback_message_id=message_id,
+            fallback_p0_entries=[
+                *list(save_result.get("itemSignups") or []),
+                *([save_result.get("signup")] if save_result.get("signup") else []),
+            ],
+        )
 
 
 class P0ReviewSelect(discord.ui.Select):
@@ -2580,11 +2587,14 @@ class P0ReviewSelect(discord.ui.Select):
                     reviewer_discord_id=interaction.user.id,
                     reviewer_discord_name=interaction.user.display_name,
                 )
-            await self.bot.refresh_existing_post(self.guild_identity, self.raid_id)
-            label = "freigegeben" if self.review_status == "approved" else "abgelehnt"
-            await interaction.followup.send(f"✅ P0-Eintrag wurde {label}.", ephemeral=True)
         except Exception as error:
             await interaction.followup.send(f"⚠️ Prüfung fehlgeschlagen: {error}", ephemeral=True)
+            return
+        label = "freigegeben" if self.review_status == "approved" else "abgelehnt"
+        await confirm_saved_action(
+            interaction, self.bot, self.guild_identity, self.raid_id,
+            f"✅ P0-Eintrag wurde {label}.",
+        )
 
 
 class P0ReviewView(discord.ui.View):
