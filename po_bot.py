@@ -854,6 +854,18 @@ class IdentityRegistry:
         return guild
 
 
+class MissingStoredPost(RuntimeError):
+    """Discord confirmed that this exact saved message no longer exists."""
+
+    def __init__(self, channel_id: str, message_id: str):
+        super().__init__(
+            "Der gespeicherte Discord-Post wurde entfernt oder archiviert; "
+            "der automatische Refresh erstellt ihn nicht erneut."
+        )
+        self.channel_id = clean(channel_id)
+        self.message_id = clean(message_id)
+
+
 class PoBotV2(discord.Client):
     def __init__(self, api: LichtLootApi) -> None:
         intents = discord.Intents.default()
@@ -867,6 +879,7 @@ class PoBotV2(discord.Client):
         self._queue_task: asyncio.Task[None] | None = None
         self._registered_view_message_ids: set[str] = set()
         self._post_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._missing_refresh_posts: dict[tuple[str, str], tuple[str, str]] = {}
         self._register_commands()
 
     def _register_commands(self) -> None:
@@ -999,10 +1012,7 @@ class PoBotV2(discord.Client):
         try:
             message = await channel.fetch_message(int(message_id))
         except discord.NotFound:
-            raise RuntimeError(
-                "Der gespeicherte Discord-Post wurde entfernt oder archiviert; "
-                "der automatische Refresh erstellt ihn nicht erneut."
-            )
+            raise MissingStoredPost(channel_id, message_id)
         if message.author.id != self.user.id:
             raise RuntimeError("Der gespeicherte Post gehört nicht zu diesem Bot.")
         p0_context = await self.api.get_p0_context(guild, raid_id)
@@ -1841,6 +1851,22 @@ class PoBotV2(discord.Client):
         EMOJI_CACHE.update({_emoji_key(emoji.name): str(emoji) for emoji in emojis})
         print(f"P0-Bot V2 Emoji-Cache: {len(EMOJI_CACHE)} Emojis geladen.")
 
+    async def refresh_scheduled_post(self, guild: GuildIdentity, raid: dict[str, Any]) -> None:
+        raid_id = required(raid.get("raidId"), "raid_id")
+        key = (guild.guild_id, raid_id)
+        target = (clean(raid.get("discordChannelId")), clean(raid.get("discordMessageId")))
+        if self._missing_refresh_posts.get(key) == target:
+            return
+        try:
+            await self.refresh_existing_post(guild, raid_id)
+        except MissingStoredPost as error:
+            # Only a confirmed Discord 404 suppresses the automatic retry.
+            # A replacement ID is retried; transient HTTP errors still propagate.
+            self._missing_refresh_posts[key] = (error.channel_id, error.message_id)
+            print(f"V2-Autorefresh beendet für {guild.guild_id}/{raid_id}: {error}")
+        else:
+            self._missing_refresh_posts.pop(key, None)
+
     async def refresh_loop(self) -> None:
         await self.wait_until_ready()
         while not self.is_closed():
@@ -1862,7 +1888,7 @@ class PoBotV2(discord.Client):
                     if not clean(raid.get("discordMessageId")):
                         continue
                     try:
-                        await self.refresh_existing_post(guild, required(raid.get("raidId"), "raid_id"))
+                        await self.refresh_scheduled_post(guild, raid)
                     except Exception as error:
                         print(
                             f"V2-Refresh übersprungen für {guild.guild_id}/"
