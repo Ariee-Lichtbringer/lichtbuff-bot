@@ -66,11 +66,25 @@ class ReminderTests(unittest.IsolatedAsyncioTestCase):
         self.history_messages=[previous]
         result=await self.send({**self.payload,'postId':'stable-post'})
         self.assertEqual(result['messageId'],'123');self.assertFalse(self.sent)
-    async def test_checkmark_is_removed_after_priority_deleted(self):
-        result=await self.send({**self.payload,'messageId':'456','completedCharacters':['Player']})
-        self.assertIn('Player** ✅',self.edits[-1]['content'])
-        result=await self.send({**self.payload,'messageId':'456','completedCharacters':[]})
-        self.assertNotIn('Player** ✅',self.edits[-1]['content']);self.assertFalse(self.sent)
+    async def test_only_missing_names_are_shown_and_completed_names_disappear(self):
+        result=await self.send({**self.payload,'messageId':'456','trackedCharacters':['Player','Done'],'missingCharacters':['Player'],'completedCharacters':['Done']})
+        self.assertEqual(result['count'],1)
+        self.assertIn('• **Player**',self.edits[-1]['content'])
+        self.assertNotIn('Done',self.edits[-1]['content'])
+        self.assertIn('fehlt noch die Prio',self.edits[-1]['content'])
+        await self.send({**self.payload,'messageId':'456','trackedCharacters':['Player'],'missingCharacters':[],'completedCharacters':['Player']})
+        self.assertNotIn('Player',self.edits[-1]['content'])
+        self.assertIn('Keine offenen Prio-Einträge',self.edits[-1]['content'])
+        await self.send({**self.payload,'messageId':'456','completedCharacters':[]})
+        self.assertIn('• **Player**',self.edits[-1]['content']);self.assertFalse(self.sent)
+    async def test_empty_missing_list_does_not_fall_back_or_create_new_post(self):
+        result=await self.send({**self.payload,'trackedCharacters':['Done'],'missingCharacters':[]})
+        self.assertEqual(result['count'],0);self.assertFalse(self.sent)
+    async def test_legacy_roster_excludes_completed_and_deduplicates(self):
+        payload={**self.payload,'trackedCharacters':['Done','Player','player',''],'completedCharacters':['done']}
+        del payload['missingCharacters']
+        result=await self.send(payload)
+        self.assertEqual(result['count'],1);self.assertNotIn('Done',self.sent[0])
     def test_berlin_summer_and_winter_cutoff(self):
         reason=self.scope['reminder_delivery_skip_reason']
         for date,utc_hour in [('2026-07-01',20),('2026-12-01',21)]:

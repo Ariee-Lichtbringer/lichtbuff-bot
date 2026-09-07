@@ -1518,27 +1518,27 @@ class PoBotV2(discord.Client):
         if not hasattr(channel, "send"):
             raise ValueError("Der Discord-Channel kann keine Nachrichten empfangen.")
 
-        missing_characters: list[str] = []
-        seen: set[str] = set()
-        tracked_characters = list(
-            payload.get("trackedCharacters") or payload.get("missingCharacters") or []
-        )
-        for raw_name in tracked_characters:
-            name = clean(raw_name)
-            key = name.casefold()
-            if not name or key in seen:
-                continue
-            seen.add(key)
-            missing_characters.append(name)
-        if not missing_characters and not clean(payload.get("messageId")):
-            return {"count": 0, "messageId": ""}
-
         completed = {
             clean(name).casefold()
             for name in list(payload.get("completedCharacters") or [])
             if clean(name)
         }
-        all_completed = all(name.casefold() in completed for name in missing_characters)
+        missing_characters: list[str] = []
+        seen: set[str] = set()
+        # An explicitly empty missing list means everyone is done. Never fall
+        # back to the full roster in that case; legacy jobs use completed names.
+        candidates = payload.get("missingCharacters")
+        if candidates is None:
+            candidates = payload.get("trackedCharacters") or []
+        for raw_name in candidates:
+            name = clean(raw_name)
+            key = name.casefold()
+            if not name or key in seen or key in completed:
+                continue
+            seen.add(key)
+            missing_characters.append(name)
+        if not missing_characters and not clean(payload.get("messageId")):
+            return {"count": 0, "messageId": ""}
 
         raid_name = clean(payload.get("raidName")) or clean(payload.get("raid")).upper() or "Raid"
         raid_time = clean(payload.get("raidTime"))
@@ -1554,22 +1554,15 @@ class PoBotV2(discord.Client):
         heading += "**\n\n"
         message = (
             heading
-            + "Prio-Status der angemeldeten Charaktere:\n"
-            + "\n".join(
-                f"• **{name}**{' ✅' if original.casefold() in completed else ''}"
-                for original, name in zip(missing_characters, escaped_names)
-            )
-            + (
-                "\n\n✅ Alle aufgeführten Charaktere haben ihre Prio eingetragen."
-                if all_completed
-                else f"\n\nBitte tragt eure Prio jetzt auf {site_link} ein."
-            )
+            + "Bei folgenden angemeldeten Charakteren fehlt noch die Prio:\n"
+            + "\n".join(f"• **{name}**" for name in escaped_names)
+            + f"\n\nBitte tragt eure Prio auf {site_link} ein. Sobald sie gespeichert ist, verschwindet euer Name aus dieser Liste."
         )
-        if prio_pin:
+        if prio_pin and missing_characters:
             message += f"\n**Prio-PIN:** `{discord.utils.escape_markdown(prio_pin)}`"
 
         if not missing_characters:
-            message = heading + "Keine aktiven Anmeldungen für diesen Raid."
+            message = heading + "✅ Keine offenen Prio-Einträge: Für diesen Raid muss aktuell niemand erinnert werden."
         marker = f"Post-ID: {clean(payload.get('postId'))}" if payload.get("postId") else ""
         content = copyright_text(message[:1800] + ("\n" + marker if marker else ""))
         message_id = clean(payload.get("messageId"))
