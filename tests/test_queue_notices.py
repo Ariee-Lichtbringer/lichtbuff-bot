@@ -54,5 +54,13 @@ class NoticeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(good.send.await_count,2)
     def test_each_type_renders_without_account_secrets(self):
         for kind in NOTICE_TYPES:
-            body=render_notice(kind,{'playerPin':'SECRET','character':'Tester'},N(guild_slug='g'))
+            body=render_notice(kind,{'playerPin':'SECRET','character':'Tester','event':'raid_transfer'},N(guild_slug='g'))
             self.assertNotIn('SECRET',body);self.assertTrue(body)
+
+    def test_points_notice_reports_committed_balance(self):
+        p={'player':'Mála','raidName':'MC','raidDate':'2026-09-08','item':'Magierklinge','points':0.5,'oldPoints':2,'newPoints':2.5,'event':'raid_transfer'}
+        body=render_notice('p0plus_points_notice',p,N(guild_slug='g'))
+        self.assertIn('0,5 P0+-Punkte',body);self.assertIn('2,5 Punkte',body);self.assertIn('Magierklinge',body)
+        p.update(event='item_received_clear',newPoints=0)
+        body=render_notice('p0plus_points_notice',p,N(guild_slug='g'))
+        self.assertIn('erhalten',body);self.assertIn('2 → 0',body)
