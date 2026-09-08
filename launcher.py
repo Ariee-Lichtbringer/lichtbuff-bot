@@ -3,8 +3,6 @@ import os
 import subprocess
 import sys
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from threading import Thread
 
 
 def configured_bots(environ):
@@ -25,20 +23,7 @@ def main():
         for name, script in jobs:
             print(f"Starte {name}: {script}", flush=True)
             children.append((name, subprocess.Popen([sys.executable, "-u", script])))
-        # The main bot supplies its own HTTP server. A PO-only service needs one.
-        if not os.environ.get("DISCORD_TOKEN", "").strip():
-            class HealthHandler(BaseHTTPRequestHandler):
-                def do_GET(self):
-                    healthy = all(child.poll() is None for _, child in children)
-                    self.send_response(200 if healthy else 503)
-                    self.end_headers()
-                    self.wfile.write(b"ok" if healthy else b"bot stopped")
-
-                def log_message(self, *args):
-                    pass
-
-            server = ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "8080"))), HealthHandler)
-            Thread(target=server.serve_forever, daemon=True).start()
+        # Each configured worker owns its own health/readiness endpoint.
         while True:
             for name, child in children:
                 code = child.poll()

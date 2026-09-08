@@ -19,6 +19,9 @@ from support_notice import deliver_support_notice
 from bot_offline_notice import send_offline_notice
 from copyright_notice import copyright_text, without_copyright
 import asyncio
+import time
+from queue_delivery import QueueDelivery, queue_request_params, queue_request_completed
+from bot_readiness import start_readiness_server
 from interaction_ack import acknowledge_interaction
 from signup_feedback import confirm_saved_action
 from scheduled_channel_cleanup import cleanup_scheduled_channel
@@ -506,7 +509,10 @@ class LichtLootApi:
         return await asyncio.to_thread(self._request, "GET", {"action": action, **params})
 
     async def post(self, action: str, **params: Any) -> dict[str, Any]:
-        return await asyncio.to_thread(self._request, "POST", {"action": action, **params})
+        params = queue_request_params(action, params)
+        result = await asyncio.to_thread(self._request, "POST", {"action": action, **params})
+        queue_request_completed(action, params)
+        return result
 
     async def list_guilds(self) -> list[GuildIdentity]:
         result = await self.get("lichtbotListGuilds")
@@ -878,6 +884,8 @@ class PoBotV2(discord.Client):
         self.identities = IdentityRegistry(api)
         self._refresh_task: asyncio.Task[None] | None = None
         self._queue_task: asyncio.Task[None] | None = None
+        self._queue_last_success = 0.0
+        self._health_server = None
         self._registered_view_message_ids: set[str] = set()
         self._post_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._missing_refresh_posts: dict[tuple[str, str], tuple[str, str]] = {}
@@ -1176,6 +1184,7 @@ class PoBotV2(discord.Client):
             print(f"V2 konnte doppelte Posts für Raid-ID {raid_id} nicht bereinigen: {error}")
 
     async def setup_hook(self) -> None:
+        self._health_server = start_readiness_server(self)
         await self.identities.refresh()
         await self.refresh_emoji_cache()
         await self.register_persistent_views()
@@ -1212,6 +1221,9 @@ class PoBotV2(discord.Client):
             print(f"P0-Bot V2: {registered} persistente Discord-Post-View(s) registriert.")
         return registered
 
+    def queue_heartbeat(self):
+        self._queue_last_success = time.monotonic()
+
     async def queue_loop(self) -> None:
         await self.wait_until_ready()
         while not self.is_closed():
@@ -1226,7 +1238,11 @@ class PoBotV2(discord.Client):
                         "p0plus_points_notice,p0plus_resolution_notice,player_login_approval_notice,po_approval_notice,po_rejection_notice,po_release_request_notice,raid_calendar,raid_signup_notice,raid_status_staff_notice"
                     ),
                     limit="20",
+                    claimMode="manual-v1",
                 )
+                if result.get("claimMode") != "manual-v1":
+                    raise RuntimeError("API muss vor dem Bot aktualisiert werden: manuelle Queue-Claims fehlen")
+                self.queue_heartbeat()
                 for item in list(result.get("items") or []):
                     queue_type = clean(item.get("type")).lower()
                     guild_slug = clean(item.get("guildSlug") or item.get("guild")).lower()
@@ -1236,240 +1252,248 @@ class PoBotV2(discord.Client):
                     if guild is None and queue_type != "po_support_notice":
                         print(f"V2 Queue übersprungen: unbekannte Gilde {guild_slug}.")
                         continue
-                    try:
-                        if queue_type in NOTICE_TYPES:
-                            try:
-                                mid=await deliver_queue_notice(self,guild,queue_type,payload,row_number,discord)
-                                await self.api.post("lichtbotResolveQueue",guild=guild.guild_slug,guildId=guild.guild_id,rowNumber=row_number,messageId=mid)
-                            except (ValueError, discord.Forbidden, discord.NotFound) as error:
-                                await self.api.post("lichtbotFailQueue",guild=guild.guild_slug,guildId=guild.guild_id,rowNumber=row_number,reason=str(error))
+                    async with QueueDelivery(self.api, guild_slug, row_number,
+                                             enabled=queue_type != "po_support_notice",
+                                             heartbeat=self.queue_heartbeat) as delivery:
+                        if not delivery.acquired:
                             continue
-                        if queue_type == "po_support_notice":
-                            claim = await self.api.post("botClaimSupportNotice", id=row_number)
-                            if not claim.get("claimed"):
-                                await self.api.post("lichtbotResolveQueue", guild=guild_slug, rowNumber=row_number)
+                        try:
+                            if queue_type in NOTICE_TYPES:
+                                try:
+                                    mid=await deliver_queue_notice(self,guild,queue_type,payload,row_number,discord)
+                                    await self.api.post("lichtbotResolveQueue",guild=guild.guild_slug,guildId=guild.guild_id,rowNumber=row_number,messageId=mid)
+                                except (ValueError, discord.Forbidden, discord.NotFound) as error:
+                                    await self.api.post("lichtbotFailQueue",guild=guild.guild_slug,guildId=guild.guild_id,rowNumber=row_number,reason=str(error))
                                 continue
-                            try:
-                                message_id = await deliver_support_notice(self, claim["payload"], discord)
-                                state, delivery_error = "sent", ""
-                            except Exception as error:
-                                message_id, state, delivery_error = "", "failed", type(error).__name__
-                            await self.api.post("botFinishSupportNotice", id=row_number,
-                                                state=state, messageId=message_id, error=delivery_error)
-                            continue
-                        if queue_type == "active_signup_refresh":
-                            raid_id = required(payload.get("raidId"), "raid_id")
-                            helper = await self.api.get_raid(guild, raid_id)
-                            raid = dict(helper.get("raid") or {})
-                            if _active_signup_refresh_allowed(raid):
-                                await self.refresh_existing_post(guild, raid_id)
-                            await self.api.post("lichtbotResolveQueue", guild=guild.guild_slug,
-                                                guildId=guild.guild_id, rowNumber=row_number)
-                            continue
-                        if queue_type == "po_offline_notice":
-                            notice_message_id = await send_offline_notice(self, payload, row_number, discord)
-                            await self.api.post("lichtbotResolveQueue", guild=guild.guild_slug,
-                                                guildId=guild.guild_id, rowNumber=row_number, messageId=notice_message_id)
-                            continue
-                        if queue_type == "player_analysis_dm":
-                            await deliver_player_analysis(self, guild, payload, row_number, discord, copyright_text)
-                            continue
-                        if queue_type == "raid_workbook_post":
-                            if clean(payload.get("guildId")) != guild.guild_id or clean(payload.get("guildSlug")) != guild.guild_slug:
-                                raise ValueError("Raid-Auswertung gehört nicht zur Queue-Gilde.")
-                            message = await post_raid_workbook(
-                                self, payload,
-                                {guild.guild_slug: {"discordGuildId": guild.discord_guild_id}},
-                                discord,
+                            if queue_type == "po_support_notice":
+                                claim = await self.api.post("botClaimSupportNotice", id=row_number)
+                                if not claim.get("claimed"):
+                                    await self.api.post("lichtbotResolveQueue", guild=guild_slug, rowNumber=row_number)
+                                    continue
+                                try:
+                                    message_id = await deliver_support_notice(self, claim["payload"], discord)
+                                    state, delivery_error = "sent", ""
+                                except Exception as error:
+                                    message_id, state, delivery_error = "", "failed", type(error).__name__
+                                await self.api.post("botFinishSupportNotice", id=row_number,
+                                                    state=state, messageId=message_id, error=delivery_error)
+                                continue
+                            if queue_type == "active_signup_refresh":
+                                raid_id = required(payload.get("raidId"), "raid_id")
+                                helper = await self.api.get_raid(guild, raid_id)
+                                raid = dict(helper.get("raid") or {})
+                                if _active_signup_refresh_allowed(raid):
+                                    await self.refresh_existing_post(guild, raid_id)
+                                await self.api.post("lichtbotResolveQueue", guild=guild.guild_slug,
+                                                    guildId=guild.guild_id, rowNumber=row_number)
+                                continue
+                            if queue_type == "po_offline_notice":
+                                notice_message_id = await send_offline_notice(self, payload, row_number, discord)
+                                await self.api.post("lichtbotResolveQueue", guild=guild.guild_slug,
+                                                    guildId=guild.guild_id, rowNumber=row_number, messageId=notice_message_id)
+                                continue
+                            if queue_type == "player_analysis_dm":
+                                await deliver_player_analysis(self, guild, payload, row_number, discord, copyright_text)
+                                continue
+                            if queue_type == "raid_workbook_post":
+                                if clean(payload.get("guildId")) != guild.guild_id or clean(payload.get("guildSlug")) != guild.guild_slug:
+                                    raise ValueError("Raid-Auswertung gehört nicht zur Queue-Gilde.")
+                                message = await post_raid_workbook(
+                                    self, payload,
+                                    {guild.guild_slug: {"discordGuildId": guild.discord_guild_id}},
+                                    discord,
+                                )
+                                await self.api.post(
+                                    "lichtbotResolveQueue", guild=guild.guild_slug,
+                                    guildId=guild.guild_id, guildSlug=guild.guild_slug,
+                                    rowNumber=row_number, messageId=str(message.id), messageChannelId=str(message.channel.id),
+                                )
+                                print(f"Raid-Auswertung zugestellt: {guild.guild_slug}/{payload.get('analysisId')} -> {message.id}")
+                                continue
+                            if queue_type in {"p0plus_backup_export", "p0plus_transfer_export"}:
+                                message_id = await post_p0_backup_export(self, guild, payload, row_number)
+                                await self.api.post(
+                                    "lichtbotResolveQueue", guild=guild.guild_slug,
+                                    guildId=guild.guild_id, guildSlug=guild.guild_slug,
+                                    rowNumber=row_number, messageId=message_id,
+                                )
+                                print(f"P0+-Sicherung zugestellt: {guild.guild_slug}/{row_number} -> {message_id}")
+                                continue
+                            if queue_type == "raid_announcement_role_notice":
+                                delivered = await self.send_raid_announcement_notice(guild, payload)
+                                await self.api.post(
+                                    "lichtbotResolveQueue",
+                                    guild=guild.guild_slug,
+                                    guildId=guild.guild_id,
+                                    guildSlug=guild.guild_slug,
+                                    rowNumber=row_number,
+                                )
+                                print(
+                                    f"V2 Erstellungs-DM verarbeitet: "
+                                    f"{guild.guild_id}/{row_number} -> {delivered} Empfänger"
+                                )
+                                continue
+                            if queue_type == "loot_master_leadpin_notice":
+                                delivered = await self.send_loot_master_leadpin_notice(guild, payload)
+                                await self.api.post(
+                                    "lichtbotResolveQueue",
+                                    guild=guild.guild_slug,
+                                    guildId=guild.guild_id,
+                                    guildSlug=guild.guild_slug,
+                                    rowNumber=row_number,
+                                )
+                                print(
+                                    f"V2 LeadPIN-DM verarbeitet: "
+                                    f"{guild.guild_id}/{row_number} -> {delivered} Empfänger"
+                                )
+                                continue
+                            if queue_type == "player_login_granted_notice":
+                                delivered = await self.send_player_login_granted_notice(guild, payload)
+                                await self.api.post(
+                                    "lichtbotResolveQueue",
+                                    guild=guild.guild_slug,
+                                    guildId=guild.guild_id,
+                                    guildSlug=guild.guild_slug,
+                                    rowNumber=row_number,
+                                )
+                                print(
+                                    f"V2 SpielerLogin-Freischaltungs-DM verarbeitet: "
+                                    f"{guild.guild_id}/{row_number} -> {delivered} Empfänger"
+                                )
+                                continue
+                            if queue_type == "dkp_discord_post":
+                                message_id = await send_dkp_notice(self, guild, payload, row_number, discord)
+                                await self.api.post("lichtbotResolveQueue", guild=guild.guild_slug,
+                                                    guildId=guild.guild_id, rowNumber=row_number, messageId=message_id)
+                                continue
+                            if queue_type == "raid_missing_prio_reminder":
+                                prepared = await self.api.post(
+                                    "lichtbotPreparePrioReminder", guild=guild.guild_slug,
+                                    guildId=guild.guild_id, rowNumber=row_number,
+                                )
+                                if prepared.get("skipped"):
+                                    reminder_result = {"skipped": prepared["skipped"]}
+                                else:
+                                    reminder_result = await self.send_missing_prio_reminder(guild, prepared["payload"])
+                                    if reminder_result.get("messageId"):
+                                        await self.api.post(
+                                            "lichtbotCompletePrioReminder", guild=guild.guild_slug,
+                                            guildId=guild.guild_id, postId=prepared["postId"],
+                                            leaseToken=prepared["leaseToken"], messageId=reminder_result["messageId"],
+                                        )
+                                await self.api.post(
+                                    "lichtbotResolveQueue",
+                                    guild=guild.guild_slug,
+                                    guildId=guild.guild_id,
+                                    guildSlug=guild.guild_slug,
+                                    rowNumber=row_number,
+                                    messageId=reminder_result.get("messageId", ""),
+                                )
+                                print(
+                                    f"V2 Prio-Erinnerung verarbeitet: "
+                                    f"{guild.guild_id}/{row_number} -> "
+                                    f"{reminder_result.get('count', 0)} Charaktere"
+                                )
+                                continue
+                            if queue_type in {"raid_announcement_delete", "po_post_delete"}:
+                                await self.delete_queued_post(guild, payload)
+                                await self.api.post(
+                                    "lichtbotResolveQueue",
+                                    guild=guild.guild_slug,
+                                    guildId=guild.guild_id,
+                                    guildSlug=guild.guild_slug,
+                                    rowNumber=row_number,
+                                )
+                                print(
+                                    f"V2 Queue-Löschung verarbeitet: "
+                                    f"{guild.guild_id}/{row_number}"
+                                )
+                                continue
+                            if queue_type == "raid_announcement_refresh":
+                                await self.refresh_existing_post(guild, required(payload.get("raidId"), "raid_id"))
+                                await self.api.post("lichtbotResolveQueue", guild=guild.guild_slug,
+                                                    guildId=guild.guild_id, rowNumber=row_number)
+                                continue
+                            raid_id = required(
+                                payload.get("raidId") or payload.get("lichtlootRaidId"),
+                                "raid_id",
                             )
-                            await self.api.post(
-                                "lichtbotResolveQueue", guild=guild.guild_slug,
-                                guildId=guild.guild_id, guildSlug=guild.guild_slug,
-                                rowNumber=row_number, messageId=str(message.id), messageChannelId=str(message.channel.id),
+                            force_new = clean(payload.get("forceNewMessage")).lower() in {
+                                "1", "true", "yes", "ja"
+                            }
+                            raid_signup_override = _queue_raid_signup_override(payload)
+                            if payload.get("source") == "raid_helper_schedule":
+                                scheduled_helper = await self.api.get_raid(guild, raid_id)
+                                if clean(scheduled_helper.get("raid", {}).get("raidDate")) != clean(payload.get("raidDate")):
+                                    raise RuntimeError("Wochenrhythmus: Raidtermin stimmt nicht mit dem Auftrag überein.")
+                            posted = await self.create_or_replace_post(
+                                guild,
+                                raid_id,
+                                force_replace=force_new,
+                                force_origin_message_id=clean(payload.get("discordMessageId") or payload.get("messageId")),
+                                channel_id_override=clean(
+                                    payload.get("channelId")
+                                    or payload.get("discordChannelId")
+                                    or payload.get("targetChannelId")
+                                    or payload.get("sourceChannelId")
+                                ),
+                                raid_signup_enabled_override=raid_signup_override,
+                                legacy_post_key=clean(
+                                    payload.get("postKey")
+                                    or payload.get("poPostKey")
+                                    or payload.get("postId")
+                                ),
                             )
-                            print(f"Raid-Auswertung zugestellt: {guild.guild_slug}/{payload.get('analysisId')} -> {message.id}")
-                            continue
-                        if queue_type in {"p0plus_backup_export", "p0plus_transfer_export"}:
-                            message_id = await post_p0_backup_export(self, guild, payload, row_number)
-                            await self.api.post(
-                                "lichtbotResolveQueue", guild=guild.guild_slug,
-                                guildId=guild.guild_id, guildSlug=guild.guild_slug,
-                                rowNumber=row_number, messageId=message_id,
-                            )
-                            print(f"P0+-Sicherung zugestellt: {guild.guild_slug}/{row_number} -> {message_id}")
-                            continue
-                        if queue_type == "raid_announcement_role_notice":
-                            delivered = await self.send_raid_announcement_notice(guild, payload)
-                            await self.api.post(
-                                "lichtbotResolveQueue",
-                                guild=guild.guild_slug,
-                                guildId=guild.guild_id,
-                                guildSlug=guild.guild_slug,
-                                rowNumber=row_number,
-                            )
-                            print(
-                                f"V2 Erstellungs-DM verarbeitet: "
-                                f"{guild.guild_id}/{row_number} -> {delivered} Empfänger"
-                            )
-                            continue
-                        if queue_type == "loot_master_leadpin_notice":
-                            delivered = await self.send_loot_master_leadpin_notice(guild, payload)
-                            await self.api.post(
-                                "lichtbotResolveQueue",
-                                guild=guild.guild_slug,
-                                guildId=guild.guild_id,
-                                guildSlug=guild.guild_slug,
-                                rowNumber=row_number,
-                            )
-                            print(
-                                f"V2 LeadPIN-DM verarbeitet: "
-                                f"{guild.guild_id}/{row_number} -> {delivered} Empfänger"
-                            )
-                            continue
-                        if queue_type == "player_login_granted_notice":
-                            delivered = await self.send_player_login_granted_notice(guild, payload)
-                            await self.api.post(
-                                "lichtbotResolveQueue",
-                                guild=guild.guild_slug,
-                                guildId=guild.guild_id,
-                                guildSlug=guild.guild_slug,
-                                rowNumber=row_number,
-                            )
-                            print(
-                                f"V2 SpielerLogin-Freischaltungs-DM verarbeitet: "
-                                f"{guild.guild_id}/{row_number} -> {delivered} Empfänger"
-                            )
-                            continue
-                        if queue_type == "dkp_discord_post":
-                            message_id = await send_dkp_notice(self, guild, payload, row_number, discord)
-                            await self.api.post("lichtbotResolveQueue", guild=guild.guild_slug,
-                                                guildId=guild.guild_id, rowNumber=row_number, messageId=message_id)
-                            continue
-                        if queue_type == "raid_missing_prio_reminder":
-                            prepared = await self.api.post(
-                                "lichtbotPreparePrioReminder", guild=guild.guild_slug,
-                                guildId=guild.guild_id, rowNumber=row_number,
-                            )
-                            if prepared.get("skipped"):
-                                reminder_result = {"skipped": prepared["skipped"]}
-                            else:
-                                reminder_result = await self.send_missing_prio_reminder(guild, prepared["payload"])
-                                if reminder_result.get("messageId"):
-                                    await self.api.post(
-                                        "lichtbotCompletePrioReminder", guild=guild.guild_slug,
-                                        guildId=guild.guild_id, postId=prepared["postId"],
-                                        leaseToken=prepared["leaseToken"], messageId=reminder_result["messageId"],
-                                    )
-                            await self.api.post(
-                                "lichtbotResolveQueue",
-                                guild=guild.guild_slug,
-                                guildId=guild.guild_id,
-                                guildSlug=guild.guild_slug,
-                                rowNumber=row_number,
-                                messageId=reminder_result.get("messageId", ""),
-                            )
-                            print(
-                                f"V2 Prio-Erinnerung verarbeitet: "
-                                f"{guild.guild_id}/{row_number} -> "
-                                f"{reminder_result.get('count', 0)} Charaktere"
-                            )
-                            continue
-                        if queue_type in {"raid_announcement_delete", "po_post_delete"}:
-                            await self.delete_queued_post(guild, payload)
-                            await self.api.post(
-                                "lichtbotResolveQueue",
-                                guild=guild.guild_slug,
-                                guildId=guild.guild_id,
-                                guildSlug=guild.guild_slug,
-                                rowNumber=row_number,
-                            )
-                            print(
-                                f"V2 Queue-Löschung verarbeitet: "
-                                f"{guild.guild_id}/{row_number}"
-                            )
-                            continue
-                        if queue_type == "raid_announcement_refresh":
-                            await self.refresh_existing_post(guild, required(payload.get("raidId"), "raid_id"))
-                            await self.api.post("lichtbotResolveQueue", guild=guild.guild_slug,
-                                                guildId=guild.guild_id, rowNumber=row_number)
-                            continue
-                        raid_id = required(
-                            payload.get("raidId") or payload.get("lichtlootRaidId"),
-                            "raid_id",
-                        )
-                        force_new = clean(payload.get("forceNewMessage")).lower() in {
-                            "1", "true", "yes", "ja"
-                        }
-                        raid_signup_override = _queue_raid_signup_override(payload)
-                        if payload.get("source") == "raid_helper_schedule":
-                            scheduled_helper = await self.api.get_raid(guild, raid_id)
-                            if clean(scheduled_helper.get("raid", {}).get("raidDate")) != clean(payload.get("raidDate")):
-                                raise RuntimeError("Wochenrhythmus: Raidtermin stimmt nicht mit dem Auftrag überein.")
-                        posted = await self.create_or_replace_post(
-                            guild,
-                            raid_id,
-                            force_replace=force_new,
-                            force_origin_message_id=clean(payload.get("discordMessageId") or payload.get("messageId")),
-                            channel_id_override=clean(
-                                payload.get("channelId")
-                                or payload.get("discordChannelId")
-                                or payload.get("targetChannelId")
-                                or payload.get("sourceChannelId")
-                            ),
-                            raid_signup_enabled_override=raid_signup_override,
-                            legacy_post_key=clean(
-                                payload.get("postKey")
-                                or payload.get("poPostKey")
-                                or payload.get("postId")
-                            ),
-                        )
-                        if payload.get("source") == "raid_helper_schedule" and _truthy(payload.get("clearChannelBeforePost")):
-                            removed = await cleanup_scheduled_channel(self, guild, posted, discord)
-                            print(f"V2 Wochenrhythmus-Kanalbereinigung: {removed} ältere Nachrichten entfernt; neuer Post {posted.discord_message_id} bleibt erhalten.")
-                        await self.api.post(
-                            "lichtbotResolveQueue",
-                            guild=guild.guild_slug,
-                            guildId=guild.guild_id,
-                            guildSlug=guild.guild_slug,
-                            rowNumber=row_number,
-                            messageId=posted.discord_message_id,
-                        )
-                        print(f"V2 Queue verarbeitet: {guild.guild_id}/{raid_id} -> {row_number}")
-                    except Exception as error:
-                        print(f"V2 Queue fehlgeschlagen ({guild.guild_id}/{row_number}): {error}")
-                        permanent_target_error = (
-                            isinstance(error, discord.NotFound) or any(marker in clean(error).casefold() for marker in (
-                                "anderen discord-gilde", "backup-channel gehört nicht", "gespeicherte discord-post wurde entfernt",
-                                "gespeicherte post gehört nicht", "gespeicherte discord-kanal existiert nicht",
-                            ))
-                        )
-                        if permanent_target_error or (payload.get("source") == "raid_helper_schedule" and any(
-                            marker in clean(error).casefold() for marker in ("raid wurde nicht gefunden", "raid ist archiviert", "raidtermin stimmt nicht")
-                        )):
-                            await self.api.post("lichtbotFailQueue", guild=guild.guild_slug, guildId=guild.guild_id,
-                                                rowNumber=row_number, reason=str(error))
-                            continue
-                        terminal_error = any(
-                            marker in clean(error).casefold()
-                            for marker in (
-                                "raid wurde nicht gefunden",
-                                "raid ist archiviert oder nicht mehr aktiv",
-                                "gespeicherte discord-post fehlt",
-                                "pflichtfeld fehlt: raid_id",
-                            )
-                        )
-                        if terminal_error:
+                            if payload.get("source") == "raid_helper_schedule" and _truthy(payload.get("clearChannelBeforePost")):
+                                removed = await cleanup_scheduled_channel(self, guild, posted, discord)
+                                print(f"V2 Wochenrhythmus-Kanalbereinigung: {removed} ältere Nachrichten entfernt; neuer Post {posted.discord_message_id} bleibt erhalten.")
                             await self.api.post(
                                 "lichtbotResolveQueue",
                                 guild=guild.guild_slug,
                                 guildId=guild.guild_id,
                                 guildSlug=guild.guild_slug,
                                 rowNumber=row_number,
+                                messageId=posted.discord_message_id,
                             )
-                            print(
-                                f"V2 Queue verworfen (nicht mehr ausführbar): "
-                                f"{guild.guild_id}/{row_number}"
+                            print(f"V2 Queue verarbeitet: {guild.guild_id}/{raid_id} -> {row_number}")
+                        except Exception as error:
+                            print(f"V2 Queue fehlgeschlagen ({guild_slug}/{row_number}): {error}")
+                            permanent_target_error = (
+                                isinstance(error, discord.NotFound) or any(marker in clean(error).casefold() for marker in (
+                                    "anderen discord-gilde", "backup-channel gehört nicht", "gespeicherte discord-post wurde entfernt",
+                                    "gespeicherte post gehört nicht", "gespeicherte discord-kanal existiert nicht",
+                                ))
                             )
+                            if permanent_target_error or (payload.get("source") == "raid_helper_schedule" and any(
+                                marker in clean(error).casefold() for marker in ("raid wurde nicht gefunden", "raid ist archiviert", "raidtermin stimmt nicht")
+                            )):
+                                await self.api.post("lichtbotFailQueue", guild=guild.guild_slug, guildId=guild.guild_id,
+                                                    rowNumber=row_number, reason=str(error))
+                                continue
+                            terminal_error = any(
+                                marker in clean(error).casefold()
+                                for marker in (
+                                    "raid wurde nicht gefunden",
+                                    "raid ist archiviert oder nicht mehr aktiv",
+                                    "gespeicherte discord-post fehlt",
+                                    "pflichtfeld fehlt: raid_id",
+                                )
+                            )
+                            if terminal_error:
+                                await self.api.post(
+                                    "lichtbotResolveQueue",
+                                    guild=guild.guild_slug,
+                                    guildId=guild.guild_id,
+                                    guildSlug=guild.guild_slug,
+                                    rowNumber=row_number,
+                                )
+                                print(
+                                    f"V2 Queue verworfen (nicht mehr ausführbar): "
+                                    f"{guild.guild_id}/{row_number}"
+                                )
+                            elif queue_type != "po_support_notice":
+                                await self.api.post("lichtbotRetryQueue", guild=guild_slug,
+                                                    rowNumber=row_number, reason=type(error).__name__ + ": Zustellung fehlgeschlagen")
             except Exception as error:
                 print(f"V2 Queue konnte nicht geladen werden: {error}")
             await asyncio.sleep(5)
