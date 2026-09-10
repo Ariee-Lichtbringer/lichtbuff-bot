@@ -26,6 +26,18 @@ async def deliver_support_notice(bot, payload, discord):
         if not found:
             raise ValueError('Kein eigener Anmelder im Channel gefunden')
         content = '🛟 **Fehler oder Probleme mit GuildLoot?**\n\nBitte nutzt den Button **„Support · Fehler melden“** unten auf der jeweiligen GuildLoot-Seite. Beschreibt kurz, was ihr tun wolltet und was passiert ist. Einen Screenshot könnt ihr direkt anhängen. Gebt eine E-Mail-Adresse oder euren Discord-Namen an, damit wir euch antworten können.\n\nSo landet eure Meldung direkt beim Support und geht nicht im Channel unter. Danke!\nhttps://lichtloot.de'
+    elif kind == 'reply':
+        user_id = str(payload.get('targetUserId') or '')
+        subject = str(payload.get('subject') or '').strip()
+        content = str(payload.get('message') or '').strip()
+        if not user_id.isdigit() or not 15 <= len(user_id) <= 22 or not subject or len(subject) > 180 or not content or len(content) > 3500:
+            raise ValueError('Ungültige Supportantwort')
+        user = bot.get_user(int(user_id)) or await bot.fetch_user(int(user_id))
+        channel = await user.create_dm()
+        embed = discord.Embed(title=subject, description=content)
+        embed.set_footer(text='GuildLoot Support · Ticket ' + str(payload.get('ticketId') or ''))
+        message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        return str(message.id)
     elif kind == 'ticket':
         user_id = str(payload.get('targetUserId') or '')
         if not user_id.isdigit():
