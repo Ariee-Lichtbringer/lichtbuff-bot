@@ -15,6 +15,7 @@ from __future__ import annotations
 from queue_notices import NOTICE_TYPES, deliver_queue_notice
 from dkp_notice import send_dkp_notice
 
+from addon_link import addon_link_button, load_addon_emoji
 from support_notice import deliver_support_notice
 from bot_offline_notice import send_offline_notice
 from copyright_notice import copyright_text, without_copyright
@@ -1853,6 +1854,7 @@ class PoBotV2(discord.Client):
         application_emojis = []
         try:
             application_emojis.extend(list(await self.fetch_application_emojis()))
+            await load_addon_emoji(self, application_emojis)
         except Exception as error:
             print(f"V2 Application-Emojis konnten nicht geladen werden: {error}")
         APPLICATION_EMOJI_IDS.clear()
@@ -2689,6 +2691,7 @@ class CombinedSignupView(discord.ui.View):
         self.guild_identity = guild
         self.raid_id = required(raid_id, "raid_id")
         self.message_id = required(message_id, "discord_message_id")
+        self.add_item(addon_link_button(guild.guild_slug))
         if not raid_signup_enabled:
             for item in list(self.children):
                 if clean(getattr(item, "custom_id", "")).startswith("p0v2:raid_"):
