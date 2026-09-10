@@ -64,3 +64,28 @@ class NoticeTests(unittest.IsolatedAsyncioTestCase):
         p.update(event='item_received_clear',newPoints=0)
         body=render_notice('p0plus_points_notice',p,N(guild_slug='g'))
         self.assertIn('erhalten',body);self.assertIn('2 → 0',body)
+
+    async def test_release_dm_uses_character_account_and_receipt(self):
+        async def history(**kw):
+            if False: yield None
+        channel=N(id=88,history=history,send=AsyncMock(return_value=N(id=99)))
+        member=N(create_dm=AsyncMock(return_value=channel))
+        server=N(get_member=lambda uid:member if uid==123 else None)
+        bot=N(user=N(id=7),get_guild=lambda _:server,api=N(post=AsyncMock()))
+        payload={'discordUserId':'123','character':'Fixture','raidLabel':'Blackwing Lair'}
+        self.assertIn('po_release_granted_notice',NOTICE_TYPES)
+        self.assertEqual(await deliver_queue_notice(bot,self.guild,'po_release_granted_notice',payload,'q',self.discord),'99')
+        self.assertEqual(bot.api.post.call_args.kwargs['targetId'],'123')
+        payload['deliveryReceipts']={'123':'99'}
+        await deliver_queue_notice(bot,self.guild,'po_release_granted_notice',payload,'q',self.discord)
+        channel.send.assert_awaited_once()
+        payload['discordUserId']=''
+        with self.assertRaises(ValueError):await deliver_queue_notice(bot,self.guild,'po_release_granted_notice',payload,'q',self.discord)
+
+    def test_release_decisions_render_truthfully(self):
+        p={'character':'Fixture','raidLabel':'Blackwing Lair','decision':'revoked','reason':'Ausrüstung','customMessage':'Bitte prüfen'}
+        text=render_notice('po_release_granted_notice',p,self.guild)
+        for value in ('aufgehoben','Blackwing Lair','Ausrüstung','Bitte prüfen'):self.assertIn(value,text)
+        self.assertNotIn('erteilt',text)
+        self.assertIn('Freigabeantrag genehmigt',render_notice('po_approval_notice',{'requestId':'r'},self.guild))
+        self.assertIn('Freigabeantrag abgelehnt',render_notice('po_rejection_notice',{'requestId':'r'},self.guild))

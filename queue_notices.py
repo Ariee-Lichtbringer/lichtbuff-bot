@@ -1,9 +1,18 @@
 """Configured notifications with per-recipient delivery receipts and retry recovery."""
 from datetime import datetime, timezone
 from urllib.parse import urlencode
-NOTICE_TYPES = {"p0plus_points_notice", "p0plus_resolution_notice", "player_login_approval_notice", "po_approval_notice", "po_rejection_notice", "po_release_request_notice", "raid_calendar", "raid_signup_notice", "raid_status_staff_notice"}
+NOTICE_TYPES = {"p0plus_points_notice", "p0plus_resolution_notice", "player_login_approval_notice", "po_approval_notice", "po_rejection_notice", "po_release_request_notice", "po_release_granted_notice", "raid_calendar", "raid_signup_notice", "raid_status_staff_notice"}
 
 def render_notice(kind, p, guild):
+    if kind == "po_release_granted_notice":
+        revoked = p.get("decision") == "revoked"
+        title = "P0-Freigabe aufgehoben" if revoked else "P0-Freigabe erteilt"
+        lines = [title, str(p.get("guildName") or guild.guild_slug),
+                 str(p.get("character") or p.get("player") or ""),
+                 str(p.get("raidLabel") or p.get("raid") or "")]
+        if p.get("reason"): lines.append("Grund: " + str(p["reason"]))
+        if p.get("customMessage"): lines.append(str(p["customMessage"]))
+        return "\n".join(line for line in lines if line)[:3900]
     if kind == "p0plus_points_notice":
         raid = " · ".join(str(p[k]) for k in ("raidName", "raidDate", "raidTime") if p.get(k))
         number = lambda n: format(float(n or 0), "g").replace(".", ",")
@@ -19,7 +28,10 @@ def render_notice(kind, p, guild):
                 f"Dein P0+-Stand für **{item}** ist jetzt **{number(p.get('newPoints'))} Punkte**.\n"
                 "Stand direkt nach dieser Übertragung.")[:3900]
     titles={"po_approval_notice":"P0-Anmeldung freigegeben","po_rejection_notice":"P0-Anmeldung abgelehnt","p0plus_resolution_notice":"P0+-Meldung bearbeitet","player_login_approval_notice":"SpielerLogin wartet auf Freigabe","po_release_request_notice":"Neue P0-Freigabeanfrage","raid_signup_notice":"Raidanmeldung geändert","raid_status_staff_notice":"Raidstatus geändert","raid_calendar":"Raidkalender"}
-    lines=[titles[kind],guild.guild_slug]
+    title = titles[kind]
+    if p.get("requestId") and kind in {"po_approval_notice", "po_rejection_notice"}:
+        title = "Freigabeantrag genehmigt" if kind == "po_approval_notice" else "Freigabeantrag abgelehnt"
+    lines=[title,guild.guild_slug]
     for key in ("character","player","server","raidName","raid","raidDate","raidTime","item","requestType","reason","message"):
         if p.get(key):lines.append(str(p[key]))
     if "correctedPoints" in p:lines.append(f"Korrigierter Punktestand: {p['correctedPoints']}")
@@ -73,7 +85,7 @@ async def deliver_queue_notice(bot, guild, kind, payload, queue_id, discord):
     if kind=="raid_calendar":return await deliver_calendar(bot,guild,payload,queue_id,discord)
     recipients={}
     uid=str(payload.get("discordUserId") or payload.get("userId") or "")
-    if kind == "p0plus_points_notice" and not uid.isdigit():
+    if kind in {"p0plus_points_notice", "po_approval_notice", "po_rejection_notice", "po_release_granted_notice"} and not uid.isdigit():
         raise ValueError("Kein verknüpftes Discord-Konto für diese persönliche P0+-Nachricht")
     if uid.isdigit():
         recipients[uid]=None  # Resolve membership inside this recipient's try block.
