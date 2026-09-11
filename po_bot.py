@@ -1246,7 +1246,7 @@ class PoBotV2(discord.Client):
                         "raid_announcement_delete,po_post_delete,"
                         "raid_announcement_role_notice,loot_master_leadpin_notice,"
                         "player_login_granted_notice,raid_missing_prio_reminder,dkp_discord_post,p0plus_backup_export,p0plus_transfer_export,raid_workbook_post,player_analysis_dm,"
-                        "p0plus_points_notice,p0plus_resolution_notice,player_login_approval_notice,po_approval_notice,po_rejection_notice,po_release_granted_notice,po_release_request_notice,raid_calendar,raid_signup_notice,raid_status_staff_notice"
+                        "p0plus_points_notice,p0plus_resolution_notice,player_login_approval_notice,po_approval_notice,po_rejection_notice,po_release_granted_notice,po_release_received_notice,po_release_request_notice,raid_calendar,raid_signup_notice,raid_status_staff_notice"
                     ),
                     limit="20",
                     claimMode="manual-v1",

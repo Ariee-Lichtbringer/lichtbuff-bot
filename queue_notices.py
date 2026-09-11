@@ -1,9 +1,16 @@
 """Configured notifications with per-recipient delivery receipts and retry recovery."""
 from datetime import datetime, timezone
 from urllib.parse import urlencode
-NOTICE_TYPES = {"p0plus_points_notice", "p0plus_resolution_notice", "player_login_approval_notice", "po_approval_notice", "po_rejection_notice", "po_release_request_notice", "po_release_granted_notice", "raid_calendar", "raid_signup_notice", "raid_status_staff_notice"}
+NOTICE_TYPES = {"p0plus_points_notice", "p0plus_resolution_notice", "player_login_approval_notice", "po_approval_notice", "po_rejection_notice", "po_release_request_notice", "po_release_granted_notice", "po_release_received_notice", "raid_calendar", "raid_signup_notice", "raid_status_staff_notice"}
 
 def render_notice(kind, p, guild):
+    guild_name = str(p.get("guildName") or {"lichtloot":"Lichtbringer", "lichtbringer":"Lichtbringer", "nachtloot":"Die Nachtwächter"}.get(guild.guild_slug, guild.guild_slug))
+    if kind == "po_release_received_notice":
+        character = str(p.get("character") or p.get("player") or "deinen Charakter")
+        raid = str(p.get("raid") or "").upper()
+        return (f"📨 **PO-Antrag eingegangen**\n\nDein PO-Antrag für **{character}**"
+                + (f" ({raid})" if raid else "")
+                + f" ist bei **{guild_name}** eingegangen.\n\nDu erhältst eine Nachricht, sobald er geprüft wurde.")[:3900]
     if kind == "po_release_granted_notice":
         revoked = p.get("decision") == "revoked"
         title = "P0-Freigabe aufgehoben" if revoked else "P0-Freigabe erteilt"
@@ -42,7 +49,7 @@ def render_notice(kind, p, guild):
         lines += [f"{e.get('date','')} {e.get('time','')} · {e.get('name','Raid')}" for e in p.get("events",[]) if str(e.get("date",""))>=today]
     template=str(p.get("messageTemplate") or "")
     if template:
-        values={**p,"gilde":guild.guild_slug,"charakter":p.get("character") or p.get("player",""),"klasse":p.get("className",""),"link":link}
+        values={**p,"gilde":guild_name,"antrag":{"recruit":"Rekrutenstatus aufheben","p1p3":"Rekrutenstatus aufheben","p0":"P0-Freigabe","po":"PO-Freigabe"}.get(str(p.get("requestType") or ""),"PO-Freigabe"),"charakter":p.get("character") or p.get("player",""),"klasse":p.get("className",""),"link":link}
         for k,v in values.items():template=template.replace("{"+k+"}",str(v))
         return template[:3900]
     return "\n".join(lines)[:3900]
@@ -85,7 +92,7 @@ async def deliver_queue_notice(bot, guild, kind, payload, queue_id, discord):
     if kind=="raid_calendar":return await deliver_calendar(bot,guild,payload,queue_id,discord)
     recipients={}
     uid=str(payload.get("discordUserId") or payload.get("userId") or "")
-    if kind in {"p0plus_points_notice", "po_approval_notice", "po_rejection_notice", "po_release_granted_notice"} and not uid.isdigit():
+    if kind in {"p0plus_points_notice", "po_approval_notice", "po_rejection_notice", "po_release_granted_notice", "po_release_received_notice"} and not uid.isdigit():
         raise ValueError("Kein verknüpftes Discord-Konto für diese persönliche P0+-Nachricht")
     if uid.isdigit():
         recipients[uid]=None  # Resolve membership inside this recipient's try block.
