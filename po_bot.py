@@ -2862,6 +2862,28 @@ class CombinedSignupView(discord.ui.View):
         except Exception as error:
             await interaction.followup.send(f"⚠️ P0-Anmeldung fehlgeschlagen: {error}", ephemeral=True)
 
+    @discord.ui.button(label="Ausloggen", style=discord.ButtonStyle.secondary, custom_id="p0v2:p0_logout", row=2)
+    async def p0_logout(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await acknowledge_interaction(interaction, ephemeral=True, thinking=True):
+            return
+        try:
+            await self.bot.api.unlink_discord_account(self.guild_identity, interaction.user.id)
+        except Exception:
+            await interaction.followup.send(
+                "⚠️ Ausloggen fehlgeschlagen. Bitte versuche es erneut.", ephemeral=True,
+            )
+            return
+        login_view = P0AccountLinkView(
+            self.bot, self.guild_identity, self.raid_id, interaction.channel_id,
+            interaction.message.id,
+        )
+        login_view.children[0].label = "Mit GuildLoot-Account anmelden"
+        await interaction.followup.send(
+            "✅ Ausgeloggt. Du kannst dich jetzt mit einem anderen GuildLoot-Account anmelden. "
+            "Bestehende P0-Einträge und Raidanmeldungen bleiben erhalten.",
+            view=login_view, ephemeral=True,
+        )
+
     @discord.ui.button(label="P0-Eintrag löschen", style=discord.ButtonStyle.danger, custom_id="p0v2:p0_delete", row=2)
     async def p0_delete(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         interaction_channel = getattr(interaction, "channel", None)
