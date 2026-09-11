@@ -614,6 +614,16 @@ class LichtLootApi:
         self.require_guild_response(result, guild)
         return list(result.get("characters") or [])
 
+    async def unlink_discord_account(self, guild: GuildIdentity, discord_user_id: int | str) -> None:
+        result = await self.post(
+            "lichtbotUnlinkDiscordAccount",
+            guild=guild.guild_slug,
+            guildId=guild.guild_id,
+            guildSlug=guild.guild_slug,
+            discordUserId=required(discord_user_id, "discord_user_id"),
+        )
+        self.require_guild_response(result, guild)
+
     async def link_discord_account(
         self,
         guild: GuildIdentity,
@@ -2190,6 +2200,32 @@ class RaidSignupSelectionView(discord.ui.View):
         await confirm_saved_action(
             interaction, self.bot, self.guild_identity, self.raid_id,
             '✅ Raidanmeldung gespeichert.',
+        )
+
+
+    @discord.ui.button(label="Ausloggen", style=discord.ButtonStyle.secondary, row=2)
+    async def logout(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if str(interaction.user.id) != str(self.discord_user_id):
+            await interaction.response.send_message("Diese Auswahl gehört einem anderen Discord-Nutzer.", ephemeral=True)
+            return
+        if not await acknowledge_interaction(interaction):
+            return
+        try:
+            await self.bot.api.unlink_discord_account(self.guild_identity, interaction.user.id)
+        except Exception:
+            await interaction.followup.send(
+                "⚠️ Ausloggen fehlgeschlagen. Bitte versuche es erneut.", ephemeral=True,
+            )
+            return
+        self.stop()
+        login_view = RaidAccountLinkView(
+            self.bot, self.guild_identity, self.raid_id, self.channel_id, self.message_id, self.status,
+        )
+        login_view.children[0].label = "Mit GuildLoot-Account anmelden"
+        await interaction.edit_original_response(
+            content="✅ Ausgeloggt. Du kannst dich jetzt mit einem anderen GuildLoot-Account anmelden. "
+                    "Bestehende Raidanmeldungen bleiben erhalten.",
+            view=login_view,
         )
 
 
