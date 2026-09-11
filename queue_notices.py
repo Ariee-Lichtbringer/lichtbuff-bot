@@ -1,7 +1,7 @@
 """Configured notifications with per-recipient delivery receipts and retry recovery."""
 from datetime import datetime, timezone
 from urllib.parse import urlencode
-NOTICE_TYPES = {"p0plus_points_notice", "p0plus_resolution_notice", "player_login_approval_notice", "po_approval_notice", "po_rejection_notice", "po_release_request_notice", "po_release_granted_notice", "po_release_received_notice", "raid_calendar", "raid_signup_notice", "raid_status_staff_notice"}
+NOTICE_TYPES = {"armor_request_notice", "p0plus_points_notice", "p0plus_resolution_notice", "player_login_approval_notice", "po_approval_notice", "po_rejection_notice", "po_release_request_notice", "po_release_granted_notice", "po_release_received_notice", "raid_calendar", "raid_signup_notice", "raid_status_staff_notice"}
 
 def render_notice(kind, p, guild):
     guild_name = str(p.get("guildName") or {"lichtloot":"Lichtbringer", "lichtbringer":"Lichtbringer", "nachtloot":"Die Nachtwächter"}.get(guild.guild_slug, guild.guild_slug))
@@ -89,6 +89,7 @@ async def deliver_calendar(bot, guild, payload, queue_id, discord):
 async def deliver_queue_notice(bot, guild, kind, payload, queue_id, discord):
     server=bot.get_guild(int(guild.discord_guild_id))
     if server is None:raise RuntimeError("Discord-Server nicht erreichbar")
+    if kind=="armor_request_notice":return await deliver_armor_request(bot,guild,payload,queue_id,discord)
     if kind=="raid_calendar":return await deliver_calendar(bot,guild,payload,queue_id,discord)
     recipients={}
     uid=str(payload.get("discordUserId") or payload.get("userId") or "")
@@ -136,3 +137,34 @@ async def deliver_queue_notice(bot, guild, kind, payload, queue_id, discord):
         if retryable:raise RuntimeError(message)
         raise ValueError(message)
     return last
+
+
+def armor_request_text(payload, discord):
+    esc=lambda value: discord.utils.escape_markdown(str(value or ''))
+    lines=[f"🛡 **{esc(payload.get('character'))} beantragt {esc(payload.get('itemName'))}**",
+           f"{esc(payload.get('server'))} · {esc(payload.get('className'))} · {esc(payload.get('tier'))}"]
+    token=payload.get('token') or {}
+    if token:lines.append(f"Passendes Token: {esc(token.get('name'))}")
+    lines.extend(['','**Aus der Gildenbank benötigt:**'])
+    for material in payload.get('materials',[]):
+        lines.append(f"• {int(material['quantity'])} × {esc(material['name'])}")
+    return '\n'.join(lines)[:3900]
+
+async def deliver_armor_request(bot,guild,payload,queue_id,discord):
+    channel_id=str(payload.get('channelId') or '')
+    if not channel_id.isdigit():raise ValueError('Antragschannel fehlt')
+    channel=bot.get_channel(int(channel_id)) or await bot.fetch_channel(int(channel_id))
+    if str(getattr(getattr(channel,'guild',None),'id',''))!=str(guild.discord_guild_id):
+        raise ValueError('Antragschannel gehört nicht zu dieser Gilde')
+    receipts=payload.get('deliveryReceipts') or {}
+    if receipts.get(channel_id):return str(receipts[channel_id])
+    marker=f'GuildLoot-Auftrag: {queue_id}'
+    message=None
+    async for candidate in channel.history(limit=None):
+        if candidate.author.id==bot.user.id and any(getattr(e.footer,'text',None)==marker for e in candidate.embeds):
+            message=candidate;break
+    if message is None:
+        embed=discord.Embed(description=armor_request_text(payload,discord));embed.set_footer(text=marker)
+        message=await channel.send(embed=embed,allowed_mentions=discord.AllowedMentions.none())
+    await bot.api.post('lichtbotRecordNoticeDelivery',guild=guild.guild_slug,guildId=guild.guild_id,rowNumber=queue_id,targetId=channel_id,messageId=str(message.id))
+    return str(message.id)
