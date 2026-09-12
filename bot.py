@@ -2886,6 +2886,17 @@ async def _sync_recent_ticker_messages_unlocked(limit=None):
         except Exception as error:
             print(f"WBPoster-Nachricht {wbposter_message.id} konnte nicht gelöscht werden: {error}")
 
+    # Rend-Termine aus dem WB Ticker liegen jetzt auch in der Hordenbuff-Liste (GuildLoot).
+    # Danach den Hordenbuff-Post in allen Gilden-Channels sofort aktualisieren.
+    if database_sync_ok and any(normalize_buff(buff.get("buff", "")) == "Rend" for buff in database_rows):
+        try:
+            clear_hordenbuff_csv_cache()
+            rend_count = sum(1 for buff in database_rows if normalize_buff(buff.get("buff", "")) == "Rend")
+            print(f"WB Ticker: {rend_count} Rend-Termine an die Hordenbuff-Liste übergeben, Hordenbuff-Post wird aktualisiert.")
+            await update_hordenbuff_posts_for_all_guilds(force=True)
+        except Exception as error:
+            print(f"Hordenbuff-Post nach Ticker-Sync konnte nicht aktualisiert werden: {error}")
+
     print(f"Letzte Ticker-Posts geprüft: {len(found_buffs)} Buff-Zeilen gefunden, {added} neu gespeichert.")
     return added
 
