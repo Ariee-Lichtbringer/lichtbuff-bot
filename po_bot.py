@@ -1455,9 +1455,13 @@ class PoBotV2(discord.Client):
                                     or payload.get("postId")
                                 ),
                             )
-                            if payload.get("source") == "raid_helper_schedule" and _truthy(payload.get("clearChannelBeforePost")):
+                            # Kanalbereinigung: beim Wochenrhythmus wie bisher; bei Anmeldern aus der Gildenleitung nur,
+                            # wenn der Kanal laut Rhythmus geleert werden soll und wirklich ein neuer Post entstanden ist.
+                            previous_message_id = clean(payload.get("discordMessageId") or payload.get("messageId"))
+                            newly_posted = clean(posted.discord_message_id) != previous_message_id
+                            if _truthy(payload.get("clearChannelBeforePost")) and (payload.get("source") == "raid_helper_schedule" or newly_posted):
                                 removed = await cleanup_scheduled_channel(self, guild, posted, discord)
-                                print(f"V2 Wochenrhythmus-Kanalbereinigung: {removed} ältere Nachrichten entfernt; neuer Post {posted.discord_message_id} bleibt erhalten.")
+                                print(f"V2 Kanalbereinigung ({payload.get('source')}): {removed} ältere Nachrichten entfernt; neuer Post {posted.discord_message_id} bleibt erhalten.")
                             await self.api.post(
                                 "lichtbotResolveQueue",
                                 guild=guild.guild_slug,
