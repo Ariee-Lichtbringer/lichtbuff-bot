@@ -1,7 +1,7 @@
 """Configured notifications with per-recipient delivery receipts and retry recovery."""
 from datetime import datetime, timezone
 from urllib.parse import urlencode
-NOTICE_TYPES = {"armor_request_notice", "guild_bank_notice", "p0plus_points_notice", "p0plus_resolution_notice", "player_login_approval_notice", "po_approval_notice", "po_rejection_notice", "po_release_request_notice", "po_release_granted_notice", "po_release_received_notice", "raid_calendar", "raid_signup_notice", "raid_status_staff_notice"}
+NOTICE_TYPES = {"armor_request_notice", "guild_bank_notice", "guild_bank_request_notice", "p0plus_points_notice", "p0plus_resolution_notice", "player_login_approval_notice", "po_approval_notice", "po_rejection_notice", "po_release_request_notice", "po_release_granted_notice", "po_release_received_notice", "raid_calendar", "raid_signup_notice", "raid_status_staff_notice"}
 
 def render_notice(kind, p, guild):
     guild_name = str(p.get("guildName") or {"lichtloot":"Lichtbringer", "lichtbringer":"Lichtbringer", "nachtloot":"Die Nachtwächter"}.get(guild.guild_slug, guild.guild_slug))
@@ -20,6 +20,15 @@ def render_notice(kind, p, guild):
                     + (f"\n\nHinweis: {note}" if note else "")
                     + "\n\nDie Ausgabe erfolgt über die Bankcharaktere der Gilde. Den Stand siehst du auf lichtloot.de unter Mein Lichtloot → Gildenbank.")
         return text[:3900]
+    if kind == "guild_bank_request_notice":
+        template = str(p.get("messageTemplate") or "")
+        values = {"gilde": guild_name, "charakter": str(p.get("character") or ""), "server": str(p.get("server") or ""), "klasse": str(p.get("className") or ""),
+                  "antrag": str(p.get("item") or ""), "stufe": str(p.get("tier") or ""), "materialien": str(p.get("materials") or "–"), "link": str(p.get("link") or "https://lichtloot.de/gildenleitung.html?guild=" + guild.guild_slug)}
+        if template:
+            for k, v in values.items(): template = template.replace("{" + k + "}", v)
+            return template[:3900]
+        return (f"🏦 **Neuer Gildenbankantrag**\n\n**Gilde:** {values['gilde']}\n**Charakter:** {values['charakter']}-{values['server']}\n**Klasse:** {values['klasse']}\n"
+                f"**Antrag:** {values['antrag']} ({values['stufe']})\n**Aus der Gildenbank:** {values['materialien']}\n\n🔗 **[Direkt zu den Gildenbankanträgen]({values['link']})**")[:3900]
     if kind == "po_release_received_notice":
         character = str(p.get("character") or p.get("player") or "deinen Charakter")
         raid = str(p.get("raid") or "").upper()
