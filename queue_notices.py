@@ -1,10 +1,25 @@
 """Configured notifications with per-recipient delivery receipts and retry recovery."""
 from datetime import datetime, timezone
 from urllib.parse import urlencode
-NOTICE_TYPES = {"armor_request_notice", "p0plus_points_notice", "p0plus_resolution_notice", "player_login_approval_notice", "po_approval_notice", "po_rejection_notice", "po_release_request_notice", "po_release_granted_notice", "po_release_received_notice", "raid_calendar", "raid_signup_notice", "raid_status_staff_notice"}
+NOTICE_TYPES = {"armor_request_notice", "guild_bank_notice", "p0plus_points_notice", "p0plus_resolution_notice", "player_login_approval_notice", "po_approval_notice", "po_rejection_notice", "po_release_request_notice", "po_release_granted_notice", "po_release_received_notice", "raid_calendar", "raid_signup_notice", "raid_status_staff_notice"}
 
 def render_notice(kind, p, guild):
     guild_name = str(p.get("guildName") or {"lichtloot":"Lichtbringer", "lichtbringer":"Lichtbringer", "nachtloot":"Die Nachtwächter"}.get(guild.guild_slug, guild.guild_slug))
+    if kind == "guild_bank_notice":
+        who = str(p.get("player") or "Spieler")
+        items = p.get("items") or []
+        if not items and p.get("item"):
+            items = [{"name": p.get("item"), "quantity": p.get("quantity") or 1}]
+        wanted = ", ".join(f"**{int(i.get('quantity') or 1)} × {i.get('name')}**" for i in items) or "deinen Gildenbankantrag"
+        note = str(p.get("note") or "").strip()
+        if p.get("decision") == "rejected":
+            text = (f"🏦 **Gildenbankantrag abgelehnt**\n\nHallo {who},\n\ndein Antrag auf {wanted} wurde von der Gildenleitung von **{guild_name}** abgelehnt."
+                    + (f"\n\nBegründung: {note}" if note else ""))
+        else:
+            text = (f"🏦 **Gildenbankantrag freigegeben**\n\nHallo {who},\n\ndein Antrag auf {wanted} wurde von der Gildenleitung von **{guild_name}** freigegeben."
+                    + (f"\n\nHinweis: {note}" if note else "")
+                    + "\n\nDie Ausgabe erfolgt über die Bankcharaktere der Gilde. Den Stand siehst du auf lichtloot.de unter Mein Lichtloot → Gildenbank.")
+        return text[:3900]
     if kind == "po_release_received_notice":
         character = str(p.get("character") or p.get("player") or "deinen Charakter")
         raid = str(p.get("raid") or "").upper()
@@ -93,7 +108,7 @@ async def deliver_queue_notice(bot, guild, kind, payload, queue_id, discord):
     if kind=="raid_calendar":return await deliver_calendar(bot,guild,payload,queue_id,discord)
     recipients={}
     uid=str(payload.get("discordUserId") or payload.get("userId") or "")
-    if kind in {"p0plus_points_notice", "po_approval_notice", "po_rejection_notice", "po_release_granted_notice", "po_release_received_notice"} and not uid.isdigit():
+    if kind in {"p0plus_points_notice", "po_approval_notice", "po_rejection_notice", "po_release_granted_notice", "po_release_received_notice", "guild_bank_notice"} and not uid.isdigit():
         raise ValueError("Kein verknüpftes Discord-Konto für diese persönliche P0+-Nachricht")
     if uid.isdigit():
         recipients[uid]=None  # Resolve membership inside this recipient's try block.
