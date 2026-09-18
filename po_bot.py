@@ -3111,7 +3111,7 @@ def _add_roster_fields(
             number = signup_number(row)
             number_label = str(number) if number < 999999 else "–"
             lines.append(f"{_row_spec_icon(row, class_key)} `{number_label}` {player}{_prio_marker(row, p0_players)}")
-        embed.add_field(name=f"{icon} __{label} ({len(lines)})__", value="\n".join(lines)[:1024], inline=True)
+        _add_complete_field(embed, f"{icon} __{label} ({len(lines)})__", lines, inline=True)
     status_groups = (
         ("🪑 Bank", status_sets["bank"]), ("🕒 Spät", status_sets["late"]),
         ("⚖️ Vorläufig", status_sets["tentative"]),
@@ -3120,13 +3120,13 @@ def _add_roster_fields(
     for label, statuses in status_groups:
         status_rows = [row for row in ordered_rows if clean(row.get("status")).lower() in statuses]
         if status_rows:
-            embed.add_field(
-                name=f"{label} ({len(status_rows)})",
-                value="\n".join(
+            _add_complete_field(
+                embed, f"{label} ({len(status_rows)})",
+                list(
                     f"`{signup_number(row) if signup_number(row) < 999999 else '–'}` "
                     f"{clean(row.get('player') or row.get('char')) or 'Unbekannt'}"
                     for row in status_rows
-                )[:1024],
+                ),
                 inline=True,
             )
 
@@ -3154,47 +3154,7 @@ def _add_p0_fields(
         ),
         inline=False,
     )
-    sorted_groups = sorted(grouped.items(), key=lambda pair: pair[0].casefold())
-    available_fields = max(0, 25 - len(embed.fields))
-
-    # Bei großen Raidkadern bleiben oft weniger Discord-Felder übrig als es
-    # verschiedene P0-Items gibt. In diesem Fall alle Anmeldungen kompakt in
-    # Sammelfeldern ausgeben, statt die letzten Itemgruppen still zu verlieren.
-    if len(sorted_groups) > available_fields:
-        blocks: list[str] = []
-        for item, item_rows in sorted_groups:
-            player_lines = []
-            for row in sorted(item_rows, key=lambda value: clean(value.get("player") or value.get("char")).casefold()):
-                player = clean(row.get("player") or row.get("char")) or "Unbekannt"
-                approval = clean(row.get("approvalStatus")).lower()
-                icon = "❌" if approval in {"rejected", "abgelehnt"} else _emoji("Beutegrun", "🟢")
-                points = float(row.get("p0PlusPoints") or 0)
-                suffix = f" · **{points:g} P0+**" if points else ""
-                player_lines.append(f"{icon} `{player[:24]}`{suffix}")
-            blocks.append(f"{_item_icon(item)} **{item}**\n" + "\n".join(player_lines))
-
-        chunks: list[str] = []
-        current = ""
-        for block in blocks:
-            candidate = f"{current}\n\n{block}" if current else block
-            if len(candidate) <= 1024:
-                current = candidate
-            else:
-                if current:
-                    chunks.append(current)
-                current = block[:1024]
-        if current:
-            chunks.append(current)
-
-        for index, chunk in enumerate(chunks[:available_fields]):
-            embed.add_field(
-                name="P0-Auswahl" if index == 0 else "P0-Auswahl (Fortsetzung)",
-                value=chunk,
-                inline=False,
-            )
-        return
-
-    for item, item_rows in sorted_groups:
+    for item, item_rows in sorted(grouped.items(), key=lambda pair: pair[0].casefold()):
         player_lines = []
         for row in sorted(item_rows, key=lambda value: clean(value.get("player") or value.get("char")).casefold()):
             player = clean(row.get("player") or row.get("char")) or "Unbekannt"
@@ -3202,35 +3162,80 @@ def _add_p0_fields(
             icon = "❌" if approval in {"rejected", "abgelehnt"} else _emoji("Beutegrun", "🟢")
             points = float(row.get("p0PlusPoints") or 0)
             suffix = f" · **{points:g} P0+**" if points else ""
-            player_lines.append(f"{icon} `{player[:24]}`{suffix}")
-        embed.add_field(
-            name=f"{_item_icon(item)} {item}",
-            value="\n".join(player_lines)[:1024],
-            inline=True,
-        )
+            player_lines.append(f"{icon} `{player}`{suffix}")
+        _add_complete_field(embed, f"{_item_icon(item)} {item}", player_lines, inline=True)
+
+
+def _add_complete_field(embed, name, lines, *, inline):
+    """Split only between entries, keeping custom emoji and player names intact."""
+    chunk = ""
+    for line in lines:
+        if chunk and len(chunk) + 1 + len(line) > 1024:
+            embed.add_field(name=name[:256], value=chunk, inline=inline)
+            name = name.removesuffix(" (Fortsetzung)") + " (Fortsetzung)"
+            chunk = ""
+        # API player/item labels are short; handle exceptional long text too.
+        while len(line) > 1024:
+            embed.add_field(name=name[:256], value=line[:1024], inline=inline)
+            line = line[1024:]
+        chunk = f"{chunk}\n{line}" if chunk else line
+    if chunk:
+        embed.add_field(name=name[:256], value=chunk, inline=inline)
 
 
 def _fit_embed_to_discord_limit(embed: discord.Embed, maximum: int = 5900) -> discord.Embed:
-    """Behält alle Bereiche, kürzt aber lange Feldlisten unter Discord 6000 Zeichen."""
-    while len(embed) > maximum:
-        candidates = [
-            (index, field)
-            for index, field in enumerate(embed.fields)
-            if len(field.value) > 140
-        ]
-        if candidates:
-            index, field = max(candidates, key=lambda pair: len(pair[1].value))
-            excess = len(embed) - maximum
-            keep = max(120, len(field.value) - excess - 40)
-            value = field.value[:keep].rstrip() + "\n… weitere Einträge in der Webansicht"
-            embed.set_field_at(index, name=field.name, value=value[:1024], inline=field.inline)
+    """Keep the complete roster and P0 list in one message, compacting decoration."""
+    def fits():
+        return len(embed) <= maximum and len(embed.fields) <= 25
+
+    if fits():
+        return embed
+
+    # Custom emoji markup consumes dozens of characters per icon. Drop only
+    # those decorative icons before touching any actual signup information.
+    def compact(text):
+        return re.sub(r"<a?:[A-Za-z0-9_]+:[0-9]+>\s*", "", text)
+
+    def compact_icons():
+        for index, field in enumerate(embed.fields):
+            embed.set_field_at(index, name=compact(field.name) or "\u200b",
+                               value=compact(field.value), inline=field.inline)
+
+    if len(embed) > maximum:
+        compact_icons()
+    if fits():
+        return embed
+
+    # Multiple item/class headings can share fields; Discord allows only 25.
+    # Each entry remains whole, even when an item has many applicants.
+    fields = list(embed.fields)
+    embed.clear_fields()
+    chunk = ""
+    for field in fields:
+        if field.name == "\u200b":
             continue
-        if embed.description and len(embed.description) > 200:
-            excess = len(embed) - maximum
-            keep = max(180, len(embed.description) - excess - 10)
-            embed.description = embed.description[:keep].rstrip() + "…"
-            continue
-        break
+        lines = [f"**{field.name}**", *field.value.splitlines()]
+        block = "\n".join(lines)
+        if len(block) <= 1024:
+            lines = [block]
+        for line in lines:
+            if chunk and len(chunk) + len(line) + 2 > 1024:
+                embed.add_field(name="\u200b", value=chunk, inline=False)
+                chunk = ""
+            if len(line) > 1024:
+                raise ValueError("Ein einzelner Listeneintrag überschreitet das Discord-Feldlimit.")
+            chunk = f"{chunk}\n\n{line}" if chunk else line
+    if chunk:
+        embed.add_field(name="\u200b", value=chunk, inline=False)
+    if len(embed) > maximum:
+        compact_icons()
+    if not fits() and embed.description:
+        excess = len(embed) - maximum
+        if excess > 0:
+            keep = max(0, len(embed.description) - excess - 1)
+            embed.description = embed.description[:keep].rstrip() + "…" if keep else None
+    if not fits():
+        raise ValueError("Die vollständige Liste überschreitet auch kompakt das Discord-Limit für eine Nachricht.")
     return embed
 
 
