@@ -3168,7 +3168,9 @@ def _add_p0_fields(
                 player = clean(row.get("player") or row.get("char")) or "Unbekannt"
                 approval = clean(row.get("approvalStatus")).lower()
                 icon = "❌" if approval in {"rejected", "abgelehnt"} else _emoji("Beutegrun", "🟢")
-                player_lines.append(f"{icon} `{player[:24]}`")
+                points = float(row.get("p0PlusPoints") or 0)
+                suffix = f" · **{points:g} P0+**" if points else ""
+                player_lines.append(f"{icon} `{player[:24]}`{suffix}")
             blocks.append(f"{_item_icon(item)} **{item}**\n" + "\n".join(player_lines))
 
         chunks: list[str] = []
@@ -3198,7 +3200,9 @@ def _add_p0_fields(
             player = clean(row.get("player") or row.get("char")) or "Unbekannt"
             approval = clean(row.get("approvalStatus")).lower()
             icon = "❌" if approval in {"rejected", "abgelehnt"} else _emoji("Beutegrun", "🟢")
-            player_lines.append(f"{icon} `{player[:24]}`")
+            points = float(row.get("p0PlusPoints") or 0)
+            suffix = f" · **{points:g} P0+**" if points else ""
+            player_lines.append(f"{icon} `{player[:24]}`{suffix}")
         embed.add_field(
             name=f"{_item_icon(item)} {item}",
             value="\n".join(player_lines)[:1024],
