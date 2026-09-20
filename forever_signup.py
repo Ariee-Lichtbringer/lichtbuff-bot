@@ -9,7 +9,7 @@ from urllib.parse import urlsplit, urlunsplit, urlencode
 import discord
 from discord import app_commands
 
-ROLES = {'tank': '🛡️ Tank', 'heal': '💚 Heiler', 'dd': '⚔️ Schaden'}
+ROLES = {'tank': '🛡️ Tank', 'heal': '💚 Heiler', 'dd': '⚔️ Schaden (offen)', 'melee':'⚔️ Nahkampf', 'ranged':'🏹 Fernkampf'}
 STATES = {'signed': 'Zugesagt', 'bench': '🪑 Ersatzbank', 'late': '🕒 Später', 'tentative': 'Vielleicht', 'absent': 'Abgesagt'}
 CLASSES = {'warrior':'Krieger','paladin':'Paladin','hunter':'Jäger','rogue':'Schurke','priest':'Priester','shaman':'Schamane','mage':'Magier','warlock':'Hexenmeister','druid':'Druide'}
 
@@ -49,7 +49,7 @@ def build_embed(post, emoji=lambda c: ''):
     from zoneinfo import ZoneInfo
     local = starts.astimezone(ZoneInfo('Europe/Berlin'))
     signed = [s for s in raid['signups'] if s['status']=='signed']
-    status = {'open':'Raidanmeldung ist geöffnet.','closed':'Raidanmeldung ist geschlossen.','cancelled':'Dieser Raid wurde abgesagt.','completed':'Dieser Raid ist abgeschlossen.'}[raid['status']]
+    status = {'open':'Raidanmeldung ist geöffnet.','closed':'Raidanmeldung ist geschlossen.','cancelled':'Dieser Raid wurde abgesagt.','completed':'Dieser Raid ist abgeschlossen.','running':'Dieser Raid läuft gerade.','archived':'Dieser Raid ist archiviert.'}[raid['status']]
     embed = discord.Embed(title=raid['title'].upper()[:256], url=raid_url(post), color=0x7C3AED,
         description=discord.utils.escape_markdown(raid.get('description') or status)[:1200])
     embed.set_footer(text=marker(post))
@@ -63,7 +63,7 @@ def build_embed(post, emoji=lambda c: ''):
     counts = {state:sum(s['status']==state for s in raid['signups']) for state in STATES}
     embed.add_field(name='Anmeldestatus',value=f"👥 **{len(signed)} / {raid['size']} fest**\n🪑 Bank **{counts['bench']}** · 🕒 Spät **{counts['late']}** · ⚖️ Vorläufig **{counts['tentative']}** · 🚫 Abwesend **{counts['absent']}**",inline=True)
     role_counts = {role:sum(s['role']==role for s in signed) for role in ROLES}
-    embed.add_field(name='Rollenverteilung',value=f"{emoji('tank') or '🛡️'} **Tanks {role_counts['tank']}** · {emoji('dd') or '⚔️'} **Schaden {role_counts['dd']}** · {emoji('heal') or '✨'} **Heiler {role_counts['heal']}**",inline=True)
+    embed.add_field(name='Rollenverteilung',value=f"{emoji('tank') or '🛡️'} **Tanks {role_counts['tank']}** · {emoji('dd') or '⚔️'} **Nahkampf {role_counts['melee']}** · {emoji('ranged') or '🏹'} **Fernkampf {role_counts['ranged']}** · **Offen {role_counts['dd']}** · {emoji('heal') or '✨'} **Heiler {role_counts['heal']}**",inline=True)
     embed.add_field(name='\u200b',value='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',inline=False)
     embed.add_field(name='Kader',value='Klassen und aktuelle Belegung' if signed else 'Noch keine festen Anmeldungen.',inline=False)
     numbered = list(enumerate(raid['signups'],1))
@@ -136,8 +136,8 @@ class ChoiceView(PrivateView):
                     character=next(c for c in characters if c['id']==value)
                     icon=worker.emoji(character['class_name']) or '👤'
                 elif name=='role':
-                    icon=worker.emoji(value) or {'tank':'🛡️','heal':'✨','dd':'⚔️'}[value]
-                    text={'tank':'Tank','heal':'Heiler','dd':'Schaden'}[value]
+                    icon=worker.emoji(value) or {'tank':'🛡️','heal':'✨','dd':'⚔️','melee':'⚔️','ranged':'🏹'}[value]
+                    text={'tank':'Tank','heal':'Heiler','dd':'Schaden (offen)','melee':'Nahkampf','ranged':'Fernkampf'}[value]
                 select_options.append(discord.SelectOption(label=text[:100],value=value,default=value==current,emoji=icon))
             select=discord.ui.Select(placeholder=label,options=select_options)
             async def changed(interaction,field=name,control=select):
