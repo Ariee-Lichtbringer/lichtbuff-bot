@@ -129,7 +129,17 @@ class ChoiceView(PrivateView):
         for name,label,options,current in [
             ('character_id','Dein Forever-Charakter',[(c['id'],c['name']+' · '+CLASSES.get(c['class_name'],c['class_name'])) for c in characters],self.character_id),
             ('role','Deine Rolle',list(ROLES.items()),self.role),('status','Deine Teilnahme',list(STATES.items()),self.status)]:
-            select=discord.ui.Select(placeholder=label,options=[discord.SelectOption(label=t[:100],value=v,default=v==current) for v,t in options])
+            select_options=[]
+            for value,text in options:
+                icon=None
+                if name=='character_id':
+                    character=next(c for c in characters if c['id']==value)
+                    icon=worker.emoji(character['class_name']) or '👤'
+                elif name=='role':
+                    icon=worker.emoji(value) or {'tank':'🛡️','heal':'✨','dd':'⚔️'}[value]
+                    text={'tank':'Tank','heal':'Heiler','dd':'Schaden'}[value]
+                select_options.append(discord.SelectOption(label=text[:100],value=value,default=value==current,emoji=icon))
+            select=discord.ui.Select(placeholder=label,options=select_options)
             async def changed(interaction,field=name,control=select):
                 setattr(self,field,control.values[0])
                 for opt in control.options: opt.default=opt.value==control.values[0]
