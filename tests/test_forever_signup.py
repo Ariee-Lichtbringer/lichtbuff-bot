@@ -24,7 +24,7 @@ class ForeverTest(unittest.IsolatedAsyncioTestCase):
         embed=f.build_embed(p,lambda c: {'priest':'PRIEST','heal':'HEAL'}.get(c,''))
         self.assertEqual(embed.colour.value,0x7C3AED)
         self.assertEqual(embed.title,'TEST · HYJAL')
-        self.assertTrue(embed.image.url.endswith('/forever/hyjal.jpg'))
+        self.assertTrue(embed.image.url.endswith('/forever/raids/hyjal-v1.jpg'))
         fields={v.name:v for v in embed.fields}
         self.assertIn('20:00',fields['Termin'].value)
         self.assertIn('1 / 20',fields['Anmeldestatus'].value)
