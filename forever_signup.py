@@ -54,7 +54,7 @@ def build_embed(post, emoji=lambda c: ''):
         description=discord.utils.escape_markdown(raid.get('description') or status)[:1200])
     embed.set_footer(text=marker(post))
     image = {'hyjal':'forever/hyjal.jpg','onyxia':'raid-templates/ony.jpg'}.get(raid['kind'],'forever/adventure.jpg')
-    embed.set_image(url='https://lichtloot.de/images/'+image)
+    embed.set_image(url=raid.get('image_url') or 'https://lichtloot.de/images/'+image)
     embed.add_field(name='Raidlead',value='Gildenleitung',inline=True)
     embed.add_field(name='Termin',value=f"**__{local:%Y-%m-%d · %H:%M} Uhr__**",inline=True)
     embed.add_field(name='Gilde · Forever',value=discord.utils.escape_markdown(post['guild']['name'])[:200],inline=True)
