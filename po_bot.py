@@ -902,7 +902,7 @@ class PoBotV2(discord.Client):
         self._post_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._missing_refresh_posts: dict[tuple[str, str], tuple[str, str]] = {}
         self._register_commands()
-        self.forever = ForeverWorker(self, lambda c: str(_class_select_emoji(FOREVER_CLASSES.get(c,c)) or ""))
+        self.forever = ForeverWorker(self, lambda c: _emoji({"tank":"tank","heal":"heilung","dd":"melee"}[c], {"tank":"🛡️","heal":"✨","dd":"⚔️"}[c]) if c in {"tank","heal","dd"} else str(_class_select_emoji(FOREVER_CLASSES.get(c,c)) or ""))
 
     def _register_commands(self) -> None:
         @self.tree.command(name="p0_post_erstellen", description="Erstellt den kombinierten Raid-/P0-Post explizit.")

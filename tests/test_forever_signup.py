@@ -18,6 +18,21 @@ class ForeverTest(unittest.IsolatedAsyncioTestCase):
         p['raid']['status']='cancelled';view=f.SignupView(None,p)
         self.assertTrue(all(c.disabled for c in view.children if getattr(c,'custom_id',None)))
         self.assertIn('guild=forever',f.raid_url(p))
+    async def test_era_style_preserves_forever_data(self):
+        p=copy.deepcopy(POST)
+        p['raid']['signups']=[{'name':'Ariee Mondlichtung','className':'priest','role':'heal','status':'signed'}, {'name':'Andere Person','className':'mage','role':'dd','status':'absent'}]
+        embed=f.build_embed(p,lambda c: {'priest':'PRIEST','heal':'HEAL'}.get(c,''))
+        self.assertEqual(embed.colour.value,0x7C3AED)
+        self.assertEqual(embed.title,'TEST · HYJAL')
+        self.assertTrue(embed.image.url.endswith('/forever/hyjal.jpg'))
+        fields={v.name:v for v in embed.fields}
+        self.assertIn('20:00',fields['Termin'].value)
+        self.assertIn('1 / 20',fields['Anmeldestatus'].value)
+        self.assertTrue(fields['PRIEST __Priester (1)__'].inline)
+        self.assertIn('HEAL `1` Ariee Mondlichtung',fields['PRIEST __Priester (1)__'].value)
+        self.assertIn('`2` Andere Person',fields['🚫 Abwesenheit (1)'].value)
+        self.assertNotIn('Prio-PIN',fields)
+        self.assertEqual(embed.footer.text,f.marker(p))
     async def test_recover_after_ack_failure_without_duplicate_send(self):
         post=copy.deepcopy(POST);messages=[];counts={'send':0,'edit':0,'ack':0}
         class Message:

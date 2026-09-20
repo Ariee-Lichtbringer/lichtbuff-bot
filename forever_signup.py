@@ -45,35 +45,49 @@ def marker(post):
 
 def build_embed(post, emoji=lambda c: ''):
     raid = post['raid']
-    starts = int(datetime.fromisoformat(raid['starts_at'].replace('Z','+00:00')).timestamp())
+    starts = datetime.fromisoformat(raid['starts_at'].replace('Z','+00:00'))
+    from zoneinfo import ZoneInfo
+    local = starts.astimezone(ZoneInfo('Europe/Berlin'))
     signed = [s for s in raid['signups'] if s['status']=='signed']
-    status = {'open':'Anmeldung offen','closed':'Anmeldung geschlossen','cancelled':'Raid abgesagt','completed':'Abgeschlossen'}[raid['status']]
-    embed = discord.Embed(title=('🌿 ' + raid['title'])[:256], url=raid_url(post), color=0xe8c77e,
-        description=f"**{discord.utils.escape_markdown(post['guild']['name'])} · WoW Forever**\n<t:{starts}:F> · <t:{starts}:R>\n**{status} · {len(signed)} / {raid['size']} Plätze**")
-    if raid.get('description'):
-        embed.description += '\n\n' + discord.utils.escape_markdown(raid['description'])[:1200]
-    targets = {'tank':raid['tanks'],'heal':raid['heals'],'dd':raid['size']-raid['tanks']-raid['heals']}
-    budget = max(0, 5000-len(embed))
-    for state in STATES:
-        for role in (ROLES if state=='signed' else ['all']):
-            rows = [s for s in raid['signups'] if s['status']==state and (role=='all' or s['role']==role)]
-            if not rows and state!='signed': continue
-            heading = f"{ROLES[role]} · {len(rows)} / {targets[role]}" if role!='all' else f'{STATES[state]} · {len(rows)}'
-            lines = [f"{emoji(s['className'])} **{discord.utils.escape_markdown(s['name'])}**" for s in rows] or ['Noch frei']
-            chunks, chunk = [], ''
-            for line in lines:
-                if len(line)+len(chunk)>950:
-                    chunks.append(chunk); chunk=''
-                chunk += line+'\n'
-            if chunk: chunks.append(chunk)
-            for index, chunk in enumerate(chunks):
-                if len(chunk)>budget or len(embed.fields)>=22:
-                    embed.add_field(name='Weitere Anmeldungen',value='Die vollständige Teilnehmerliste findest du auf der Webseite.',inline=False)
-                    embed.set_footer(text=marker(post));return embed
-                embed.add_field(name=heading+(' · Fortsetzung' if index else ''),value=chunk,inline=False)
-                budget-=len(chunk)+len(heading)+15
-    embed.add_field(name='Anmeldung',value='Mit deinem Forever-SpielerLogin verbinden und Charakter, Rolle und Teilnahme wählen. Änderungen erscheinen auch auf der Webseite.',inline=False)
+    status = {'open':'Raidanmeldung ist geöffnet.','closed':'Raidanmeldung ist geschlossen.','cancelled':'Dieser Raid wurde abgesagt.','completed':'Dieser Raid ist abgeschlossen.'}[raid['status']]
+    embed = discord.Embed(title=raid['title'].upper()[:256], url=raid_url(post), color=0x7C3AED,
+        description=discord.utils.escape_markdown(raid.get('description') or status)[:1200])
     embed.set_footer(text=marker(post))
+    image = {'hyjal':'forever/hyjal.jpg','onyxia':'raid-templates/ony.jpg'}.get(raid['kind'],'forever/adventure.jpg')
+    embed.set_image(url='https://lichtloot.de/images/'+image)
+    embed.add_field(name='Raidlead',value='Gildenleitung',inline=True)
+    embed.add_field(name='Termin',value=f"**__{local:%Y-%m-%d · %H:%M} Uhr__**",inline=True)
+    embed.add_field(name='Gilde · Forever',value=discord.utils.escape_markdown(post['guild']['name'])[:200],inline=True)
+    web = raid_url(post).split('#')[0]+'#termine'
+    embed.add_field(name='Links',value=f'🌐 [Webansicht]({web}) · 🎒 [Lootseite]({raid_url(post)})',inline=False)
+    counts = {state:sum(s['status']==state for s in raid['signups']) for state in STATES}
+    embed.add_field(name='Anmeldestatus',value=f"👥 **{len(signed)} / {raid['size']} fest**\n🪑 Bank **{counts['bench']}** · 🕒 Spät **{counts['late']}** · ⚖️ Vorläufig **{counts['tentative']}** · 🚫 Abwesend **{counts['absent']}**",inline=True)
+    role_counts = {role:sum(s['role']==role for s in signed) for role in ROLES}
+    embed.add_field(name='Rollenverteilung',value=f"{emoji('tank') or '🛡️'} **Tanks {role_counts['tank']}** · {emoji('dd') or '⚔️'} **Schaden {role_counts['dd']}** · {emoji('heal') or '✨'} **Heiler {role_counts['heal']}**",inline=True)
+    embed.add_field(name='\u200b',value='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',inline=False)
+    embed.add_field(name='Kader',value='Klassen und aktuelle Belegung' if signed else 'Noch keine festen Anmeldungen.',inline=False)
+    numbered = list(enumerate(raid['signups'],1))
+    groups = []
+    for cls in ['warrior','druid','paladin','rogue','hunter','priest','mage','warlock','shaman']:
+        rows = [(n,s) for n,s in numbered if s['status']=='signed' and s['className']==cls]
+        if rows: groups.append((f"{emoji(cls)} __{CLASSES[cls]} ({len(rows)})__",rows,True))
+    for state,label in [('bench','🪑 Bank'),('late','🕒 Spät'),('tentative','⚖️ Vorläufig'),('absent','🚫 Abwesenheit')]:
+        rows = [(n,s) for n,s in numbered if s['status']==state]
+        if rows: groups.append((f'{label} ({len(rows)})',rows,False))
+    for heading, rows, class_group in groups:
+        chunks,chunk = [],''
+        for n,s in rows:
+            icon = (emoji(s['role']) or emoji(s['className'])) if class_group else ''
+            line = f"{icon} `{n}` {discord.utils.escape_markdown(s['name'])}\n"
+            if len(chunk)+len(line)>950:
+                chunks.append(chunk);chunk=''
+            chunk+=line
+        if chunk: chunks.append(chunk)
+        for index,chunk in enumerate(chunks):
+            if len(embed)+len(heading)+len(chunk)>5500 or len(embed.fields)>=23:
+                embed.add_field(name='Weitere Anmeldungen',value=f'Die vollständige Teilnehmerliste findest du in der [Webansicht]({web}).',inline=False)
+                return embed
+            embed.add_field(name=heading+(' · Fortsetzung' if index else ''),value=chunk,inline=True)
     return embed
 
 async def reply_error(interaction, error):
@@ -163,7 +177,7 @@ class SignupView(discord.ui.View):
                 if getattr(item,'custom_id',None): item.disabled=True
     def identity(self, interaction):
         return {'guild':self.post['guild']['slug'],'raidId':self.post['raid']['id'],'messageId':str(interaction.message.id),'channelId':str(interaction.channel_id),'discordGuildId':str(interaction.guild_id),'discordUserId':str(interaction.user.id)}
-    @discord.ui.button(label='Anmelden / Teilnahme ändern',style=discord.ButtonStyle.primary,custom_id='forever:signup')
+    @discord.ui.button(label='Klasse / Charakter anmelden',style=discord.ButtonStyle.primary,custom_id='forever:signup')
     async def signup(self, interaction, button):
         await interaction.response.defer(ephemeral=True,thinking=True);identity=self.identity(interaction)
         try:
