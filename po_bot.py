@@ -12,6 +12,7 @@ einer Gilde oder eines Raids verwendet werden.
 """
 
 from __future__ import annotations
+from forever_signup import ForeverWorker, CLASSES as FOREVER_CLASSES
 from queue_notices import NOTICE_TYPES, deliver_queue_notice
 from dkp_notice import send_dkp_notice
 
@@ -901,6 +902,7 @@ class PoBotV2(discord.Client):
         self._post_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._missing_refresh_posts: dict[tuple[str, str], tuple[str, str]] = {}
         self._register_commands()
+        self.forever = ForeverWorker(self, lambda c: str(_class_select_emoji(FOREVER_CLASSES.get(c,c)) or ""))
 
     def _register_commands(self) -> None:
         @self.tree.command(name="p0_post_erstellen", description="Erstellt den kombinierten Raid-/P0-Post explizit.")
@@ -1200,6 +1202,7 @@ class PoBotV2(discord.Client):
         await self.refresh_emoji_cache()
         await self.register_persistent_views()
         await self.tree.sync()
+        self.forever.start()
         self._refresh_task = asyncio.create_task(self.refresh_loop(), name="p0-v2-refresh")
         self._queue_task = asyncio.create_task(self.queue_loop(), name="p0-v2-queue")
 
