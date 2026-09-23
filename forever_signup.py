@@ -257,10 +257,41 @@ class ForeverWorker:
         except Exception as error:
             reason='Discord-Nachricht fehlt. Bitte erneut auf der Webseite veröffentlichen.' if isinstance(error,discord.NotFound) and post.get('messageId') else str(error) if isinstance(error,(discord.HTTPException,RuntimeError)) else 'Discord-Veröffentlichung fehlgeschlagen.'
             await self.api.call('failed',**ids,leaseToken=lease,error=reason[:300])
+    async def diagnostics(self):
+        response=await self.api.call('diagnosticsPoll')
+        for job in response.get('jobs',[]):
+            result={'bot':True,'server':False,'channel':False,'permissions':False,'testSent':False}
+            try:
+                guild=self.bot.get_guild(int(job['discord_guild_id']))
+                if not guild: raise RuntimeError('Der PO Bot ist nicht mehr auf dem verbundenen Server. Bitte erneut einladen.')
+                result['server']=True
+                channel=self.bot.get_channel(int(job['channel_id'])) or await self.bot.fetch_channel(int(job['channel_id']))
+                if str(getattr(getattr(channel,'guild',None),'id',None))!=job['discord_guild_id']: raise RuntimeError('Der Kanal gehört nicht zum verbundenen Server.')
+                result['channel']=True
+                permissions=channel.permissions_for(guild.me)
+                missing=[name for name,ok in [('Kanal ansehen',permissions.view_channel),('Nachrichten senden',permissions.send_messages),('Links einbetten',permissions.embed_links),('Nachrichtenverlauf lesen',permissions.read_message_history)] if not ok]
+                if missing: raise RuntimeError('Fehlende Kanalrechte: '+', '.join(missing))
+                result['permissions']=True
+                if job['kind']=='test':
+                    marker='guildloot-forever-test:'+job['id']
+                    message=None
+                    async for candidate in channel.history(limit=100):
+                        if candidate.author.id==self.bot.user.id and any(e.footer.text==marker for e in candidate.embeds):message=candidate;break
+                    if not message:
+                        embed=discord.Embed(title='GuildLoot · Forever-Verbindung erfolgreich',description='Diese Testnachricht wurde von eurer Gildenleitung angefordert. Der PO Bot kann in diesem Kanal Nachrichten und Raidanmelder veröffentlichen.',color=0xe6be63)
+                        embed.set_footer(text=marker)
+                        message=await channel.send(embed=embed,allowed_mentions=discord.AllowedMentions.none())
+                    result['testSent']=True;result['messageId']=str(message.id)
+            except Exception as error:
+                result['error']=str(error)[:300] if isinstance(error,RuntimeError) else 'Discord-Kanal nicht erreichbar. Bitte Bot-Einladung und Kanalrechte prüfen.'
+            await self.api.call('diagnosticsAck',id=job['id'],leaseToken=job['lease_token'],result=result)
+
     async def loop(self):
         await self.bot.wait_until_ready()
         while not self.bot.is_closed():
             try:
+                try: await self.diagnostics()
+                except Exception: print('Forever: Verbindungsprüfung derzeit nicht erreichbar.',flush=True)
                 cursor=None
                 while True:
                     result=await self.api.call('poll',cursor=cursor)
