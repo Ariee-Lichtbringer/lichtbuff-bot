@@ -1,4 +1,5 @@
 """Forever Discord signup: dedicated API/database, no Era identity or PIN reuse."""
+from pathlib import Path
 import asyncio
 import hashlib
 import json
@@ -272,6 +273,23 @@ class ForeverWorker:
                 channels.sort(key=lambda c:(c['category'],c['position'],c['name']))
             await self.api.call('channelSync',guildId=target['guild_id'],discordGuildId=target['discord_guild_id'],channels=channels)
 
+    async def invitations(self):
+        result=await self.api.call('invitationPoll')
+        for job in result.get('jobs',[]):
+            try:
+                user=await self.bot.fetch_user(int(job['recipient_id']))
+                files=[discord.File(Path(__file__).parent/'invitation-images'/f'forever-account-{i}.png') for i in (1,2)]
+                try:
+                    message=await user.send(job['message'],files=files,allowed_mentions=discord.AllowedMentions.none())
+                finally:
+                    for file in files: file.close()
+            except Exception as error:
+                reason='Direktnachrichten sind gesperrt oder der Bot wurde blockiert.' if isinstance(error,discord.Forbidden) else 'Versand fehlgeschlagen oder Ergebnis unklar. Kein automatischer Wiederholungsversuch.'
+                await self.api.call('invitationAck',id=job['id'],success=False,error=reason)
+            else:
+                await self.api.call('invitationAck',id=job['id'],success=True,messageId=str(message.id))
+            await asyncio.sleep(1)
+
     async def diagnostics(self):
         response=await self.api.call('diagnosticsPoll')
         for job in response.get('jobs',[]):
@@ -307,6 +325,8 @@ class ForeverWorker:
             try:
                 try: await self.sync_channels()
                 except Exception: print('Forever: Kanalliste derzeit nicht erreichbar.',flush=True)
+                try: await self.invitations()
+                except Exception: print('Forever: Einladungsversand derzeit nicht erreichbar.',flush=True)
                 try: await self.diagnostics()
                 except Exception: print('Forever: Verbindungsprüfung derzeit nicht erreichbar.',flush=True)
                 cursor=None
