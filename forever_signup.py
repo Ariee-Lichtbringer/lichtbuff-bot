@@ -177,6 +177,8 @@ class ConnectView(PrivateView):
         b=discord.ui.Button(label='Forever-SpielerLogin verbinden',style=discord.ButtonStyle.primary)
         async def connect(interaction): await interaction.response.send_modal(ConnectModal(worker,identity))
         b.callback=connect;self.add_item(b)
+        if identity.get("guild")=="lichtbringer-forever":
+            self.add_item(discord.ui.Button(label="LichtLoot / Nachtloot übernehmen",url="https://lichtloot.de/forever-import.html"))
 
 class SignupView(discord.ui.View):
     def __init__(self, worker, post):
