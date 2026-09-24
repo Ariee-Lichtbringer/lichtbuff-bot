@@ -257,6 +257,19 @@ class ForeverWorker:
         except Exception as error:
             reason='Discord-Nachricht fehlt. Bitte erneut auf der Webseite veröffentlichen.' if isinstance(error,discord.NotFound) and post.get('messageId') else str(error) if isinstance(error,(discord.HTTPException,RuntimeError)) else 'Discord-Veröffentlichung fehlgeschlagen.'
             await self.api.call('failed',**ids,leaseToken=lease,error=reason[:300])
+    async def sync_channels(self):
+        targets=(await self.api.call('channelTargets')).get('targets',[])
+        for target in targets:
+            guild=self.bot.get_guild(int(target['discord_guild_id']))
+            channels=[]
+            if guild and guild.me:
+                for channel in guild.text_channels:
+                    p=channel.permissions_for(guild.me)
+                    if p.view_channel and p.send_messages and p.embed_links and p.read_message_history:
+                        channels.append({'id':str(channel.id),'name':channel.name,'category':channel.category.name if channel.category else '', 'position':channel.position})
+                channels.sort(key=lambda c:(c['category'],c['position'],c['name']))
+            await self.api.call('channelSync',guildId=target['guild_id'],discordGuildId=target['discord_guild_id'],channels=channels)
+
     async def diagnostics(self):
         response=await self.api.call('diagnosticsPoll')
         for job in response.get('jobs',[]):
@@ -290,6 +303,8 @@ class ForeverWorker:
         await self.bot.wait_until_ready()
         while not self.bot.is_closed():
             try:
+                try: await self.sync_channels()
+                except Exception: print('Forever: Kanalliste derzeit nicht erreichbar.',flush=True)
                 try: await self.diagnostics()
                 except Exception: print('Forever: Verbindungsprüfung derzeit nicht erreichbar.',flush=True)
                 cursor=None
