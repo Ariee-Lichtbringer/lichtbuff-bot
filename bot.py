@@ -445,6 +445,15 @@ def guild_slug_for_discord_server(guild, fallback=""):
     return ""
 
 
+async def refresh_discord_recipient_roles():
+    while not client.is_closed():
+        await asyncio.sleep(600)
+        try:
+            await sync_discord_roles_to_lichtloot()
+        except Exception as error:
+            print(f"Discord-Empfaengerabgleich fehlgeschlagen: {error}")
+
+
 async def sync_discord_roles_to_lichtloot():
     if not LICHTBOT_QUEUE_TOKEN:
         return
@@ -481,6 +490,7 @@ async def sync_discord_roles_to_lichtloot():
                 "id": str(member.id),
                 "username": str(member.name),
                 "displayName": str(member.display_name or member.name),
+                "roleIds": [str(role.id) for role in member.roles if not role.is_default()],
                 "globalName": str(getattr(member, "global_name", "") or ""),
                 "avatarUrl": str(member.display_avatar.url) if getattr(member, "display_avatar", None) else "",
                 "bot": bool(member.bot),
@@ -6037,6 +6047,8 @@ async def on_ready():
     print(f"Bot online als {client.user}")
     await refresh_guild_registry()
     await sync_discord_roles_to_lichtloot()
+    if not getattr(client, "recipient_roles_task", None) or client.recipient_roles_task.done():
+        client.recipient_roles_task = asyncio.create_task(refresh_discord_recipient_roles())
     if not hasattr(client, "slash_commands_synced"):
         client.slash_commands_synced = True
         for discord_guild in client.guilds:
