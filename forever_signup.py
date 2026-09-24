@@ -274,17 +274,22 @@ class ForeverWorker:
             await self.api.call('channelSync',guildId=target['guild_id'],discordGuildId=target['discord_guild_id'],channels=channels)
 
     async def invitations(self):
-        result=await self.api.call('invitationPoll')
+        result=await self.api.call('invitationPoll',workerVersion=2)
         for job in result.get('jobs',[]):
             try:
                 user=await self.bot.fetch_user(int(job['recipient_id']))
-                files=[discord.File(Path(__file__).parent/'invitation-images'/f'forever-account-{i}.png') for i in (1,2)]
-                try:
-                    message=await user.send(job['message'],files=files,allowed_mentions=discord.AllowedMentions.none())
-                finally:
-                    for file in files: file.close()
+                if job.get('message_id'):
+                    channel=user.dm_channel or await user.create_dm()
+                    previous=await channel.fetch_message(int(job['message_id']))
+                    message=await previous.edit(content=job['message'],allowed_mentions=discord.AllowedMentions.none())
+                else:
+                    files=[discord.File(Path(__file__).parent/'invitation-images'/f'forever-account-{i}.png') for i in (1,2)]
+                    try:
+                        message=await user.send(job['message'],files=files,allowed_mentions=discord.AllowedMentions.none())
+                    finally:
+                        for file in files: file.close()
             except Exception as error:
-                reason='Direktnachrichten sind gesperrt oder der Bot wurde blockiert.' if isinstance(error,discord.Forbidden) else 'Versand fehlgeschlagen oder Ergebnis unklar. Kein automatischer Wiederholungsversuch.'
+                reason='Die ursprüngliche Nachricht wurde nicht gefunden. Es wurde keine neue DM gesendet.' if isinstance(error,discord.NotFound) and job.get('message_id') else 'Direktnachrichten sind gesperrt oder der Bot wurde blockiert.' if isinstance(error,discord.Forbidden) else 'Versand fehlgeschlagen oder Ergebnis unklar. Kein automatischer Wiederholungsversuch.'
                 await self.api.call('invitationAck',id=job['id'],success=False,error=reason)
             else:
                 await self.api.call('invitationAck',id=job['id'],success=True,messageId=str(message.id))
