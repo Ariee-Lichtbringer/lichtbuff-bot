@@ -18,6 +18,25 @@ class ForeverTest(unittest.IsolatedAsyncioTestCase):
         p['raid']['status']='cancelled';view=f.SignupView(None,p)
         self.assertTrue(all(c.disabled for c in view.children if getattr(c,'custom_id',None)))
         self.assertIn('guild=forever',f.raid_url(p))
+    async def test_beta_button_is_conditional_persistent_and_closes(self):
+        p=copy.deepcopy(POST)
+        self.assertNotIn('forever:beta',[x.custom_id for x in f.SignupView(None,p).children])
+        p['betaEnabled']=True
+        view=f.SignupView(None,p)
+        self.assertTrue(view.is_persistent())
+        self.assertIn('forever:beta',[x.custom_id for x in view.children])
+        p['raid']['status']='closed'
+        self.assertTrue(next(x for x in f.SignupView(None,p).children if x.custom_id=='forever:beta').disabled)
+    async def test_beta_save_uses_shared_identity(self):
+        call=AsyncMock(return_value={'status':'signed'})
+        worker=SimpleNamespace(api=SimpleNamespace(call=call),wake=SimpleNamespace(set=lambda:None))
+        choice=SimpleNamespace(user_id=123,worker=worker,identity={'betaPin':'TESTPIN','characterName':'Aria','className':'mage'},character_id='char',role='dd',status='signed',note='')
+        modal=f.SaveModal(choice)
+        interaction=SimpleNamespace(user=SimpleNamespace(id=123),response=SimpleNamespace(defer=AsyncMock()),followup=SimpleNamespace(send=AsyncMock()))
+        await modal.on_submit(interaction)
+        self.assertEqual(call.call_args.args[0],'betaSignup')
+        self.assertEqual(call.call_args.kwargs['characterName'],'Aria')
+        self.assertNotIn('TESTPIN',str(interaction.followup.send.call_args))
     async def test_era_style_preserves_forever_data(self):
         p=copy.deepcopy(POST)
         p['raid']['signups']=[{'name':'Ariee Mondlichtung','className':'priest','role':'heal','status':'signed'}, {'name':'Andere Person','className':'mage','role':'dd','status':'absent'}]

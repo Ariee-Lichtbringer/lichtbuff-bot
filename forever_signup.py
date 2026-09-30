@@ -116,7 +116,7 @@ class SaveModal(discord.ui.Modal, title='Forever-Anmeldung speichern'):
         await interaction.response.defer(ephemeral=True,thinking=True)
         try:
             c=self.choice
-            result=await c.worker.api.call('signup',**c.identity,characterId=c.character_id,role=c.role,status=c.status,note=str(self.note))
+            result=await c.worker.api.call('betaSignup' if 'betaPin' in c.identity else 'signup',**c.identity,characterId=c.character_id,role=c.role,status=c.status,note=str(self.note))
             await interaction.followup.send('✅ Auf der Ersatzbank gespeichert.' if result.get('status')=='bench' else '✅ Deine Forever-Anmeldung wurde gespeichert.',ephemeral=True)
             c.worker.wake.set()
         except Exception as error: await reply_error(interaction,error)
@@ -172,6 +172,26 @@ class ConnectModal(discord.ui.Modal, title='Forever-SpielerLogin verbinden'):
             await send_choices(self.worker,interaction,self.identity,result)
         except Exception as error: await reply_error(interaction,error)
 
+class BetaModal(discord.ui.Modal, title='Beta-Anmeldung · Gilden-PIN'):
+    def __init__(self, worker, identity):
+        super().__init__();self.worker=worker;self.identity=identity
+        self.name=discord.ui.TextInput(label='Dein Charaktername',min_length=2,max_length=60)
+        self.pin=discord.ui.TextInput(label='Gemeinsamer Beta-PIN deiner Gilde',max_length=120)
+        self.cls=discord.ui.TextInput(label='Klasse (z. B. Krieger, Magier, Priester)',max_length=30)
+        for item in [self.name,self.pin,self.cls]:self.add_item(item)
+    async def on_submit(self, interaction):
+        if str(interaction.user.id)!=self.identity['discordUserId']:
+            await interaction.response.send_message('Diese Anmeldung gehört einem anderen Spieler.',ephemeral=True);return
+        await interaction.response.defer(ephemeral=True,thinking=True)
+        try:
+            entered=str(self.cls).strip().casefold()
+            class_name=next((k for k,v in CLASSES.items() if entered in [k,v.casefold()]),None)
+            if not class_name:raise ApiError('Bitte eine gültige Klasse eingeben: '+', '.join(CLASSES.values()),400)
+            identity={**self.identity,'betaPin':str(self.pin).strip(),'characterName':str(self.name).strip(),'className':class_name}
+            result=await self.worker.api.call('betaContext',**identity)
+            await send_choices(self.worker,interaction,identity,result)
+        except Exception as error:await reply_error(interaction,error)
+
 class ConnectView(PrivateView):
     def __init__(self, worker, identity, user_id):
         super().__init__(user_id)
@@ -185,6 +205,11 @@ class SignupView(discord.ui.View):
     def __init__(self, worker, post):
         super().__init__(timeout=None);self.worker=worker;self.post=post
         self.add_item(discord.ui.Button(label='Loot & Raid auf der Webseite',url=raid_url(post)))
+        if post.get('betaEnabled'):
+            beta=discord.ui.Button(label='Beta-Anmeldung · Name & PIN',style=discord.ButtonStyle.success,custom_id='forever:beta')
+            async def beta_signup(interaction):await interaction.response.send_modal(BetaModal(self.worker,self.identity(interaction)))
+            beta.callback=beta_signup;self.add_item(beta)
+
         if post['raid']['status']!='open' or datetime.fromisoformat(post['raid']['starts_at'].replace('Z','+00:00'))<=datetime.now(timezone.utc):
             for item in self.children:
                 if getattr(item,'custom_id',None): item.disabled=True
