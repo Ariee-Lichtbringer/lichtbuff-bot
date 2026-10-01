@@ -181,6 +181,15 @@ class BetaModal(discord.ui.Modal, title='Beta-Anmeldung · Gilden-PIN'):
         self.role=discord.ui.Select(placeholder='Rolle auswählen',options=[discord.SelectOption(label=v,value=k) for k,v in [('tank','Tank'),('dd','DD'),('heal','Heal')]])
         for label,item in [('Dein Charaktername',self.name),('Gemeinsamer Beta-PIN deiner Gilde',self.pin),('Klasse',self.cls),('Rolle',self.role)]:
             self.add_item(discord.ui.Label(text=label,component=item))
+    def to_dict(self):
+        payload = super().to_dict()
+        # Discord rejects the message-only disabled field even when it is false.
+        for label in payload['components']:
+            component = label.get('component', {})
+            if component.get('type') == 3:
+                component.pop('disabled', None)
+        return payload
+
     async def on_submit(self, interaction):
         if str(interaction.user.id)!=self.identity['discordUserId']:
             await interaction.response.send_message('Diese Anmeldung gehört einem anderen Spieler.',ephemeral=True);return

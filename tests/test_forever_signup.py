@@ -18,6 +18,18 @@ class ForeverTest(unittest.IsolatedAsyncioTestCase):
         p['raid']['status']='cancelled';view=f.SignupView(None,p)
         self.assertTrue(all(c.disabled for c in view.children if getattr(c,'custom_id',None)))
         self.assertIn('guild=forever',f.raid_url(p))
+    async def test_beta_modal_payload_uses_only_modal_select_fields(self):
+        modal = f.BetaModal(None, {'discordUserId': '123'})
+        payload = modal.to_dict()
+        self.assertEqual(len(payload['components']), 4)
+        selects = [row['component'] for row in payload['components'] if row['component']['type'] == 3]
+        self.assertEqual(len(selects), 2)
+        for select in selects:
+            self.assertNotIn('disabled', select)
+            self.assertTrue(select['required'])
+        self.assertEqual({o['value'] for o in selects[0]['options']}, set(f.CLASSES))
+        self.assertEqual({o['value'] for o in selects[1]['options']}, {'tank', 'dd', 'heal'})
+
     async def test_beta_button_is_conditional_persistent_and_closes(self):
         p=copy.deepcopy(POST)
         self.assertNotIn('forever:beta',[x.custom_id for x in f.SignupView(None,p).children])
