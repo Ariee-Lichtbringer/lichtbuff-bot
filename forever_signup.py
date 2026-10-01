@@ -92,6 +92,8 @@ def build_embed(post, emoji=lambda c: ''):
     return embed
 
 async def reply_error(interaction, error):
+    detail = str(error) if isinstance(error, discord.HTTPException) else type(error).__name__
+    print('Forever interaction failed: ' + detail[:1200], flush=True)
     text = str(error)[:1000] if isinstance(error,ApiError) else 'Die Aktion konnte nicht gespeichert werden. Bitte erneut versuchen.'
     if interaction.response.is_done(): await interaction.followup.send(text,ephemeral=True)
     else: await interaction.response.send_message(text,ephemeral=True)
@@ -175,8 +177,8 @@ class ConnectModal(discord.ui.Modal, title='Forever-SpielerLogin verbinden'):
 class BetaModal(discord.ui.Modal, title='Beta-Anmeldung · Gilden-PIN'):
     def __init__(self, worker, identity):
         super().__init__();self.worker=worker;self.identity=identity
-        self.name=discord.ui.TextInput(label='Dein Charaktername',min_length=2,max_length=60)
-        self.pin=discord.ui.TextInput(label='Gemeinsamer Beta-PIN deiner Gilde',max_length=120)
+        self.name=discord.ui.TextInput(min_length=2,max_length=60)
+        self.pin=discord.ui.TextInput(max_length=120)
         self.cls=discord.ui.Select(placeholder='Klasse auswählen',options=[discord.SelectOption(label=v,value=k) for k,v in CLASSES.items()])
         self.role=discord.ui.Select(placeholder='Rolle auswählen',options=[discord.SelectOption(label=v,value=k) for k,v in [('tank','Tank'),('dd','DD'),('heal','Heal')]])
         for label,item in [('Dein Charaktername',self.name),('Gemeinsamer Beta-PIN deiner Gilde',self.pin),('Klasse',self.cls),('Rolle',self.role)]:
