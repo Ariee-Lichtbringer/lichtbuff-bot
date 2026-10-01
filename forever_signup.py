@@ -177,18 +177,25 @@ class BetaModal(discord.ui.Modal, title='Beta-Anmeldung · Gilden-PIN'):
         super().__init__();self.worker=worker;self.identity=identity
         self.name=discord.ui.TextInput(label='Dein Charaktername',min_length=2,max_length=60)
         self.pin=discord.ui.TextInput(label='Gemeinsamer Beta-PIN deiner Gilde',max_length=120)
-        self.cls=discord.ui.TextInput(label='Klasse (z. B. Krieger, Magier, Priester)',max_length=30)
-        for item in [self.name,self.pin,self.cls]:self.add_item(item)
+        self.cls=discord.ui.Select(placeholder='Klasse auswählen',options=[discord.SelectOption(label=v,value=k) for k,v in CLASSES.items()])
+        self.role=discord.ui.Select(placeholder='Rolle auswählen',options=[discord.SelectOption(label=v,value=k) for k,v in [('tank','Tank'),('dd','DD'),('heal','Heal')]])
+        for label,item in [('Dein Charaktername',self.name),('Gemeinsamer Beta-PIN deiner Gilde',self.pin),('Klasse',self.cls),('Rolle',self.role)]:
+            self.add_item(discord.ui.Label(text=label,component=item))
     async def on_submit(self, interaction):
         if str(interaction.user.id)!=self.identity['discordUserId']:
             await interaction.response.send_message('Diese Anmeldung gehört einem anderen Spieler.',ephemeral=True);return
         await interaction.response.defer(ephemeral=True,thinking=True)
         try:
-            entered=str(self.cls).strip().casefold()
-            class_name=next((k for k,v in CLASSES.items() if entered in [k,v.casefold()]),None)
-            if not class_name:raise ApiError('Bitte eine gültige Klasse eingeben: '+', '.join(CLASSES.values()),400)
+            class_name=self.cls.values[0] if self.cls.values else None
+            role=self.role.values[0] if self.role.values else None
+            if class_name not in CLASSES:raise ApiError('Bitte eine Klasse auswählen.',400)
+            if role not in ('tank','dd','heal'):raise ApiError('Bitte Tank, DD oder Heal auswählen.',400)
             identity={**self.identity,'betaPin':str(self.pin).strip(),'characterName':str(self.name).strip(),'className':class_name}
-            result=await self.worker.api.call('betaContext',**identity)
+            result=await self.worker.api.call('betaContext',**identity,role=role)
+            # Use the explicit selection even when an older signup has another role.
+            for character in result['characters']:character['role']=role
+            for signup in result['raid']['signups']:
+                if signup.get('mine'):signup['role']=role
             await send_choices(self.worker,interaction,identity,result)
         except Exception as error:await reply_error(interaction,error)
 
