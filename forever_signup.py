@@ -8,6 +8,7 @@ import urllib.error
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit, urlencode
 import discord
+from signup_language import tr, user_language, guild_language, localize_ui
 from discord import app_commands
 
 ROLES = {'tank': '🛡️ Tank', 'heal': '💚 Heiler', 'dd': '⚔️ Schaden (offen)', 'melee':'⚔️ Nahkampf', 'ranged':'🏹 Fernkampf'}
@@ -39,12 +40,13 @@ class ForeverApi:
         return await asyncio.to_thread(self.request, action, **values)
 
 def raid_url(post):
-    return 'https://lichtloot.de/forever-raids.html?' + urlencode({'guild':post['guild']['slug'],'raid':post['raid']['id'],'loot':post['raid']['kind']}) + '#prioseiten'
+    return 'https://lichtloot.de/forever-raids.html?' + urlencode({'guild':post['guild']['slug'],'raid':post['raid']['id'],'loot':post['raid']['kind'],'lang':guild_language(post)}) + '#prioseiten'
 
 def marker(post):
     return 'GuildLoot Forever · ' + post['raid']['id']
 
 def build_embed(post, emoji=lambda c: ''):
+    lang=guild_language(post)
     raid = post['raid']
     starts = datetime.fromisoformat(raid['starts_at'].replace('Z','+00:00'))
     from zoneinfo import ZoneInfo
@@ -52,29 +54,33 @@ def build_embed(post, emoji=lambda c: ''):
     signed = [s for s in raid['signups'] if s['status']=='signed']
     status = {'open':'Raidanmeldung ist geöffnet.','closed':'Raidanmeldung ist geschlossen.','cancelled':'Dieser Raid wurde abgesagt.','completed':'Dieser Raid ist abgeschlossen.','running':'Dieser Raid läuft gerade.','archived':'Dieser Raid ist archiviert.'}[raid['status']]
     embed = discord.Embed(title=raid['title'].upper()[:256], url=raid_url(post), color=0x7C3AED,
-        description=discord.utils.escape_markdown(raid.get('description') or status)[:1200])
+        description=discord.utils.escape_markdown(raid.get('description') or tr(status,lang))[:1200])
     embed.set_footer(text=marker(post))
     image = {'hyjal':'forever/raids/hyjal-v1.jpg','barrow':'forever/raids/barrow-v1.jpg','onyxia':'forever/raids/onyxia-v1.jpg'}.get(raid['kind'],'forever/adventure.jpg')
     embed.set_image(url=raid.get('image_url') or 'https://lichtloot.de/images/'+image)
-    embed.add_field(name='Raidlead',value='Gildenleitung',inline=True)
-    embed.add_field(name='Termin',value=f"**__{local:%Y-%m-%d · %H:%M} Uhr__**",inline=True)
-    embed.add_field(name='Gilde · Forever',value=discord.utils.escape_markdown(post['guild']['name'])[:200],inline=True)
+    embed.add_field(name=tr('Raidlead',lang),value=tr('Gildenleitung',lang),inline=True)
+    embed.add_field(name=tr('Termin',lang),value=f"**__{local:%Y-%m-%d · %H:%M}{' Uhr' if lang=='de' else ''}__**",inline=True)
+    embed.add_field(name=tr('Gilde · Forever',lang),value=discord.utils.escape_markdown(post['guild']['name'])[:200],inline=True)
     web = raid_url(post).split('#')[0]+'#termine'
-    embed.add_field(name='Links',value=f'🌐 [Webansicht]({web}) · 🎒 [Lootseite]({raid_url(post)})',inline=False)
+    embed.add_field(name=tr('Links',lang),value=f"🌐 [{tr('Webansicht',lang)}]({web}) · 🎒 [{tr('Lootseite',lang)}]({raid_url(post)})",inline=False)
     counts = {state:sum(s['status']==state for s in raid['signups']) for state in STATES}
-    embed.add_field(name='Anmeldestatus',value=f"👥 **{len(signed)} / {raid['size']} fest**\n🪑 Bank **{counts['bench']}** · 🕒 Spät **{counts['late']}** · ⚖️ Vorläufig **{counts['tentative']}** · 🚫 Abwesend **{counts['absent']}**",inline=True)
+    embed.add_field(name=tr('Anmeldestatus',lang),value=f"👥 **{len(signed)} / {raid['size']} fest**\n🪑 Bank **{counts['bench']}** · 🕒 Spät **{counts['late']}** · ⚖️ Vorläufig **{counts['tentative']}** · 🚫 Abwesend **{counts['absent']}**",inline=True)
+    if lang=='en':
+        embed.set_field_at(len(embed.fields)-1,name=tr('Signup status',lang),value=f"👥 **{len(signed)} / {raid['size']} confirmed**\n🪑 Bench **{counts['bench']}** · 🕒 Late **{counts['late']}** · ⚖️ Tentative **{counts['tentative']}** · 🚫 Absent **{counts['absent']}**",inline=True)
     role_counts = {role:sum(s['role']==role for s in signed) for role in ROLES}
-    embed.add_field(name='Rollenverteilung',value=f"{emoji('tank') or '🛡️'} **Tanks {role_counts['tank']}** · {emoji('dd') or '⚔️'} **Nahkampf {role_counts['melee']}** · {emoji('ranged') or '🏹'} **Fernkampf {role_counts['ranged']}** · **Offen {role_counts['dd']}** · {emoji('heal') or '✨'} **Heiler {role_counts['heal']}**",inline=True)
-    embed.add_field(name='\u200b',value='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',inline=False)
-    embed.add_field(name='Kader',value='Klassen und aktuelle Belegung' if signed else 'Noch keine festen Anmeldungen.',inline=False)
+    embed.add_field(name=tr('Rollenverteilung',lang),value=f"{emoji('tank') or '🛡️'} **Tanks {role_counts['tank']}** · {emoji('dd') or '⚔️'} **Nahkampf {role_counts['melee']}** · {emoji('ranged') or '🏹'} **Fernkampf {role_counts['ranged']}** · **Offen {role_counts['dd']}** · {emoji('heal') or '✨'} **Heiler {role_counts['heal']}**",inline=True)
+    if lang=='en':
+        embed.set_field_at(len(embed.fields)-1,name=tr('Role distribution',lang),value=f"🛡️ **Tanks {role_counts['tank']}** · ⚔️ **Melee {role_counts['melee']}** · 🏹 **Ranged {role_counts['ranged']}** · **Any {role_counts['dd']}** · ✨ **Healers {role_counts['heal']}**",inline=True)
+    embed.add_field(name=tr('\u200b',lang),value='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',inline=False)
+    embed.add_field(name=tr('Kader',lang),value=tr('Klassen und aktuelle Belegung' if signed else 'Noch keine festen Anmeldungen.',lang),inline=False)
     numbered = list(enumerate(raid['signups'],1))
     groups = []
     for cls in ['warrior','druid','paladin','rogue','hunter','priest','mage','warlock','shaman']:
         rows = [(n,s) for n,s in numbered if s['status']=='signed' and s['className']==cls]
-        if rows: groups.append((f"{emoji(cls)} __{CLASSES[cls]} ({len(rows)})__",rows,True))
+        if rows: groups.append((f"{emoji(cls)} __{tr(CLASSES[cls],lang)} ({len(rows)})__",rows,True))
     for state,label in [('bench','🪑 Bank'),('late','🕒 Spät'),('tentative','⚖️ Vorläufig'),('absent','🚫 Abwesenheit')]:
         rows = [(n,s) for n,s in numbered if s['status']==state]
-        if rows: groups.append((f'{label} ({len(rows)})',rows,False))
+        if rows: groups.append((f'{tr(label,lang)} ({len(rows)})',rows,False))
     for heading, rows, class_group in groups:
         chunks,chunk = [],''
         for n,s in rows:
@@ -86,24 +92,24 @@ def build_embed(post, emoji=lambda c: ''):
         if chunk: chunks.append(chunk)
         for index,chunk in enumerate(chunks):
             if len(embed)+len(heading)+len(chunk)>5500 or len(embed.fields)>=23:
-                embed.add_field(name='Weitere Anmeldungen',value=f'Die vollständige Teilnehmerliste findest du in der [Webansicht]({web}).',inline=False)
+                embed.add_field(name=tr('Weitere Anmeldungen',lang),value=(f'Find the complete participant list in the [web view]({web}).' if lang=='en' else f'Die vollständige Teilnehmerliste findest du in der [Webansicht]({web}).'),inline=False)
                 return embed
-            embed.add_field(name=heading+(' · Fortsetzung' if index else ''),value=chunk,inline=True)
+            embed.add_field(name=heading+((' · Continued' if lang=='en' else ' · Fortsetzung') if index else ''),value=chunk,inline=True)
     return embed
 
 async def reply_error(interaction, error):
     detail = str(error) if isinstance(error, discord.HTTPException) else type(error).__name__
     print('Forever interaction failed: ' + detail[:1200], flush=True)
     text = str(error)[:1000] if isinstance(error,ApiError) else 'Die Aktion konnte nicht gespeichert werden. Bitte erneut versuchen.'
-    if interaction.response.is_done(): await interaction.followup.send(text,ephemeral=True)
-    else: await interaction.response.send_message(text,ephemeral=True)
+    if interaction.response.is_done(): await interaction.followup.send(tr(text,user_language(interaction)),ephemeral=True)
+    else: await interaction.response.send_message(tr(text,user_language(interaction)),ephemeral=True)
 
 class PrivateView(discord.ui.View):
     def __init__(self, user_id, **kw):
         super().__init__(timeout=600, **kw);self.user_id=user_id
     async def interaction_check(self, interaction):
         if interaction.user.id!=self.user_id:
-            await interaction.response.send_message('Diese Auswahl gehört einem anderen Spieler.',ephemeral=True);return False
+            await interaction.response.send_message(tr('Diese Auswahl gehört einem anderen Spieler.',user_language(interaction)),ephemeral=True);return False
         return True
     async def on_error(self, interaction, error, item): await reply_error(interaction,error)
 
@@ -111,26 +117,26 @@ class SaveModal(discord.ui.Modal, title='Forever-Anmeldung speichern'):
     def __init__(self, choice):
         super().__init__();self.choice=choice
         self.note=discord.ui.TextInput(label='Hinweis (optional)',required=False,max_length=240,default=choice.note)
-        self.add_item(self.note)
+        self.add_item(self.note);localize_ui(self,getattr(choice,'language','de'))
     async def on_submit(self, interaction):
         if interaction.user.id!=self.choice.user_id:
-            await interaction.response.send_message('Diese Auswahl gehört einem anderen Spieler.',ephemeral=True);return
+            await interaction.response.send_message(tr('Diese Auswahl gehört einem anderen Spieler.',user_language(interaction)),ephemeral=True);return
         await interaction.response.defer(ephemeral=True,thinking=True)
         try:
             c=self.choice
             result=await c.worker.api.call('betaSignup' if 'betaPin' in c.identity else 'signup',**c.identity,characterId=c.character_id,role=c.role,status=c.status,note=str(self.note))
-            await interaction.followup.send('✅ Auf der Ersatzbank gespeichert.' if result.get('status')=='bench' else '✅ Deine Forever-Anmeldung wurde gespeichert.',ephemeral=True)
+            await interaction.followup.send(tr('✅ Auf der Ersatzbank gespeichert.' if result.get('status')=='bench' else '✅ Deine Forever-Anmeldung wurde gespeichert.',user_language(interaction)),ephemeral=True)
             c.worker.wake.set()
         except Exception as error: await reply_error(interaction,error)
 
 class ChoiceView(PrivateView):
-    def __init__(self, worker, identity, result, user_id):
+    def __init__(self, worker, identity, result, user_id, language='de'):
         super().__init__(user_id);self.worker=worker;self.identity=identity
         characters=result['characters'];mine=next((s for s in result['raid']['signups'] if s['mine']),{})
         char=next((c for c in characters if c['id']==mine.get('characterId')),characters[0])
         self.character_id=char['id'];self.role=mine.get('role',char['role']);self.status=mine.get('status','signed');self.note=mine.get('note','')
         for name,label,options,current in [
-            ('character_id','Dein Forever-Charakter',[(c['id'],c['name']+' · '+CLASSES.get(c['class_name'],c['class_name'])) for c in characters],self.character_id),
+            ('character_id','Dein Forever-Charakter',[(c['id'],c['name']+' · '+tr(CLASSES.get(c['class_name'],c['class_name']),language)) for c in characters],self.character_id),
             ('role','Deine Rolle',list(ROLES.items()),self.role),('status','Deine Teilnahme',list(STATES.items()),self.status)]:
             select_options=[]
             for value,text in options:
@@ -150,24 +156,24 @@ class ChoiceView(PrivateView):
             select.callback=changed;self.add_item(select)
         save=discord.ui.Button(label='Anmeldung speichern',style=discord.ButtonStyle.success)
         async def submit(interaction): await interaction.response.send_modal(SaveModal(self))
-        save.callback=submit;self.add_item(save)
+        save.callback=submit;self.add_item(save);localize_ui(self,language)
 
 async def send_choices(worker, interaction, identity, result):
     raid=result.get('raid')
     if not raid or raid['status']!='open' or datetime.fromisoformat(raid['starts_at'].replace('Z','+00:00'))<=datetime.now(timezone.utc):
-        await interaction.followup.send('Die Anmeldung für diesen Termin ist geschlossen.',ephemeral=True);return
+        await interaction.followup.send(tr('Die Anmeldung für diesen Termin ist geschlossen.',user_language(interaction)),ephemeral=True);return
     if not result['characters']:
-        await interaction.followup.send('Lege zuerst deinen Forever-Charakter auf lichtloot.de an.',ephemeral=True);return
-    await interaction.followup.send('Wähle deinen Charakter, deine Rolle und Teilnahme:',view=ChoiceView(worker,identity,result,interaction.user.id),ephemeral=True)
+        await interaction.followup.send(tr('Lege zuerst deinen Forever-Charakter auf lichtloot.de an.',user_language(interaction)),ephemeral=True);return
+    await interaction.followup.send(tr('Wähle deinen Charakter, deine Rolle und Teilnahme:',user_language(interaction)),view=ChoiceView(worker,identity,result,interaction.user.id,user_language(interaction)),ephemeral=True)
 
 class ConnectModal(discord.ui.Modal, title='Forever-SpielerLogin verbinden'):
-    def __init__(self, worker, identity):
+    def __init__(self, worker, identity, language='de'):
         super().__init__();self.worker=worker;self.identity=identity
         self.pin=discord.ui.TextInput(label='Dein Forever-SpielerLogin-Code',min_length=4,max_length=120)
-        self.add_item(self.pin)
+        self.add_item(self.pin);localize_ui(self,language)
     async def on_submit(self, interaction):
         if str(interaction.user.id)!=self.identity['discordUserId']:
-            await interaction.response.send_message('Diese Verbindung gehört einem anderen Spieler.',ephemeral=True);return
+            await interaction.response.send_message(tr('Diese Verbindung gehört einem anderen Spieler.',user_language(interaction)),ephemeral=True);return
         await interaction.response.defer(ephemeral=True,thinking=True)
         try:
             result=await self.worker.api.call('connect',**self.identity,playerPin=str(self.pin))
@@ -175,7 +181,7 @@ class ConnectModal(discord.ui.Modal, title='Forever-SpielerLogin verbinden'):
         except Exception as error: await reply_error(interaction,error)
 
 class BetaModal(discord.ui.Modal, title='Beta-Anmeldung · Gilden-PIN'):
-    def __init__(self, worker, identity):
+    def __init__(self, worker, identity, language='de'):
         super().__init__();self.worker=worker;self.identity=identity
         self.name=discord.ui.TextInput(min_length=2,max_length=60)
         self.pin=discord.ui.TextInput(max_length=120)
@@ -183,6 +189,7 @@ class BetaModal(discord.ui.Modal, title='Beta-Anmeldung · Gilden-PIN'):
         self.role=discord.ui.Select(placeholder='Rolle auswählen',options=[discord.SelectOption(label=v,value=k) for k,v in [('tank','Tank'),('dd','DD'),('heal','Heal')]])
         for label,item in [('Dein Charaktername',self.name),('Gemeinsamer Beta-PIN deiner Gilde',self.pin),('Klasse',self.cls),('Rolle',self.role)]:
             self.add_item(discord.ui.Label(text=label,component=item))
+        localize_ui(self,language)
     def to_dict(self):
         payload = super().to_dict()
         # Discord rejects the message-only disabled field even when it is false.
@@ -194,7 +201,7 @@ class BetaModal(discord.ui.Modal, title='Beta-Anmeldung · Gilden-PIN'):
 
     async def on_submit(self, interaction):
         if str(interaction.user.id)!=self.identity['discordUserId']:
-            await interaction.response.send_message('Diese Anmeldung gehört einem anderen Spieler.',ephemeral=True);return
+            await interaction.response.send_message(tr('Diese Anmeldung gehört einem anderen Spieler.',user_language(interaction)),ephemeral=True);return
         await interaction.response.defer(ephemeral=True,thinking=True)
         try:
             class_name=self.cls.values[0] if self.cls.values else None
@@ -211,13 +218,15 @@ class BetaModal(discord.ui.Modal, title='Beta-Anmeldung · Gilden-PIN'):
         except Exception as error:await reply_error(interaction,error)
 
 class ConnectView(PrivateView):
-    def __init__(self, worker, identity, user_id):
+    def __init__(self, worker, identity, user_id, language='de'):
         super().__init__(user_id)
         b=discord.ui.Button(label='Forever-SpielerLogin verbinden',style=discord.ButtonStyle.primary)
-        async def connect(interaction): await interaction.response.send_modal(ConnectModal(worker,identity))
+        async def connect(interaction): await interaction.response.send_modal(ConnectModal(worker,identity,user_language(interaction)))
         b.callback=connect;self.add_item(b)
         if identity.get("guild")=="lichtbringer-forever":
             self.add_item(discord.ui.Button(label="LichtLoot / Nachtloot übernehmen",url="https://lichtloot.de/forever-import.html"))
+
+        localize_ui(self,language)
 
 class SignupView(discord.ui.View):
     def __init__(self, worker, post):
@@ -225,12 +234,13 @@ class SignupView(discord.ui.View):
         self.add_item(discord.ui.Button(label='Loot & Raid auf der Webseite',url=raid_url(post)))
         if post.get('betaEnabled'):
             beta=discord.ui.Button(label='Beta-Anmeldung · Name & PIN',style=discord.ButtonStyle.success,custom_id='forever:beta')
-            async def beta_signup(interaction):await interaction.response.send_modal(BetaModal(self.worker,self.identity(interaction)))
+            async def beta_signup(interaction):await interaction.response.send_modal(BetaModal(self.worker,self.identity(interaction),user_language(interaction)))
             beta.callback=beta_signup;self.add_item(beta)
 
         if post['raid']['status']!='open' or datetime.fromisoformat(post['raid']['starts_at'].replace('Z','+00:00'))<=datetime.now(timezone.utc):
             for item in self.children:
                 if getattr(item,'custom_id',None): item.disabled=True
+        localize_ui(self,guild_language(post))
     def identity(self, interaction):
         return {'guild':self.post['guild']['slug'],'raidId':self.post['raid']['id'],'messageId':str(interaction.message.id),'channelId':str(interaction.channel_id),'discordGuildId':str(interaction.guild_id),'discordUserId':str(interaction.user.id)}
     @discord.ui.button(label='Klasse / Charakter anmelden',style=discord.ButtonStyle.primary,custom_id='forever:signup')
@@ -240,28 +250,28 @@ class SignupView(discord.ui.View):
             result=await self.worker.api.call('context',**identity)
             await send_choices(self.worker,interaction,identity,result)
         except ApiError as error:
-            if error.status==401: await interaction.followup.send('Verbinde deinen separaten Forever-SpielerLogin. Dein Code wird nicht im Kanal angezeigt.',view=ConnectView(self.worker,identity,interaction.user.id),ephemeral=True)
+            if error.status==401: await interaction.followup.send(tr('Verbinde deinen separaten Forever-SpielerLogin. Dein Code wird nicht im Kanal angezeigt.',user_language(interaction)),view=ConnectView(self.worker,identity,interaction.user.id,user_language(interaction)),ephemeral=True)
             else: await reply_error(interaction,error)
     @discord.ui.button(label='SpielerLogin trennen',style=discord.ButtonStyle.secondary,custom_id='forever:unlink')
     async def unlink(self, interaction, button):
         await interaction.response.defer(ephemeral=True,thinking=True)
         try:
             await self.worker.api.call('unlink',**self.identity(interaction))
-            await interaction.followup.send('Deine Discord-Verbindung ist getrennt. Bereits gespeicherte Raidanmeldungen bleiben bestehen.',ephemeral=True)
+            await interaction.followup.send(tr('Deine Discord-Verbindung ist getrennt. Bereits gespeicherte Raidanmeldungen bleiben bestehen.',user_language(interaction)),ephemeral=True)
         except Exception as error: await reply_error(interaction,error)
     async def on_error(self, interaction, error, item): await reply_error(interaction,error)
 
 class ConfigureModal(discord.ui.Modal, title='Forever-Gilde mit Discord verbinden'):
-    def __init__(self, worker, slug):
+    def __init__(self, worker, slug, language='de'):
         super().__init__();self.worker=worker;self.slug=slug
-        self.code=discord.ui.TextInput(label='Forever-Leitungscode',max_length=120);self.add_item(self.code)
+        self.code=discord.ui.TextInput(label='Forever-Leitungscode',max_length=120);self.add_item(self.code);localize_ui(self,language)
     async def on_submit(self, interaction):
         if not interaction.permissions.manage_guild:
-            await interaction.response.send_message('Du brauchst die Berechtigung „Server verwalten“.',ephemeral=True);return
+            await interaction.response.send_message(tr('Du brauchst die Berechtigung „Server verwalten“.',user_language(interaction)),ephemeral=True);return
         await interaction.response.defer(ephemeral=True,thinking=True)
         try:
             result=await self.worker.api.call('configure',guild=self.slug,masterCode=str(self.code),channelId=str(interaction.channel_id),discordGuildId=str(interaction.guild_id))
-            await interaction.followup.send('✅ '+result['guild']+' ist mit diesem Kanal verbunden. Öffne einen Forever-Termin auf der Webseite und wähle „Discord-Anmelder veröffentlichen“.',ephemeral=True)
+            await interaction.followup.send('✅ '+discord.utils.escape_markdown(result['guild'])+' '+tr('ist mit diesem Kanal verbunden. Öffne einen Forever-Termin auf der Webseite und wähle „Discord-Anmelder veröffentlichen“.',user_language(interaction)),ephemeral=True)
         except Exception as error: await reply_error(interaction,error)
 
 class ForeverWorker:
@@ -272,8 +282,8 @@ class ForeverWorker:
         @app_commands.guild_only()
         async def configure(interaction:discord.Interaction,gilde:str):
             if not interaction.permissions.manage_guild:
-                await interaction.response.send_message('Du brauchst „Server verwalten“.',ephemeral=True);return
-            await interaction.response.send_modal(ConfigureModal(self,gilde.strip()))
+                await interaction.response.send_message(tr('Du brauchst „Server verwalten“.',user_language(interaction)),ephemeral=True);return
+            await interaction.response.send_modal(ConfigureModal(self,gilde.strip(),user_language(interaction)))
     def start(self): self.task=asyncio.create_task(self.loop(),name='forever-discord')
     async def deliver(self, post):
         view=SignupView(self,post)
