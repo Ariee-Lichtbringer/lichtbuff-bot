@@ -3312,11 +3312,6 @@ def build_combined_embed(
     embed.set_footer(text=copyright_text())
     embed.add_field(name="Raidlead", value=clean(raid.get("createdBy") or raid.get("raidLead")) or "Gildenleitung", inline=True)
     embed.add_field(name="Termin", value=f"**__{raid_date} · {raid_time} Uhr__**", inline=True)
-    prio_pin = clean(raid.get("playerPin") or raid.get("prioPin"))
-    if raid.get("prioEnabled") is not False and prio_pin:
-        embed.add_field(name="Prio-PIN", value=f"`{prio_pin}`", inline=True)
-    else:
-        embed.add_field(name="Prio-PIN", value="–", inline=True)
     raid_links = _raid_embed_links(guild, raid)
     if raid_links:
         embed.add_field(name="Links", value=" · ".join(raid_links)[:1024], inline=False)
